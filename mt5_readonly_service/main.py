@@ -4,8 +4,8 @@ Local MT5 Read-only Connector — FastAPI service.
 ================================================================================
 READ-ONLY CONTRACT — يُمنع أي تنفيذ أو أوامر من هذه الخدمة:
 - لا توجد نقاط نهاية للبيع أو الشراء أو الإغلاق أو التعديل أو الأوامر المعلقة.
-- يُسمح فقط بقراءة الحساب والتيكات والمراكز المفتوحة عبر واجهات MetaTrader5
-  الموثقة للقراءة (initialize / account_info / symbol_info_tick / positions_get).
+- يُسمح فقط بقراءة الحساب والتيكات والمراكز المفتوحة والترميزات وسجل الصفقات عبر واجهات MetaTrader5
+  الموثقة للقراءة (initialize / account_info / symbol_info_tick / positions_get / symbols_get / history_deals_get).
 - لا يُستورد أو يُستدعى صراحةً أي من دوال التداول المحظورة أدناه.
 ================================================================================
 """
@@ -13,10 +13,10 @@ READ-ONLY CONTRACT — يُمنع أي تنفيذ أو أوامر من هذه ا
 from __future__ import annotations
 
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Query
 from fastapi.responses import JSONResponse
 
 # -----------------------------------------------------------------------------
@@ -60,6 +60,21 @@ def _iso_from_mt5_time(ts: int | float | None) -> str | None:
         sec = float(ts) / (1000.0 if ts > 10_000_000_000 else 1.0)
         return datetime.fromtimestamp(sec, tz=timezone.utc).isoformat()
     except (OverflowError, OSError, ValueError):
+        return None
+
+
+def _deal_time_to_ms(ts: Any) -> int | None:
+    """MT5 Deal time: usually seconds (int) — return epoch ms for clients."""
+    if ts is None:
+        return None
+    try:
+        if isinstance(ts, datetime):
+            return int(ts.replace(tzinfo=timezone.utc).timestamp() * 1000)
+        sec = float(ts)
+        if sec > 10_000_000_000:  # already ms
+            return int(sec)
+        return int(sec * 1000)
+    except (OverflowError, OSError, ValueError, TypeError):
         return None
 
 
@@ -256,6 +271,121 @@ def readonly_snapshot() -> JSONResponse:
             combined["connected"] = False
             combined.setdefault("error", account.get("error", "account unavailable"))
         return JSONResponse(content=combined)
+    finally:
+        mt5.shutdown()
+
+
+def _serialize_symbol_meta(si: Any) -> dict[str, Any]:
+    """Read-only SymbolInfo subset — no trading."""
+    return {
+        "name": getattr(si, "name", "") or "",
+        "path": getattr(si, "path", "") or "",
+        "description": getattr(si, "description", "") or "",
+        "currency_base": getattr(si, "currency_base", "") or "",
+        "currency_profit": getattr(si, "currency_profit", "") or "",
+        "currency_margin": getattr(si, "currency_margin", "") or "",
+        "digits": int(getattr(si, "digits", 0) or 0),
+        "visible": bool(getattr(si, "visible", False)),
+        "trade_mode": int(getattr(si, "trade_mode", 0) or 0),
+        "point": float(getattr(si, "point", 0.0) or 0.0),
+        "spread": int(getattr(si, "spread", 0) or 0),
+    }
+
+
+@app.get("/readonly/symbols")
+def readonly_symbols() -> JSONResponse:
+    """Catalog via symbols_get — read-only."""
+    _enforce_read_only_policy()
+    ok, err = _safe_mt5_init()
+    if not ok:
+        return JSONResponse(
+            status_code=503,
+            content={
+                "connected": False,
+                "read_only_mode": READ_ONLY_MODE,
+                "symbols": [],
+                "error": err or "MT5 unavailable",
+            },
+        )
+    try:
+        raw = mt5.symbols_get()
+        rows = raw if raw is not None else ()
+        symbols_out = [_serialize_symbol_meta(si) for si in rows]
+        return JSONResponse(
+            content={
+                "connected": True,
+                "read_only_mode": READ_ONLY_MODE,
+                "symbols": symbols_out,
+            },
+        )
+    finally:
+        mt5.shutdown()
+
+
+@app.get("/readonly/history-deals")
+def readonly_history_deals(
+    days: int = Query(default=30, ge=1, le=365),
+    symbol: str | None = Query(default=None),
+) -> JSONResponse:
+    """Historical closed deals via history_deals_get — read-only."""
+    _enforce_read_only_policy()
+    ok, err = _safe_mt5_init()
+    if not ok:
+        return JSONResponse(
+            status_code=503,
+            content={
+                "connected": False,
+                "read_only_mode": READ_ONLY_MODE,
+                "deals": [],
+                "error": err or "MT5 unavailable",
+            },
+        )
+    try:
+        now_utc = datetime.now(timezone.utc)
+        from_date = now_utc - timedelta(days=int(days))
+        to_date = now_utc
+        deals_raw = mt5.history_deals_get(from_date, to_date)
+        deals_list = deals_raw if deals_raw is not None else ()
+
+        deals_out: list[dict[str, Any]] = []
+        for d in deals_list:
+            sym = getattr(d, "symbol", "") or ""
+            if symbol and symbol.strip().upper() and sym.upper() != symbol.strip().upper():
+                continue
+            ts = getattr(d, "time", None)
+            time_ms = _deal_time_to_ms(ts)
+            deals_out.append(
+                {
+                    "ticket": int(getattr(d, "ticket", 0)),
+                    "order": int(getattr(d, "order", 0)),
+                    "position_id": int(getattr(d, "position_id", 0)),
+                    "symbol": sym,
+                    "type": int(getattr(d, "type", 0)),
+                    "entry": int(getattr(d, "entry", 0)),
+                    "volume": float(getattr(d, "volume", 0.0) or 0.0),
+                    "price": float(getattr(d, "price", 0.0) or 0.0),
+                    "profit": float(getattr(d, "profit", 0.0) or 0.0),
+                    "commission": float(getattr(d, "commission", 0.0) or 0.0),
+                    "swap": float(getattr(d, "swap", 0.0) or 0.0),
+                    "fee": float(getattr(d, "fee", 0.0))
+                    if hasattr(d, "fee")
+                    else None,
+                    "time": time_ms if time_ms is not None else 0,
+                    "time_iso": _iso_from_mt5_time(ts) if ts is not None else None,
+                    "comment": getattr(d, "comment", "") or "",
+                    "magic": int(getattr(d, "magic", 0) or 0),
+                }
+            )
+
+        return JSONResponse(
+            content={
+                "connected": True,
+                "read_only_mode": READ_ONLY_MODE,
+                "from": from_date.isoformat(),
+                "to": to_date.isoformat(),
+                "deals": deals_out,
+            },
+        )
     finally:
         mt5.shutdown()
 

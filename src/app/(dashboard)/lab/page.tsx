@@ -42,6 +42,7 @@ export default function LabPage() {
   const canUseConvex = !isConvexAuthLoading && isAuthenticated;
 
   const convexSignals = useQuery(api.coreQueries.getMyLatestSignals, canUseConvex ? {} : "skip");
+  const labSymbolsForFilter = useQuery(api.coreQueries.getMyEnabledLabSymbols, canUseConvex ? {} : "skip");
   const protectionEvents = useQuery(api.coreQueries.getMyProtectionEvents, canUseConvex ? {} : "skip");
   const governance = useQuery(api.coreQueries.getMyGovernanceState, canUseConvex ? {} : "skip");
   const committeeReports = useQuery(api.coreQueries.getMyCommitteeReports, canUseConvex ? {} : "skip");
@@ -52,6 +53,30 @@ export default function LabPage() {
     governance === null ||
     governance.readOnly ||
     !governance.tradingEnabled;
+
+  const loadingSignalsSection =
+    canUseConvex &&
+    (convexSignals === undefined || labSymbolsForFilter === undefined);
+
+  const signalsBlockedByLabFilters =
+    canUseConvex &&
+    labSymbolsForFilter !== undefined &&
+    labSymbolsForFilter.length === 0;
+
+  const filteredConvexSignals =
+    convexSignals && labSymbolsForFilter && labSymbolsForFilter.length > 0
+      ? convexSignals.filter((r) => labSymbolsForFilter.includes(r.symbol))
+      : convexSignals ?? [];
+
+  const noMatchesForLabFilter =
+    canUseConvex &&
+    !loadingSignalsSection &&
+    !signalsBlockedByLabFilters &&
+    Array.isArray(convexSignals) &&
+    convexSignals.length > 0 &&
+    Array.isArray(labSymbolsForFilter) &&
+    labSymbolsForFilter.length > 0 &&
+    filteredConvexSignals.length === 0;
 
   function fmtOptionalNum(n: number | undefined) {
     if (n === undefined) return "—";
@@ -122,14 +147,25 @@ export default function LabPage() {
           <p className="text-muted-foreground text-xs">
             من قاعدة البيانات — لا تنفيذ.
           </p>
+          <p className="mt-1 text-muted-foreground text-xs leading-relaxed">
+            الأزواج المعروضة حسب إعدادات MT5
+          </p>
         </CardHeader>
         <CardContent className="overflow-x-auto px-2 pb-4 md:px-4">
           {!canUseConvex && !isConvexAuthLoading ? (
             <p className="text-muted-foreground px-2 py-4 text-sm">{NO_CONVEX_DATA_AR}</p>
-          ) : isConvexAuthLoading || convexSignals === undefined ? (
+          ) : loadingSignalsSection ? (
             <p className="text-muted-foreground px-2 py-4 text-sm">جاري تحميل بيانات Convex...</p>
-          ) : convexSignals.length === 0 ? (
+          ) : signalsBlockedByLabFilters ? (
+            <p className="text-muted-foreground px-2 py-4 text-sm leading-relaxed">
+              لا توجد أزواج مفعّلة للمختبر — فعّل الأزواج من الإعدادات.
+            </p>
+          ) : convexSignals !== undefined && convexSignals.length === 0 ? (
             <p className="text-muted-foreground px-2 py-4 text-sm">{NO_CONVEX_DATA_AR}</p>
+          ) : noMatchesForLabFilter ? (
+            <p className="text-muted-foreground px-2 py-4 text-sm leading-relaxed">
+              لا توجد إشارات مطابقة للأزواج المفعّلة للمختبر في الإعدادات.
+            </p>
           ) : (
             <Table>
               <TableHeader>
@@ -147,7 +183,7 @@ export default function LabPage() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {convexSignals.map((row) => (
+                {filteredConvexSignals.map((row) => (
                   <TableRow key={row._id} className="border-border/60">
                     <TableCell className="font-medium text-amber-100/90 tabular-nums">{row.symbol}</TableCell>
                     <TableCell className="tabular-nums text-muted-foreground">{row.timeframe}</TableCell>

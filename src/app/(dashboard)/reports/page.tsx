@@ -1,5 +1,6 @@
 "use client";
 
+import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   Table,
@@ -11,7 +12,8 @@ import {
 } from "@/components/ui/table";
 import { mockDecisionReport } from "@/lib/constants/mock-data";
 import { institutionalCardClass } from "@/lib/ui-institutional";
-import { useConvexAuth, useQuery } from "convex/react";
+import { useConvexAuth, useMutation, useQuery } from "convex/react";
+import { useState } from "react";
 
 import { api } from "../../../../convex/_generated/api";
 
@@ -20,6 +22,11 @@ const NO_CONVEX_DATA_AR =
 
 function fmtTs(ms: number) {
   return new Date(ms).toLocaleString("ar-SA", { hour12: false });
+}
+
+function fmtNum(n: number | undefined) {
+  if (n === undefined) return "—";
+  return <span className="tabular-nums">{Number.isInteger(n) ? n : n.toFixed(2)}</span>;
 }
 
 export default function ReportsPage() {
@@ -33,6 +40,48 @@ export default function ReportsPage() {
   const protectionEvents = useQuery(api.coreQueries.getMyProtectionEvents, canUseConvex ? {} : "skip");
   const signalSnapshots = useQuery(api.coreQueries.getMySignalReportSnapshots, canUseConvex ? {} : "skip");
   const governance = useQuery(api.coreQueries.getMyGovernanceState, canUseConvex ? {} : "skip");
+  const tradeHistoryDeals = useQuery(api.coreQueries.getMyTradeHistoryDeals, canUseConvex ? {} : "skip");
+  const syncHistoryMutation = useMutation(api.mt5Bridge.syncReadOnlyTradeHistoryFromLocalService);
+
+  const [historyDays, setHistoryDays] = useState("30");
+  const [historySyncBusy, setHistorySyncBusy] = useState(false);
+  const [historySyncMessage, setHistorySyncMessage] = useState<string | null>(null);
+
+  async function pullTradeHistoryFromMt5() {
+    setHistorySyncMessage(null);
+    setHistorySyncBusy(true);
+    try {
+      const res = await fetch(
+        `/api/mt5-readonly/history-deals?days=${encodeURIComponent(historyDays)}`,
+        { cache: "no-store" },
+      );
+      const payload = (await res.json()) as Record<string, unknown>;
+      if (!res.ok || payload.connected === false) {
+        setHistorySyncMessage(
+          typeof payload.error === "string"
+            ? payload.error
+            : "فشل جلب السجل من الخدمة المحلية أو MT5 غير متصل.",
+        );
+        return;
+      }
+      await syncHistoryMutation({
+        payload: {
+          connected: Boolean(payload.connected),
+          read_only_mode:
+            typeof payload.read_only_mode === "boolean" ? payload.read_only_mode : true,
+          deals: Array.isArray(payload.deals) ? payload.deals : [],
+          from: typeof payload.from === "string" ? payload.from : undefined,
+          to: typeof payload.to === "string" ? payload.to : undefined,
+          error: typeof payload.error === "string" ? payload.error : undefined,
+        },
+      });
+      setHistorySyncMessage("تم تحديث سجل الصفقات من MT5 (قراءة فقط).");
+    } catch {
+      setHistorySyncMessage("فشل الاتصال بالخدمة المحلية.");
+    } finally {
+      setHistorySyncBusy(false);
+    }
+  }
 
   function convexEmptyOrLoading(rows: unknown[] | undefined | null, loadingLabel = true) {
     if (!canUseConvex && !isConvexAuthLoading) {
@@ -85,6 +134,80 @@ export default function ReportsPage() {
               </span>
             </>
           ) : null}
+        </CardContent>
+      </Card>
+
+      <Card className={institutionalCardClass("p-0")}>
+        <CardHeader className="space-y-2 border-b border-amber-500/10 px-4 py-4 md:px-6">
+          <CardTitle className="card-title-inst">سجل صفقات MT5 — قراءة فقط</CardTitle>
+          <p className="text-muted-foreground text-xs leading-relaxed">
+            هذا سجل قراءة فقط من MT5 ولا توجد أي أوامر تداول.
+          </p>
+          <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
+            <label className="text-muted-foreground flex items-center gap-2 text-sm">
+              <span>نطاق الأيام</span>
+              <select
+                className="rounded-md border border-amber-500/20 bg-background px-2 py-1.5 text-foreground text-sm"
+                value={historyDays}
+                onChange={(e) => setHistoryDays(e.target.value)}
+              >
+                <option value="7">7</option>
+                <option value="30">30</option>
+                <option value="90">90</option>
+              </select>
+            </label>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={!canUseConvex || historySyncBusy}
+              onClick={() => void pullTradeHistoryFromMt5()}
+            >
+              {historySyncBusy ? "جاري السحب…" : "سحب سجل الصفقات من MT5"}
+            </Button>
+            {historySyncMessage ? (
+              <span className="text-muted-foreground text-xs leading-snug">{historySyncMessage}</span>
+            ) : null}
+          </div>
+        </CardHeader>
+        <CardContent className="overflow-x-auto px-2 pb-4 md:px-4">
+          {convexEmptyOrLoading(tradeHistoryDeals) ??
+            (tradeHistoryDeals && (
+              <Table>
+                <TableHeader>
+                  <TableRow className="border-amber-500/10 hover:bg-transparent">
+                    <TableHead className="text-foreground">الوقت</TableHead>
+                    <TableHead className="text-foreground">الرمز</TableHead>
+                    <TableHead className="text-foreground">النوع</TableHead>
+                    <TableHead className="text-foreground">الحجم</TableHead>
+                    <TableHead className="text-foreground">السعر</TableHead>
+                    <TableHead className="text-foreground">الربح</TableHead>
+                    <TableHead className="text-foreground">العمولة</TableHead>
+                    <TableHead className="text-foreground">السواب</TableHead>
+                    <TableHead className="text-foreground">تعليق</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {tradeHistoryDeals.map((row) => (
+                    <TableRow key={row._id} className="border-border/60">
+                      <TableCell className="whitespace-nowrap text-muted-foreground text-xs tabular-nums">
+                        {fmtTs(row.time)}
+                      </TableCell>
+                      <TableCell className="font-medium text-amber-100/90 tabular-nums">{row.symbol}</TableCell>
+                      <TableCell className="text-muted-foreground text-sm">{row.type ?? "—"}</TableCell>
+                      <TableCell className="tabular-nums">{row.volume}</TableCell>
+                      <TableCell className="tabular-nums">{row.price}</TableCell>
+                      <TableCell className="tabular-nums">{fmtNum(row.profit)}</TableCell>
+                      <TableCell className="tabular-nums">{fmtNum(row.commission)}</TableCell>
+                      <TableCell className="tabular-nums">{fmtNum(row.swap)}</TableCell>
+                      <TableCell className="max-w-[200px] text-muted-foreground text-xs">
+                        {row.comment ?? "—"}
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            ))}
         </CardContent>
       </Card>
 

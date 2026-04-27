@@ -2,6 +2,7 @@ import { query } from "./_generated/server";
 import type { Doc } from "./_generated/dataModel";
 
 export const SOURCE_MT5_LOCAL = "mt5-local-readonly" as const;
+export const SOURCE_MT5_LOCAL_CATALOG = "mt5-local-catalog" as const;
 
 async function requireUserId(ctx: { auth: { getUserIdentity: () => Promise<unknown> } }) {
   const identity = await ctx.auth.getUserIdentity();
@@ -266,5 +267,74 @@ export const getMyAuditEvents = query({
       .withIndex("by_userId", (q) => q.eq("userId", userId))
       .collect();
     return rows.sort((a, b) => b.createdAt - a.createdAt).slice(0, 25);
+  },
+});
+
+/** كتالوج الأزواج المتزامن محلياً مع إعدادات العرض الحالية للمستخدم. */
+export const getMyMt5SymbolsWithSettings = query({
+  args: {},
+  handler: async (ctx) => {
+    const userId = await requireUserId(ctx);
+    if (!userId) return [];
+
+    const catalogRows = await ctx.db
+      .query("mt5Symbols")
+      .withIndex("by_source", (q) => q.eq("source", SOURCE_MT5_LOCAL_CATALOG))
+      .collect();
+
+    const latestByName = new Map<string, Doc<"mt5Symbols">>();
+    for (const row of catalogRows) {
+      const prev = latestByName.get(row.name);
+      if (!prev || row.capturedAt > prev.capturedAt) latestByName.set(row.name, row);
+    }
+
+    const settingsRows = await ctx.db
+      .query("userSymbolSettings")
+      .withIndex("by_userId", (q) => q.eq("userId", userId))
+      .collect();
+    const settingsBySymbol = new Map(settingsRows.map((s) => [s.symbol, s]));
+
+    const names = [...latestByName.keys()].sort((a, b) => a.localeCompare(b));
+
+    return names.map((name) => {
+      const catalog = latestByName.get(name)!;
+      const st = settingsBySymbol.get(name);
+      return {
+        ...catalog,
+        enabled: st?.enabled ?? false,
+        showInLab: st?.showInLab ?? false,
+      };
+    });
+  },
+});
+
+/** أزواج المختبر: مفعّلة + عرض في المختبر. */
+export const getMyEnabledLabSymbols = query({
+  args: {},
+  handler: async (ctx) => {
+    const userId = await requireUserId(ctx);
+    if (!userId) return [];
+    const rows = await ctx.db
+      .query("userSymbolSettings")
+      .withIndex("by_userId", (q) => q.eq("userId", userId))
+      .collect();
+    return rows
+      .filter((r) => r.enabled && r.showInLab)
+      .map((r) => r.symbol)
+      .sort((a, b) => a.localeCompare(b));
+  },
+});
+
+/** سجل صفقات MT5 (قراءة فقط) — آخر 100 حدثاً. */
+export const getMyTradeHistoryDeals = query({
+  args: {},
+  handler: async (ctx) => {
+    const userId = await requireUserId(ctx);
+    if (!userId) return [];
+    return await ctx.db
+      .query("mt5TradeHistoryDeals")
+      .withIndex("by_userId_time", (q) => q.eq("userId", userId))
+      .order("desc")
+      .take(100);
   },
 });

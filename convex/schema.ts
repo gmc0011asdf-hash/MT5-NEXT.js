@@ -161,4 +161,63 @@ export default defineSchema({
     .index("by_userId", ["userId"])
     .index("by_service", ["service"])
     .index("by_checkedAt", ["checkedAt"]),
+
+  mt5Symbols: defineTable({
+    name: v.string(),
+    path: v.optional(v.string()),
+    description: v.optional(v.string()),
+    currencyBase: v.optional(v.string()),
+    currencyProfit: v.optional(v.string()),
+    currencyMargin: v.optional(v.string()),
+    digits: v.optional(v.number()),
+    visible: v.optional(v.boolean()),
+    tradeMode: v.optional(v.number()),
+    point: v.optional(v.number()),
+    spread: v.optional(v.number()),
+    source: v.string(),
+    syncRunId: v.optional(v.string()),
+    capturedAt: v.number(),
+  })
+    .index("by_name", ["name"])
+    .index("by_capturedAt", ["capturedAt"])
+    .index("by_source", ["source"]),
+
+  userSymbolSettings: defineTable({
+    userId: v.string(),
+    symbol: v.string(),
+    enabled: v.boolean(),
+    showInLab: v.boolean(),
+    updatedAt: v.number(),
+  })
+    .index("by_userId", ["userId"])
+    .index("by_symbol", ["symbol"])
+    .index("by_userId_symbol", ["userId", "symbol"]),
+
+  mt5TradeHistoryDeals: defineTable({
+    userId: v.string(),
+    dealTicket: v.string(),
+    orderTicket: v.optional(v.string()),
+    positionId: v.optional(v.string()),
+    symbol: v.string(),
+    type: v.optional(v.string()),
+    entry: v.optional(v.string()),
+    volume: v.number(),
+    price: v.number(),
+    profit: v.number(),
+    commission: v.optional(v.number()),
+    swap: v.optional(v.number()),
+    fee: v.optional(v.number()),
+    time: v.number(),
+    comment: v.optional(v.string()),
+    magic: v.optional(v.number()),
+    source: v.string(),
+    syncRunId: v.optional(v.string()),
+    capturedAt: v.number(),
+  })
+    .index("by_userId", ["userId"])
+    .index("by_symbol", ["symbol"])
+    .index("by_time", ["time"])
+    .index("by_userId_time", ["userId", "time"])
+    .index("by_dealTicket", ["dealTicket"])
+    .index("by_userId_dealTicket", ["userId", "dealTicket"]),
 });

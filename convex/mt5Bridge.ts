@@ -21,6 +21,24 @@ import { mutation, query } from "./_generated/server";
 const AUTH_MSG = "يجب تسجيل الدخول لاستخدام هذه الوظائف";
 const SOURCE = "mt5-bridge-read-only-stub" as const;
 const SOURCE_LOCAL = "mt5-local-readonly" as const;
+const SOURCE_LOCAL_SYMBOL_CATALOG = "mt5-local-catalog" as const;
+const SOURCE_LOCAL_HISTORY = "mt5-local-trade-history" as const;
+
+const symbolsServicePayloadValidator = v.object({
+  connected: v.boolean(),
+  read_only_mode: v.optional(v.boolean()),
+  symbols: v.array(v.any()),
+  error: v.optional(v.string()),
+});
+
+const historyServicePayloadValidator = v.object({
+  connected: v.boolean(),
+  read_only_mode: v.optional(v.boolean()),
+  deals: v.array(v.any()),
+  from: v.optional(v.string()),
+  to: v.optional(v.string()),
+  error: v.optional(v.string()),
+});
 
 type SnapshotArg = {
   connected: boolean;
@@ -431,6 +449,286 @@ export const syncReadOnlySnapshotFromLocalService = mutation({
         monitoringStatus: 1,
       },
     };
+  },
+});
+
+function readOptionalStringField(
+  row: Record<string, unknown>,
+  snake: string,
+  camel: string,
+): string | undefined {
+  const s1 = row[snake];
+  const s2 = row[camel];
+  if (typeof s1 === "string" && s1.length > 0) return s1;
+  if (typeof s2 === "string" && s2.length > 0) return s2;
+  return undefined;
+}
+
+function readOptionalBool(row: Record<string, unknown>, key: string): boolean | undefined {
+  const v = row[key];
+  if (typeof v === "boolean") return v;
+  return undefined;
+}
+
+/**
+ * مزامنة أزواج MT5 (قراءة فقط) — لا order_send ولا أي أمر تداول.
+ */
+export const syncReadOnlySymbolsFromLocalService = mutation({
+  args: {
+    payload: symbolsServicePayloadValidator,
+  },
+  handler: async (ctx, args) => {
+    const identity = await ctx.auth.getUserIdentity();
+    const userId = requireIdentifiedUser(identity);
+    const now = Date.now();
+    const syncRunId = `mt5-cat-${now}`;
+    const p = args.payload;
+
+    if (!p.connected) {
+      await enforceGovernanceReadOnly(ctx, userId, now);
+      await ctx.db.insert("auditEvents", {
+        userId,
+        action: "mt5_local_readonly_symbols_disconnected",
+        entity: "mt5LocalService",
+        message: p.error ?? "خدمة MT5 المحلية غير متاحة أو MT5 غير متصل",
+        createdAt: now,
+        source: SOURCE_LOCAL_SYMBOL_CATALOG,
+        syncRunId,
+      });
+      return { ok: false as const, connected: false as const };
+    }
+
+    let symbolRows = 0;
+    for (const row of p.symbols) {
+      if (!row || typeof row !== "object") continue;
+      const rec = row as Record<string, unknown>;
+      const name = typeof rec.name === "string" ? rec.name.trim() : "";
+      if (!name) continue;
+
+      const digits = readNumeric(rec.digits);
+      const point = readNumeric(rec.point);
+      const spread = readNumeric(rec.spread);
+      const tradeMode = readNumeric(
+        rec.trade_mode !== undefined ? rec.trade_mode : rec.tradeMode,
+      );
+
+      await ctx.db.insert("mt5Symbols", {
+        name,
+        path: readOptionalStringField(rec, "path", "path"),
+        description: readOptionalStringField(rec, "description", "description"),
+        currencyBase: readOptionalStringField(rec, "currency_base", "currencyBase"),
+        currencyProfit: readOptionalStringField(rec, "currency_profit", "currencyProfit"),
+        currencyMargin: readOptionalStringField(rec, "currency_margin", "currencyMargin"),
+        digits: digits !== undefined ? Math.floor(digits) : undefined,
+        visible: readOptionalBool(rec, "visible"),
+        tradeMode: tradeMode !== undefined ? Math.floor(tradeMode) : undefined,
+        point,
+        spread: spread !== undefined ? Math.floor(spread) : undefined,
+        source: SOURCE_LOCAL_SYMBOL_CATALOG,
+        syncRunId,
+        capturedAt: now,
+      });
+      symbolRows += 1;
+
+      const existingSetting = await ctx.db
+        .query("userSymbolSettings")
+        .withIndex("by_userId_symbol", (q) => q.eq("userId", userId).eq("symbol", name))
+        .unique();
+      if (!existingSetting) {
+        await ctx.db.insert("userSymbolSettings", {
+          userId,
+          symbol: name,
+          enabled: false,
+          showInLab: false,
+          updatedAt: now,
+        });
+      }
+    }
+
+    await enforceGovernanceReadOnly(ctx, userId, now);
+    await ctx.db.insert("auditEvents", {
+      userId,
+      action: "mt5_local_readonly_symbols_sync",
+      entity: "mt5LocalService",
+      message: "تمت مزامنة كتالوج أزواج MT5 للقراءة فقط — إنشاء إعدادات جديدة معطّلة افتراضياً.",
+      createdAt: now,
+      source: SOURCE_LOCAL_SYMBOL_CATALOG,
+      syncRunId,
+    });
+
+    return { ok: true as const, connected: true as const, inserted: { symbolRows, syncRunId } };
+  },
+});
+
+/**
+ * مزامنة سجل الصفقات المغلقة (قراءة فقط) — لا order_send ولا أي أمر تداول.
+ */
+export const syncReadOnlyTradeHistoryFromLocalService = mutation({
+  args: {
+    payload: historyServicePayloadValidator,
+  },
+  handler: async (ctx, args) => {
+    const identity = await ctx.auth.getUserIdentity();
+    const userId = requireIdentifiedUser(identity);
+    const now = Date.now();
+    const syncRunId = `mt5-hist-${now}`;
+    const p = args.payload;
+
+    await ctx.db.insert("monitoringStatus", {
+      userId,
+      service: "mt5-local-history-readonly",
+      status: p.connected ? "history_sync_received" : "offline_or_inner_error",
+      message: p.error ?? (p.connected ? "سجل صفقات محلي للقراءة فقط" : "خدمة MT5 المحلية غير متاحة أو MT5 غير متصل"),
+      checkedAt: now,
+      syncRunId,
+    });
+
+    if (!p.connected) {
+      await enforceGovernanceReadOnly(ctx, userId, now);
+      await ctx.db.insert("auditEvents", {
+        userId,
+        action: "mt5_local_readonly_history_disconnected",
+        entity: "mt5LocalService",
+        message: p.error ?? "خدمة MT5 المحلية غير متاحة أو MT5 غير متصل",
+        createdAt: now,
+        source: SOURCE_LOCAL_HISTORY,
+        syncRunId,
+      });
+      return { ok: false as const, connected: false as const };
+    }
+
+    let inserted = 0;
+    let skippedDuplicates = 0;
+
+    for (const row of p.deals) {
+      if (!row || typeof row !== "object") continue;
+      const d = row as Record<string, unknown>;
+      const dealTicket =
+        d.ticket !== undefined && d.ticket !== null ? String(d.ticket).trim() : "";
+      if (!dealTicket) continue;
+
+      const existing = await ctx.db
+        .query("mt5TradeHistoryDeals")
+        .withIndex("by_userId_dealTicket", (q) =>
+          q.eq("userId", userId).eq("dealTicket", dealTicket),
+        )
+        .unique();
+      if (existing) {
+        skippedDuplicates += 1;
+        continue;
+      }
+
+      const sym = typeof d.symbol === "string" ? d.symbol : "";
+      if (!sym) continue;
+
+      const timeRaw = d.time;
+      const timeMs = readNumeric(timeRaw);
+      if (timeMs === undefined || !Number.isFinite(timeMs)) continue;
+
+      const volume = readNumeric(d.volume);
+      const price = readNumeric(d.price);
+      const profit = readNumeric(d.profit);
+      if (volume === undefined || price === undefined || profit === undefined) continue;
+
+      const orderVal = readNumeric(d.order);
+      const posVal = readNumeric(d.position_id !== undefined ? d.position_id : d.positionId);
+
+      const orderTicket =
+        orderVal !== undefined && orderVal !== 0 ? String(Math.floor(orderVal)) : undefined;
+      const positionId =
+        posVal !== undefined && posVal !== 0 ? String(Math.floor(posVal)) : undefined;
+
+      const commission = readNumeric(d.commission);
+      const swap = readNumeric(d.swap);
+      const fee = d.fee !== undefined && d.fee !== null ? readNumeric(d.fee) : undefined;
+      const magic = readNumeric(d.magic);
+
+      const typeStr =
+        d.type !== undefined && d.type !== null ? String(d.type) : undefined;
+      const entryStr =
+        d.entry !== undefined && d.entry !== null ? String(d.entry) : undefined;
+
+      await ctx.db.insert("mt5TradeHistoryDeals", {
+        userId,
+        dealTicket,
+        orderTicket,
+        positionId,
+        symbol: sym,
+        type: typeStr,
+        entry: entryStr,
+        volume,
+        price,
+        profit,
+        commission: commission !== undefined ? commission : undefined,
+        swap: swap !== undefined ? swap : undefined,
+        fee: fee !== undefined ? fee : undefined,
+        time: timeMs,
+        comment: typeof d.comment === "string" ? d.comment : undefined,
+        magic: magic !== undefined ? Math.floor(magic) : undefined,
+        source: SOURCE_LOCAL_HISTORY,
+        syncRunId,
+        capturedAt: now,
+      });
+      inserted += 1;
+    }
+
+    await enforceGovernanceReadOnly(ctx, userId, now);
+    await ctx.db.insert("auditEvents", {
+      userId,
+      action: "mt5_local_readonly_trade_history_sync",
+      entity: "mt5LocalService",
+      message: `تمت مزامنة سجل صفقات MT5 للقراءة فقط — صفوف جديدة: ${inserted}، مكرر متجاهل: ${skippedDuplicates}.`,
+      createdAt: now,
+      source: SOURCE_LOCAL_HISTORY,
+      syncRunId,
+    });
+
+    return {
+      ok: true as const,
+      connected: true as const,
+      inserted: { deals: inserted, skippedDuplicates, syncRunId },
+    };
+  },
+});
+
+/** إعداد عرض الأزواج للمستخدم — لا يستدعي MT5. */
+export const updateMySymbolSetting = mutation({
+  args: {
+    symbol: v.string(),
+    enabled: v.boolean(),
+    showInLab: v.boolean(),
+  },
+  handler: async (ctx, args) => {
+    const identity = await ctx.auth.getUserIdentity();
+    const userId = requireIdentifiedUser(identity);
+    const now = Date.now();
+    await enforceGovernanceReadOnly(ctx, userId, now);
+    const existing = await ctx.db
+      .query("userSymbolSettings")
+      .withIndex("by_userId_symbol", (q) => q.eq("userId", userId).eq("symbol", args.symbol))
+      .unique();
+    const payload = {
+      userId,
+      symbol: args.symbol,
+      enabled: args.enabled,
+      showInLab: args.showInLab,
+      updatedAt: now,
+    };
+    if (existing) {
+      await ctx.db.patch(existing._id, payload);
+    } else {
+      await ctx.db.insert("userSymbolSettings", payload);
+    }
+    await ctx.db.insert("auditEvents", {
+      userId,
+      action: "user_symbol_lab_setting_updated",
+      entity: "userSymbolSettings",
+      entityId: args.symbol,
+      message: `أزواج المختبر: ${args.symbol} — مفعّل: ${args.enabled}، عرض في المختبر: ${args.showInLab}. عرض فقط، بدون تنفيذ صفقات.`,
+      createdAt: now,
+      source: "user-symbol-settings",
+    });
+    return { ok: true as const };
   },
 });
 
