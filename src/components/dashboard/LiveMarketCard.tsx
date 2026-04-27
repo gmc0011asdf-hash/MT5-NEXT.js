@@ -70,7 +70,7 @@ export function LiveMarketCard({ tick }: LiveMarketCardProps) {
           {changePercent.toFixed(3)}٪)
         </span>
       </div>
-      <div className="mt-2 h-11 w-full opacity-90">
+      <div className="mt-2 h-11 min-h-11 w-full shrink-0 opacity-90">
         <MiniMarketSparkline data={history} direction={direction} height={44} />
       </div>
     </Card>

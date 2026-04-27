@@ -1,6 +1,18 @@
+import type { LucideIcon } from "lucide-react";
+import {
+  Activity,
+  Database,
+  FileText,
+  FlaskConical,
+  LayoutDashboard,
+  Play,
+  Settings,
+} from "lucide-react";
+
 export type NavItem = {
   label: string;
   href: string;
+  icon: LucideIcon;
 };
 
 export type NavSection = {
@@ -9,35 +21,36 @@ export type NavSection = {
 };
 
 export const NAV_ITEMS: NavItem[] = [
-  { label: "لوحة التحكم", href: "/dashboard" },
-  { label: "المختبر", href: "/lab" },
-  { label: "التقارير", href: "/reports" },
-  { label: "المراقبة", href: "/monitoring" },
-  { label: "Replay", href: "/replay" },
-  { label: "الإعدادات", href: "/settings" },
+  { label: "لوحة التحكم", href: "/dashboard", icon: LayoutDashboard },
+  { label: "المختبر", href: "/lab", icon: FlaskConical },
+  { label: "التقارير", href: "/reports", icon: FileText },
+  { label: "المراقبة", href: "/monitoring", icon: Activity },
+  { label: "Replay", href: "/replay", icon: Play },
+  { label: "الإعدادات", href: "/settings", icon: Settings },
 ];
 
 export const NAV_SECTIONS: NavSection[] = [
   {
     title: "النظام",
-    items: [{ label: "لوحة التحكم", href: "/dashboard" }],
+    items: [{ label: "لوحة التحكم", href: "/dashboard", icon: LayoutDashboard }],
   },
   {
     title: "التداول والتحليل",
-    items: [{ label: "المختبر", href: "/lab" }],
+    items: [{ label: "المختبر", href: "/lab", icon: FlaskConical }],
   },
   {
     title: "التقارير والاختبار",
     items: [
-      { label: "التقارير", href: "/reports" },
-      { label: "Replay", href: "/replay" },
+      { label: "التقارير", href: "/reports", icon: FileText },
+      { label: "Replay", href: "/replay", icon: Play },
+      { label: "اختبار Convex", href: "/convex-test", icon: Database },
     ],
   },
   {
     title: "الإدارة",
     items: [
-      { label: "المراقبة", href: "/monitoring" },
-      { label: "الإعدادات", href: "/settings" },
+      { label: "المراقبة", href: "/monitoring", icon: Activity },
+      { label: "الإعدادات", href: "/settings", icon: Settings },
     ],
   },
 ];

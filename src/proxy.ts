@@ -7,6 +7,7 @@ const isProtectedRoute = createRouteMatcher([
   "/monitoring(.*)",
   "/replay(.*)",
   "/settings(.*)",
+  "/convex-test(.*)",
 ]);
 
 export default clerkMiddleware(async (auth, req) => {

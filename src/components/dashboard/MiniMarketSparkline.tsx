@@ -56,10 +56,10 @@ export function MiniMarketSparkline({
 
   return (
     <div
-      className={cn("w-full min-w-[72px] min-h-0", className)}
+      className={cn("h-full w-full min-w-[72px] min-h-0", className)}
       style={{ height, minHeight: height }}
     >
-      <ResponsiveContainer width="100%" height="100%" minHeight={height}>
+      <ResponsiveContainer width="100%" height={height}>
         <AreaChart data={chartData} margin={{ top: 2, right: 0, left: 0, bottom: 0 }}>
           <YAxis domain={["dataMin", "dataMax"]} hide width={0} />
           <Area

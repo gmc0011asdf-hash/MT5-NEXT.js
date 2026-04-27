@@ -1,5 +1,7 @@
 "use client";
 
+import { useEffect, useState } from "react";
+
 import { Badge } from "@/components/ui/badge";
 import { StatusBadge } from "@/components/common/status-indicator";
 import { useReadOnlyMonitoringSnapshot } from "@/lib/hooks/use-read-only-monitoring-snapshot";
@@ -7,9 +9,21 @@ import { useMockMarketStream } from "@/hooks/use-mock-market-stream";
 
 const TITLE = "نظام الملك الهندسي للتداول العالمي";
 
+const TIME_PLACEHOLDER = "--:--:--";
+
 export function DashboardHeaderSummary() {
   const snap = useReadOnlyMonitoringSnapshot();
   const { lastTickAt } = useMockMarketStream();
+  const [mounted, setMounted] = useState(false);
+
+  useEffect(() => {
+    setMounted(true);
+  }, []);
+
+  const referenceTimeLabel =
+    mounted && lastTickAt
+      ? new Date(lastTickAt).toLocaleTimeString("ar-SA", { hour12: false })
+      : TIME_PLACEHOLDER;
 
   const mt5Ok = snap.phase === "live" && snap.live.mt5.status === "connected";
   const mt5Label =
@@ -22,9 +36,7 @@ export function DashboardHeaderSummary() {
           <h2 className="font-semibold text-2xl tracking-tight text-foreground md:text-3xl">{TITLE}</h2>
           <p className="text-muted-foreground text-xs sm:text-sm">
             آخر تحديث مرجعي للواجهة:{" "}
-            <span className="tabular-nums text-amber-100/90">
-              {lastTickAt ? new Date(lastTickAt).toLocaleTimeString("ar-SA", { hour12: false }) : "—"}
-            </span>
+            <span className="tabular-nums text-amber-100/90">{referenceTimeLabel}</span>
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
