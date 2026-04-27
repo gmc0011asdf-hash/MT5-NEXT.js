@@ -29,7 +29,7 @@ function partMap(parts: Intl.DateTimeFormatPart[]): Record<string, string> {
   return m;
 }
 
-/** Current clock parts in `timeZone` (no hardcoded offsets; DST via Intl). */
+/** Current clock parts in `timeZone` (24-hour; used for hands + session math). */
 export function getTimePartsForZone(timeZone: string, date: Date = new Date()): TimeParts {
   const m = partMap(dtfParts(timeZone, date));
   const wd = (m.weekday ?? "").toLowerCase().replace(/\.$/, "");
@@ -47,14 +47,59 @@ export function getMinutesFromTimeString(hhmm: string): number {
   return h * 60 + min;
 }
 
-function formatTimeInZone(timeZone: string, date: Date): string {
-  return new Intl.DateTimeFormat("ar-SA-u-nu-latn", {
-    timeZone,
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    hour12: false,
-  }).format(date);
+const pad2 = (n: number) => String(n).padStart(2, "0");
+
+/** 24-hour wall-clock string "HH:mm" from constants → "hh:mm ص|م" (display only). */
+export function formatTimeString12h(hhmm: string): string {
+  const [h24, min] = hhmm.split(":").map((x) => parseInt(x, 10));
+  if (Number.isNaN(h24) || Number.isNaN(min)) return hhmm;
+  let h12: number;
+  let period: "ص" | "م";
+  if (h24 === 0) {
+    h12 = 12;
+    period = "ص";
+  } else if (h24 < 12) {
+    h12 = h24;
+    period = "ص";
+  } else if (h24 === 12) {
+    h12 = 12;
+    period = "م";
+  } else {
+    h12 = h24 - 12;
+    period = "م";
+  }
+  return `${pad2(h12)}:${pad2(min)} ${period}`;
+}
+
+/** 24-hour numeric parts → "hh:mm:ss ص|م" (Latin digits). */
+export function formatTime12hFromParts(parts: TimeParts, includeSeconds = true): string {
+  const h24 = parts.hour;
+  const m = parts.minute;
+  const s = parts.second;
+  let h12: number;
+  let period: "ص" | "م";
+  if (h24 === 0) {
+    h12 = 12;
+    period = "ص";
+  } else if (h24 < 12) {
+    h12 = h24;
+    period = "ص";
+  } else if (h24 === 12) {
+    h12 = 12;
+    period = "م";
+  } else {
+    h12 = h24 - 12;
+    period = "م";
+  }
+  if (includeSeconds) {
+    return `${pad2(h12)}:${pad2(m)}:${pad2(s)} ${period}`;
+  }
+  return `${pad2(h12)}:${pad2(m)} ${period}`;
+}
+
+/** Live clock label in zone (12-hour Arabic ص/م). */
+export function formatZoneTimeLabel12h(timeZone: string, date: Date): string {
+  return formatTime12hFromParts(getTimePartsForZone(timeZone, date), true);
 }
 
 function formatDateInZone(timeZone: string, date: Date): string {
@@ -73,7 +118,7 @@ function isWeekendInZone(timeZone: string, date: Date): boolean {
 }
 
 export function getSessionStatus(session: MarketSession, date: Date = new Date()): MarketSessionStatus {
-  const localTimeLabel = formatTimeInZone(session.timezone, date);
+  const localTimeLabel = formatZoneTimeLabel12h(session.timezone, date);
   const localDateLabel = formatDateInZone(session.timezone, date);
 
   if (session.type === "reference") {

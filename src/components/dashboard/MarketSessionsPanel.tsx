@@ -6,7 +6,7 @@ import { ActivityMicroBar, PulseDot, StatusBadge, type StatusBadgeVariant } from
 import { AnalogMarketClock } from "@/components/dashboard/AnalogMarketClock";
 import { Card } from "@/components/ui/card";
 import { MARKET_SESSIONS, type MarketSession } from "@/lib/constants/market-sessions";
-import { getSessionStatus } from "@/lib/market-session-time";
+import { formatTimeString12h, getSessionStatus } from "@/lib/market-session-time";
 import { institutionalCardClass } from "@/lib/ui-institutional";
 
 function toneToBadge(tone: "ok" | "warning" | "danger" | "neutral"): StatusBadgeVariant {
@@ -35,7 +35,7 @@ function SessionCard({ session, at }: { session: MarketSession; at: Date }) {
   const tzShort = shortTz(session, at);
   const hoursLine =
     session.type === "market" && session.openTime && session.closeTime
-      ? `${session.openTime} – ${session.closeTime} (محلي)`
+      ? `${formatTimeString12h(session.openTime)} – ${formatTimeString12h(session.closeTime)} (محلي)`
       : null;
 
   const eta =
