@@ -8,6 +8,8 @@
  * @module
  */
 
+import type * as coreQueries from "../coreQueries.js";
+import type * as coreSeed from "../coreSeed.js";
 import type * as health from "../health.js";
 import type * as testEvents from "../testEvents.js";
 
@@ -18,6 +20,8 @@ import type {
 } from "convex/server";
 
 declare const fullApi: ApiFromModules<{
+  coreQueries: typeof coreQueries;
+  coreSeed: typeof coreSeed;
   health: typeof health;
   testEvents: typeof testEvents;
 }>;

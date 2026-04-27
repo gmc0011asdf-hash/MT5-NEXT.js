@@ -6,6 +6,7 @@ import {
   FlaskConical,
   LayoutDashboard,
   Play,
+  Server,
   Settings,
 } from "lucide-react";
 
@@ -44,6 +45,7 @@ export const NAV_SECTIONS: NavSection[] = [
       { label: "التقارير", href: "/reports", icon: FileText },
       { label: "Replay", href: "/replay", icon: Play },
       { label: "اختبار Convex", href: "/convex-test", icon: Database },
+      { label: "قاعدة Convex", href: "/convex-core", icon: Server },
     ],
   },
   {
