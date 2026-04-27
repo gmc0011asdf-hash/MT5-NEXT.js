@@ -48,6 +48,19 @@ export const getMyLatestSignals = query({
   },
 });
 
+export const getMySignalReportSnapshots = query({
+  args: {},
+  handler: async (ctx) => {
+    const userId = await requireUserId(ctx);
+    if (!userId) return [];
+    return await ctx.db
+      .query("labSignalSnapshots")
+      .withIndex("by_userId_createdAt", (q) => q.eq("userId", userId))
+      .order("desc")
+      .take(50);
+  },
+});
+
 export const getMyOpenPositions = query({
   args: {},
   handler: async (ctx) => {
