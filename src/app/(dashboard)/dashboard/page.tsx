@@ -4,6 +4,7 @@ import { DashboardActivitySection } from "@/components/dashboard/DashboardActivi
 import { DashboardHeaderSummary } from "@/components/dashboard/DashboardHeaderSummary";
 import { DashboardSystemCards } from "@/components/dashboard/DashboardSystemCards";
 import { LiveMarketTicker } from "@/components/dashboard/LiveMarketTicker";
+import { MarketSessionsPanel } from "@/components/dashboard/MarketSessionsPanel";
 import { mockSignals } from "@/lib/constants/mock-data";
 import { institutionalCardClass } from "@/lib/ui-institutional";
 
@@ -18,6 +19,8 @@ export default function DashboardPage() {
       </section>
 
       <LiveMarketTicker />
+
+      <MarketSessionsPanel />
 
       <section className="space-y-3">
         <h3 className="card-title-inst text-foreground">حالة الأنظمة</h3>
