@@ -31,9 +31,13 @@ export default function ConvexCorePage() {
   const demoSyncReadOnlySnapshotsFromMt5Stub = useMutation(
     api.mt5Bridge.demoSyncReadOnlySnapshotsFromMt5Stub,
   );
+  const syncReadOnlySnapshotFromLocalService = useMutation(
+    api.mt5Bridge.syncReadOnlySnapshotFromLocalService,
+  );
   const [message, setMessage] = useState<string | null>(null);
   const [bridgeMessage, setBridgeMessage] = useState<string | null>(null);
-  const [pending, setPending] = useState<"none" | "seed" | "bridge">("none");
+  const [localMessage, setLocalMessage] = useState<string | null>(null);
+  const [pending, setPending] = useState<"none" | "seed" | "bridge" | "local">("none");
 
   const buttonDisabled = isConvexAuthLoading || !isAuthenticated || pending !== "none";
 
@@ -70,6 +74,35 @@ export default function ConvexCorePage() {
       setBridgeMessage(
         e instanceof Error ? e.message : "تعذر المزامنة. حاول مرة أخرى.",
       );
+    } finally {
+      setPending("none");
+    }
+  }
+
+  async function handleLocalMt5Sync() {
+    if (isConvexAuthLoading || !isAuthenticated) {
+      setLocalMessage("يجب تسجيل الدخول أولًا.");
+      return;
+    }
+    setLocalMessage(null);
+    setPending("local");
+    try {
+      const res = await fetch("/api/mt5-readonly/snapshot", { cache: "no-store" });
+      const data = (await res.json()) as { ok?: boolean; snapshot?: unknown; error?: string };
+      if (!res.ok || !data.ok || data.snapshot === undefined) {
+        setLocalMessage("خدمة MT5 المحلية غير متاحة أو MT5 غير متصل");
+        return;
+      }
+      const result = await syncReadOnlySnapshotFromLocalService({
+        snapshot: data.snapshot as never,
+      });
+      if (result && typeof result === "object" && "ok" in result && result.ok === false) {
+        setLocalMessage("خدمة MT5 المحلية غير متاحة أو MT5 غير متصل");
+        return;
+      }
+      setLocalMessage("تمت مزامنة لقطة MT5 المحلية للقراءة فقط");
+    } catch {
+      setLocalMessage("خدمة MT5 المحلية غير متاحة أو MT5 غير متصل");
     } finally {
       setPending("none");
     }
@@ -126,6 +159,27 @@ export default function ConvexCorePage() {
             }
           >
             {bridgeMessage}
+          </p>
+        )}
+      </div>
+
+      <div className={institutionalCardClass("flex flex-col gap-3 p-4")}>
+        <h2 className="font-medium text-amber-100/90">مزامنة محلية MT5</h2>
+        <p className="text-muted-foreground text-xs leading-relaxed">
+          هذه المزامنة قراءة فقط ولا تنفذ أي صفقة حتى لو كان حساب MT5 يسمح بالتداول.
+        </p>
+        <Button type="button" disabled={buttonDisabled} onClick={() => void handleLocalMt5Sync()}>
+          مزامنة MT5 المحلي للقراءة فقط
+        </Button>
+        {localMessage && (
+          <p
+            className={
+              localMessage.startsWith("تمت")
+                ? "text-emerald-300/95 text-sm"
+                : "text-rose-300/95 text-sm"
+            }
+          >
+            {localMessage}
           </p>
         )}
       </div>

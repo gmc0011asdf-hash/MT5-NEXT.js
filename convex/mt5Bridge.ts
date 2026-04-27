@@ -12,13 +12,26 @@
  * - Write snapshot rows to Convex (mt5* tables) that represent *read* data only
  * - Log audit / monitoring lines for bridge health
  *
- * There is no MetaTrader network I/O in this build; data is demo-shaped only.
+ * Convex never opens outbound connections to MT5 — snapshots arrive only from Next.js API routes.
  */
-import { ConvexError } from "convex/values";
+import { ConvexError, v } from "convex/values";
+import type { MutationCtx } from "./_generated/server";
 import { mutation, query } from "./_generated/server";
 
 const AUTH_MSG = "يجب تسجيل الدخول لاستخدام هذه الوظائف";
 const SOURCE = "mt5-bridge-read-only-stub" as const;
+const SOURCE_LOCAL = "mt5-local-readonly" as const;
+
+type SnapshotArg = {
+  connected: boolean;
+  read_only_mode: boolean;
+  account?: unknown;
+  ticks: unknown[];
+  positions: unknown[];
+  count?: number;
+  symbols_configured?: string[];
+  error?: string;
+};
 
 function requireIdentifiedUser(identity: { subject: string } | null): string {
   if (!identity) {
@@ -197,5 +210,219 @@ export const demoSyncReadOnlySnapshotsFromMt5Stub = mutation({
     });
 
     return { ok: true as const, syncedAt: now, source: SOURCE };
+  },
+});
+
+const localSnapshotValidator = v.object({
+  connected: v.boolean(),
+  read_only_mode: v.boolean(),
+  account: v.optional(v.any()),
+  ticks: v.array(v.any()),
+  positions: v.array(v.any()),
+  count: v.optional(v.number()),
+  symbols_configured: v.optional(v.array(v.string())),
+  error: v.optional(v.string()),
+});
+
+async function enforceGovernanceReadOnly(
+  ctx: MutationCtx,
+  userId: string,
+  now: number,
+): Promise<void> {
+  const existingGov = await ctx.db
+    .query("governanceState")
+    .withIndex("by_userId", (q) => q.eq("userId", userId))
+    .unique();
+
+  const govPayload = {
+    userId,
+    mode: "read-only-mt5-local-sync",
+    tradingEnabled: false,
+    readOnly: true,
+    maxDailyTrades: 0,
+    maxRiskUsd: 0,
+    updatedAt: now,
+  };
+
+  if (existingGov) {
+    await ctx.db.patch(existingGov._id, govPayload);
+  } else {
+    await ctx.db.insert("governanceState", govPayload);
+  }
+}
+
+function parseTickCapturedAtMs(raw: unknown): number {
+  const now = Date.now();
+  if (typeof raw !== "string") return now;
+  const ms = Date.parse(raw);
+  return Number.isFinite(ms) ? ms : now;
+}
+
+function readNumeric(field: unknown): number | undefined {
+  if (typeof field === "number" && Number.isFinite(field)) return field;
+  if (typeof field === "string") {
+    const n = Number(field);
+    return Number.isFinite(n) ? n : undefined;
+  }
+  return undefined;
+}
+
+/**
+ * Stores a snapshot fetched by Next.js from the local read-only MT5 service.
+ * Never inspects account.trade_allowed for enabling trades — governance stays locked read-only.
+ */
+export const syncReadOnlySnapshotFromLocalService = mutation({
+  args: {
+    snapshot: localSnapshotValidator,
+  },
+  handler: async (ctx, args) => {
+    const identity = await ctx.auth.getUserIdentity();
+    const userId = requireIdentifiedUser(identity);
+    const now = Date.now();
+    const snapshot = args.snapshot as SnapshotArg;
+
+    await ctx.db.insert("monitoringStatus", {
+      userId,
+      service: "mt5-local-readonly",
+      status: snapshot.connected ? "snapshot_received" : "offline_or_inner_error",
+      message:
+        snapshot.error ??
+        (snapshot.connected ? "لقطة محلية للقراءة فقط" : "خدمة MT5 المحلية غير متاحة أو MT5 غير متصل"),
+      checkedAt: now,
+    });
+
+    if (!snapshot.connected) {
+      await enforceGovernanceReadOnly(ctx, userId, now);
+      await ctx.db.insert("auditEvents", {
+        userId,
+        action: "mt5_local_readonly_sync_disconnected",
+        entity: "mt5LocalService",
+        entityId: undefined,
+        message: "خدمة MT5 المحلية غير متاحة أو MT5 غير متصل",
+        createdAt: now,
+        source: SOURCE_LOCAL,
+      });
+      return { ok: false as const, connected: false as const };
+    }
+
+    let accountInserted = 0;
+    let ticksInserted = 0;
+    let positionsInserted = 0;
+
+    const acct = snapshot.account;
+    if (acct !== undefined && acct !== null && typeof acct === "object") {
+      const a = acct as Record<string, unknown>;
+      const currency = typeof a.currency === "string" ? a.currency : "USD";
+      const balance = readNumeric(a.balance);
+      const equity = readNumeric(a.equity);
+      const margin = readNumeric(a.margin);
+      const freeMargin = readNumeric(a.freeMargin);
+      if (
+        balance !== undefined &&
+        equity !== undefined &&
+        margin !== undefined &&
+        freeMargin !== undefined
+      ) {
+        let marginLevel: number | undefined;
+        if (margin > 0 && equity !== undefined) {
+          marginLevel = (equity / margin) * 100;
+        }
+        await ctx.db.insert("mt5AccountSnapshots", {
+          userId,
+          accountLogin:
+            a.login !== undefined && a.login !== null ? String(a.login) : undefined,
+          broker:
+            typeof a.company === "string"
+              ? a.company
+              : typeof (a as { broker?: unknown }).broker === "string"
+                ? String((a as { broker: string }).broker)
+                : undefined,
+          server: typeof a.server === "string" ? a.server : undefined,
+          currency,
+          balance,
+          equity,
+          margin,
+          freeMargin,
+          marginLevel,
+          capturedAt: now,
+          source: SOURCE_LOCAL,
+        });
+        accountInserted = 1;
+      }
+    }
+
+    for (const row of snapshot.ticks) {
+      if (!row || typeof row !== "object") continue;
+      const t = row as Record<string, unknown>;
+      if ("error" in t && t.error) continue;
+      const symbol = typeof t.symbol === "string" ? t.symbol : "";
+      const bid = readNumeric(t.bid);
+      const ask = readNumeric(t.ask);
+      const spread = readNumeric(t.spread);
+      if (!symbol || bid === undefined || ask === undefined) continue;
+      await ctx.db.insert("mt5MarketTicks", {
+        symbol,
+        bid,
+        ask,
+        spread: spread ?? Math.abs(ask - bid),
+        capturedAt: parseTickCapturedAtMs(t.time),
+        source: SOURCE_LOCAL,
+      });
+      ticksInserted += 1;
+    }
+
+    for (const row of snapshot.positions) {
+      if (!row || typeof row !== "object") continue;
+      const p = row as Record<string, unknown>;
+      const symbol = typeof p.symbol === "string" ? p.symbol : "";
+      const volume = readNumeric(p.volume);
+      const openPrice = readNumeric(p.price_open);
+      const currentPrice = readNumeric(p.price_current);
+      const profit = readNumeric(p.profit);
+      if (!symbol || volume === undefined || openPrice === undefined || currentPrice === undefined || profit === undefined)
+        continue;
+      const slRaw = readNumeric(p.sl);
+      const tpRaw = readNumeric(p.tp);
+      await ctx.db.insert("mt5OpenPositions", {
+        userId,
+        ticket: p.ticket !== undefined && p.ticket !== null ? String(p.ticket) : undefined,
+        symbol,
+        type: String(p.type ?? ""),
+        volume,
+        openPrice,
+        currentPrice,
+        stopLoss: slRaw !== undefined && slRaw !== 0 ? slRaw : undefined,
+        takeProfit: tpRaw !== undefined && tpRaw !== 0 ? tpRaw : undefined,
+        profit,
+        openedAt: undefined,
+        capturedAt: now,
+        source: SOURCE_LOCAL,
+      });
+      positionsInserted += 1;
+    }
+
+    await enforceGovernanceReadOnly(ctx, userId, now);
+
+    await ctx.db.insert("auditEvents", {
+      userId,
+      action: "mt5_local_readonly_snapshot_sync",
+      entity: "mt5LocalService",
+      entityId: undefined,
+      message: "تمت مزامنة لقطة MT5 للقراءة فقط",
+      createdAt: now,
+      source: SOURCE_LOCAL,
+    });
+
+    return {
+      ok: true as const,
+      connected: true as const,
+      inserted: {
+        accountSnapshots: accountInserted,
+        ticks: ticksInserted,
+        positions: positionsInserted,
+        auditEvents: 1,
+        monitoringStatus: 1,
+      },
+    };
   },
 });
