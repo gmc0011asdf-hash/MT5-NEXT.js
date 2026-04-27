@@ -1,13 +1,17 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useConvexAuth, useMutation, useQuery } from "convex/react";
 
 import { Button } from "@/components/ui/button";
 import { api } from "../../../../convex/_generated/api";
+import { assertMt5BridgeReadOnlyMode } from "@/lib/mt5-bridge";
 import { institutionalCardClass } from "@/lib/ui-institutional";
 
 export default function ConvexCorePage() {
+  useEffect(() => {
+    assertMt5BridgeReadOnlyMode();
+  }, []);
   const { isLoading: isConvexAuthLoading, isAuthenticated } = useConvexAuth();
   const canUseConvex = !isConvexAuthLoading && isAuthenticated;
 
@@ -24,10 +28,14 @@ export default function ConvexCorePage() {
   const audit = useQuery(api.coreQueries.getMyAuditEvents, canUseConvex ? {} : "skip");
 
   const seedCoreDemoData = useMutation(api.coreSeed.seedCoreDemoData);
+  const demoSyncReadOnlySnapshotsFromMt5Stub = useMutation(
+    api.mt5Bridge.demoSyncReadOnlySnapshotsFromMt5Stub,
+  );
   const [message, setMessage] = useState<string | null>(null);
-  const [pending, setPending] = useState(false);
+  const [bridgeMessage, setBridgeMessage] = useState<string | null>(null);
+  const [pending, setPending] = useState<"none" | "seed" | "bridge">("none");
 
-  const buttonDisabled = isConvexAuthLoading || !isAuthenticated || pending;
+  const buttonDisabled = isConvexAuthLoading || !isAuthenticated || pending !== "none";
 
   async function handleSeed() {
     if (isConvexAuthLoading || !isAuthenticated) {
@@ -35,7 +43,7 @@ export default function ConvexCorePage() {
       return;
     }
     setMessage(null);
-    setPending(true);
+    setPending("seed");
     try {
       await seedCoreDemoData({});
       setMessage("تم إنشاء البيانات التجريبية بنجاح.");
@@ -44,7 +52,26 @@ export default function ConvexCorePage() {
         e instanceof Error ? e.message : "تعذر إنشاء البيانات التجريبية. حاول مرة أخرى.",
       );
     } finally {
-      setPending(false);
+      setPending("none");
+    }
+  }
+
+  async function handleBridgeStubSync() {
+    if (isConvexAuthLoading || !isAuthenticated) {
+      setBridgeMessage("يجب تسجيل الدخول أولًا.");
+      return;
+    }
+    setBridgeMessage(null);
+    setPending("bridge");
+    try {
+      await demoSyncReadOnlySnapshotsFromMt5Stub({});
+      setBridgeMessage("تمت مزامنة لقطات تجريبية من جسر MT5 (قراءة فقط).");
+    } catch (e) {
+      setBridgeMessage(
+        e instanceof Error ? e.message : "تعذر المزامنة. حاول مرة أخرى.",
+      );
+    } finally {
+      setPending("none");
     }
   }
 
@@ -78,6 +105,27 @@ export default function ConvexCorePage() {
             }
           >
             {message}
+          </p>
+        )}
+      </div>
+
+      <div className={institutionalCardClass("flex flex-col gap-3 p-4")}>
+        <h2 className="font-medium text-amber-100/90">جسر MT5 — قراءة فقط</h2>
+        <p className="text-muted-foreground text-xs leading-relaxed">
+          قراءة فقط — لا يوجد تنفيذ صفقات
+        </p>
+        <Button type="button" disabled={buttonDisabled} onClick={() => void handleBridgeStubSync()}>
+          مزامنة قراءة تجريبية من MT5
+        </Button>
+        {bridgeMessage && (
+          <p
+            className={
+              bridgeMessage.startsWith("تمت")
+                ? "text-emerald-300/95 text-sm"
+                : "text-rose-300/95 text-sm"
+            }
+          >
+            {bridgeMessage}
           </p>
         )}
       </div>

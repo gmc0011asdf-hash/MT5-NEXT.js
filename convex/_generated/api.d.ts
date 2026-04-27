@@ -11,6 +11,7 @@
 import type * as coreQueries from "../coreQueries.js";
 import type * as coreSeed from "../coreSeed.js";
 import type * as health from "../health.js";
+import type * as mt5Bridge from "../mt5Bridge.js";
 import type * as testEvents from "../testEvents.js";
 
 import type {
@@ -23,6 +24,7 @@ declare const fullApi: ApiFromModules<{
   coreQueries: typeof coreQueries;
   coreSeed: typeof coreSeed;
   health: typeof health;
+  mt5Bridge: typeof mt5Bridge;
   testEvents: typeof testEvents;
 }>;
 
