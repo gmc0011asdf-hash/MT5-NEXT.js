@@ -26,6 +26,7 @@ export default function ConvexCorePage() {
   const governance = useQuery(api.coreQueries.getMyGovernanceState, canUseConvex ? {} : "skip");
   const monitoring = useQuery(api.coreQueries.getMyMonitoringStatus, canUseConvex ? {} : "skip");
   const audit = useQuery(api.coreQueries.getMyAuditEvents, canUseConvex ? {} : "skip");
+  const mt5Summary = useQuery(api.coreQueries.getMyMt5ReadOnlySummary, canUseConvex ? {} : "skip");
 
   const seedCoreDemoData = useMutation(api.coreSeed.seedCoreDemoData);
   const demoSyncReadOnlySnapshotsFromMt5Stub = useMutation(
@@ -120,9 +121,34 @@ export default function ConvexCorePage() {
           )}
         </p>
         <p className="mt-2 text-amber-200/85 text-sm leading-relaxed">
-          هذه بيانات تجريبية فقط ولا يوجد ربط MT5 أو تنفيذ صفقات.
+          تُفضَّل لقطات المصدر المحلي mt5-local-readonly عند توفرها؛ البيانات التجريبية أدناه للاختبار فقط.
         </p>
       </div>
+
+      {canUseConvex && mt5Summary?.hasRealMt5LocalData && (
+        <div className={institutionalCardClass("space-y-2 p-4")}>
+          <h2 className="font-medium text-amber-100/90">بيانات MT5 المحلية الحقيقية</h2>
+          <p className="text-muted-foreground text-xs">مصدر البيانات الحالي: MT5 المحلي للقراءة فقط</p>
+          {mt5Summary.lastSyncAt != null && (
+            <p className="text-foreground text-sm">
+              آخر مزامنة:{" "}
+              <span className="tabular-nums text-amber-100/90">
+                {new Date(mt5Summary.lastSyncAt).toLocaleString("ar-SA", { hour12: false })}
+              </span>
+            </p>
+          )}
+          <p className="text-foreground text-sm">
+            عدد المراكز (العرض):{" "}
+            <span className="tabular-nums text-amber-100/90">{mt5Summary.openPositionsCount}</span>
+            {" · "}
+            مجموع الربح العائم:{" "}
+            <span className="tabular-nums text-amber-100/90">{mt5Summary.totalFloatingProfit.toFixed(2)}</span>
+          </p>
+          <p className="text-amber-200/90 text-xs leading-relaxed">
+            قراءة فقط — لا يوجد تنفيذ صفقات
+          </p>
+        </div>
+      )}
 
       <div className={institutionalCardClass("flex flex-col gap-3 p-4")}>
         <h2 className="font-medium text-amber-100/90">بيانات تجريبية</h2>
@@ -213,7 +239,8 @@ export default function ConvexCorePage() {
               <ul className="space-y-1 text-xs sm:text-sm">
                 {ticks.map((t) => (
                   <li key={t._id} className="text-foreground">
-                    {t.symbol} — bid {t.bid} / ask {t.ask} ({t.source})
+                    {t.symbol} — bid {t.bid} / ask {t.ask}
+                    <span className="text-muted-foreground text-[11px]"> · {t.source}</span>
                   </li>
                 ))}
               </ul>
@@ -238,7 +265,7 @@ export default function ConvexCorePage() {
           </div>
 
           <div className={institutionalCardClass("space-y-2 p-4")}>
-            <h3 className="font-medium text-amber-100/90">مراكز مفتوحة (تجريبي)</h3>
+            <h3 className="font-medium text-amber-100/90">مراكز مفتوحة — تشغيل محلي عند توفره</h3>
             {positions === undefined ? (
               <p className="text-muted-foreground text-sm">جاري التحميل...</p>
             ) : positions.length === 0 ? (

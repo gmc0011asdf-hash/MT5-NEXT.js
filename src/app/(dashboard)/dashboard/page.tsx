@@ -28,6 +28,7 @@ export default function DashboardPage() {
   const governance = useQuery(api.coreQueries.getMyGovernanceState, canUseConvex ? {} : "skip");
   const monitoring = useQuery(api.coreQueries.getMyMonitoringStatus, canUseConvex ? {} : "skip");
   const protection = useQuery(api.coreQueries.getMyProtectionEvents, canUseConvex ? {} : "skip");
+  const mt5Summary = useQuery(api.coreQueries.getMyMt5ReadOnlySummary, canUseConvex ? {} : "skip");
 
   function convexFallbackLine() {
     return <p className="text-muted-foreground text-sm">{NO_CONVEX_DATA_AR}</p>;
@@ -46,6 +47,11 @@ export default function DashboardPage() {
         <p className="label-secondary">ملخص مؤسسي — بيانات السوق أدناه وهمية للواجهة فقط.</p>
         {isConvexAuthLoading ? (
           <p className="text-muted-foreground text-xs">جاري التحقق من ربط Convex...</p>
+        ) : null}
+        {canUseConvex && mt5Summary?.hasRealMt5LocalData ? (
+          <p className="text-muted-foreground text-xs">
+            مصدر البيانات الحالي: MT5 المحلي للقراءة فقط — تُستبعد لقطات الوهم التجريبية من العرض الرئيسي عند توفر بيانات محلية.
+          </p>
         ) : null}
       </section>
 
@@ -90,6 +96,28 @@ export default function DashboardPage() {
                   <span className="tabular-nums text-amber-100/90">{account.freeMargin}</span>
                 </li>
                 <li className="text-muted-foreground text-xs">المصدر: {account.source}</li>
+                {mt5Summary?.hasRealMt5LocalData ? (
+                  <>
+                    <li className="border-t border-amber-500/10 pt-2 text-xs">
+                      مراكز مفتوحة (عرض محلي):{" "}
+                      <span className="tabular-nums text-amber-100/90">{mt5Summary.openPositionsCount}</span>
+                    </li>
+                    <li className="text-xs">
+                      مجموع الربح العائم:{" "}
+                      <span className="tabular-nums text-amber-100/90">
+                        {mt5Summary.totalFloatingProfit.toFixed(2)}
+                      </span>
+                    </li>
+                    {mt5Summary.lastSyncAt != null ? (
+                      <li className="text-muted-foreground text-[11px]">
+                        آخر مزامنة:{" "}
+                        {new Date(mt5Summary.lastSyncAt).toLocaleString("ar-SA", {
+                          hour12: false,
+                        })}
+                      </li>
+                    ) : null}
+                  </>
+                ) : null}
               </ul>
             )}
           </CardContent>

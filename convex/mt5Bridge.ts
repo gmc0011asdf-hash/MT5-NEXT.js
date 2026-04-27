@@ -280,6 +280,7 @@ export const syncReadOnlySnapshotFromLocalService = mutation({
     const userId = requireIdentifiedUser(identity);
     const now = Date.now();
     const snapshot = args.snapshot as SnapshotArg;
+    const syncRunId = `mt5-local-${now}`;
 
     await ctx.db.insert("monitoringStatus", {
       userId,
@@ -289,6 +290,7 @@ export const syncReadOnlySnapshotFromLocalService = mutation({
         snapshot.error ??
         (snapshot.connected ? "لقطة محلية للقراءة فقط" : "خدمة MT5 المحلية غير متاحة أو MT5 غير متصل"),
       checkedAt: now,
+      syncRunId,
     });
 
     if (!snapshot.connected) {
@@ -301,6 +303,7 @@ export const syncReadOnlySnapshotFromLocalService = mutation({
         message: "خدمة MT5 المحلية غير متاحة أو MT5 غير متصل",
         createdAt: now,
         source: SOURCE_LOCAL,
+        syncRunId,
       });
       return { ok: false as const, connected: false as const };
     }
@@ -346,6 +349,7 @@ export const syncReadOnlySnapshotFromLocalService = mutation({
           marginLevel,
           capturedAt: now,
           source: SOURCE_LOCAL,
+          syncRunId,
         });
         accountInserted = 1;
       }
@@ -367,6 +371,7 @@ export const syncReadOnlySnapshotFromLocalService = mutation({
         spread: spread ?? Math.abs(ask - bid),
         capturedAt: parseTickCapturedAtMs(t.time),
         source: SOURCE_LOCAL,
+        syncRunId,
       });
       ticksInserted += 1;
     }
@@ -397,6 +402,7 @@ export const syncReadOnlySnapshotFromLocalService = mutation({
         openedAt: undefined,
         capturedAt: now,
         source: SOURCE_LOCAL,
+        syncRunId,
       });
       positionsInserted += 1;
     }
@@ -411,6 +417,7 @@ export const syncReadOnlySnapshotFromLocalService = mutation({
       message: "تمت مزامنة لقطة MT5 للقراءة فقط",
       createdAt: now,
       source: SOURCE_LOCAL,
+      syncRunId,
     });
 
     return {
@@ -424,5 +431,45 @@ export const syncReadOnlySnapshotFromLocalService = mutation({
         monitoringStatus: 1,
       },
     };
+  },
+});
+
+/** Dev-only: strips seeded stub/demo rows — requires Convex env ALLOW_DEV_CLEANUP === "true". Never deletes mt5-local-readonly. */
+const DEMO_SOURCES_FOR_PURGE = new Set(["core-demo-seed", "mt5-bridge-read-only-stub"]);
+
+export const clearDemoMt5ReadOnlyData = mutation({
+  args: {},
+  handler: async (ctx) => {
+    if (process.env.ALLOW_DEV_CLEANUP !== "true") {
+      throw new ConvexError(
+        "مسح تجريبي معطّل — عيّن ALLOW_DEV_CLEANUP=true في بيئة Convex للتطوير فقط.",
+      );
+    }
+    const identity = await ctx.auth.getUserIdentity();
+    requireIdentifiedUser(identity);
+
+    let removed = 0;
+
+    const tables = [
+      "mt5AccountSnapshots",
+      "mt5MarketTicks",
+      "mt5OpenPositions",
+      "auditEvents",
+      "labSignalSnapshots",
+      "protectionEvents",
+    ] as const;
+
+    for (const table of tables) {
+      const rows = await ctx.db.query(table).collect();
+      for (const row of rows) {
+        const src = (row as { source?: string }).source;
+        if (typeof src === "string" && DEMO_SOURCES_FOR_PURGE.has(src)) {
+          await ctx.db.delete(row._id);
+          removed += 1;
+        }
+      }
+    }
+
+    return { ok: true as const, removed };
   },
 });

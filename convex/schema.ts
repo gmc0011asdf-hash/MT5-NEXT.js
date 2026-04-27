@@ -35,6 +35,7 @@ export default defineSchema({
     marginLevel: v.optional(v.number()),
     capturedAt: v.number(),
     source: v.string(),
+    syncRunId: v.optional(v.string()),
   })
     .index("by_userId", ["userId"])
     .index("by_capturedAt", ["capturedAt"])
@@ -47,6 +48,7 @@ export default defineSchema({
     spread: v.number(),
     capturedAt: v.number(),
     source: v.string(),
+    syncRunId: v.optional(v.string()),
   })
     .index("by_symbol", ["symbol"])
     .index("by_capturedAt", ["capturedAt"])
@@ -66,6 +68,7 @@ export default defineSchema({
     openedAt: v.optional(v.number()),
     capturedAt: v.number(),
     source: v.string(),
+    syncRunId: v.optional(v.string()),
   })
     .index("by_userId", ["userId"])
     .index("by_symbol", ["symbol"])
@@ -141,6 +144,7 @@ export default defineSchema({
     message: v.string(),
     createdAt: v.number(),
     source: v.string(),
+    syncRunId: v.optional(v.string()),
   })
     .index("by_userId", ["userId"])
     .index("by_action", ["action"])
@@ -152,6 +156,7 @@ export default defineSchema({
     status: v.string(),
     message: v.optional(v.string()),
     checkedAt: v.number(),
+    syncRunId: v.optional(v.string()),
   })
     .index("by_userId", ["userId"])
     .index("by_service", ["service"])
