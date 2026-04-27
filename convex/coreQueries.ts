@@ -86,6 +86,19 @@ export const getMyGovernanceState = query({
   },
 });
 
+export const getMyCommitteeReports = query({
+  args: {},
+  handler: async (ctx) => {
+    const userId = await requireUserId(ctx);
+    if (!userId) return [];
+    const rows = await ctx.db
+      .query("committeeReports")
+      .withIndex("by_userId", (q) => q.eq("userId", userId))
+      .collect();
+    return rows.sort((a, b) => b.createdAt - a.createdAt).slice(0, 20);
+  },
+});
+
 export const getMyMonitoringStatus = query({
   args: {},
   handler: async (ctx) => {
