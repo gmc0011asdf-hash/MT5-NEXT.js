@@ -20,6 +20,8 @@ import { api } from "../../../../convex/_generated/api";
 const NO_CONVEX_DATA_AR =
   "لا توجد بيانات Convex بعد — استخدم صفحة قاعدة Convex لإنشاء بيانات تجريبية.";
 
+const HISTORY_DEAL_CHUNK = 200;
+
 function fmtTs(ms: number) {
   return new Date(ms).toLocaleString("ar-SA", { hour12: false });
 }
@@ -64,17 +66,39 @@ export default function ReportsPage() {
         );
         return;
       }
-      await syncHistoryMutation({
-        payload: {
-          connected: Boolean(payload.connected),
-          read_only_mode:
-            typeof payload.read_only_mode === "boolean" ? payload.read_only_mode : true,
-          deals: Array.isArray(payload.deals) ? payload.deals : [],
-          from: typeof payload.from === "string" ? payload.from : undefined,
-          to: typeof payload.to === "string" ? payload.to : undefined,
-          error: typeof payload.error === "string" ? payload.error : undefined,
-        },
-      });
+      const deals = Array.isArray(payload.deals) ? payload.deals : [];
+      const syncRunId = `hist-${Date.now()}`;
+      const chunks: unknown[][] = [];
+      for (let i = 0; i < deals.length; i += HISTORY_DEAL_CHUNK) {
+        chunks.push(deals.slice(i, i + HISTORY_DEAL_CHUNK));
+      }
+      const totalChunks = Math.max(1, chunks.length);
+      const fromStr = typeof payload.from === "string" ? payload.from : undefined;
+      const toStr = typeof payload.to === "string" ? payload.to : undefined;
+      const readOnly =
+        typeof payload.read_only_mode === "boolean" ? payload.read_only_mode : true;
+
+      for (let i = 0; i < totalChunks; i++) {
+        const chunk = (chunks[i] ?? []) as unknown[];
+        try {
+          await syncHistoryMutation({
+            connected: true,
+            deals: chunk,
+            read_only_mode: readOnly,
+            from: fromStr,
+            to: toStr,
+            syncRunId,
+            chunkIndex: i,
+            totalChunks,
+          });
+        } catch (e) {
+          const reason = e instanceof Error ? e.message : String(e);
+          setHistorySyncMessage(
+            `فشلت مزامنة السجل في الدفعة ${i + 1} من ${totalChunks}. ${reason}`,
+          );
+          return;
+        }
+      }
       setHistorySyncMessage("تم تحديث سجل الصفقات من MT5 (قراءة فقط).");
     } catch {
       setHistorySyncMessage("فشل الاتصال بالخدمة المحلية.");

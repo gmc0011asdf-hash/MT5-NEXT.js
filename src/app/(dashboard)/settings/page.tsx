@@ -14,9 +14,24 @@ import {
 } from "@/components/ui/table";
 import { institutionalCardClass } from "@/lib/ui-institutional";
 import { useConvexAuth, useMutation, useQuery } from "convex/react";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 
 import { api } from "../../../../convex/_generated/api";
+
+const SYMBOL_SYNC_CHUNK = 100;
+const DISPLAY_ROW_CAP = 300;
+
+function dedupeSymbolsByName(raw: unknown[]): Record<string, unknown>[] {
+  const map = new Map<string, Record<string, unknown>>();
+  for (const item of raw) {
+    if (!item || typeof item !== "object") continue;
+    const rec = item as Record<string, unknown>;
+    const name = typeof rec.name === "string" ? rec.name.trim() : "";
+    if (!name) continue;
+    map.set(name, rec);
+  }
+  return [...map.values()];
+}
 
 export default function SettingsPage() {
   const { isLoading: isConvexAuthLoading, isAuthenticated } = useConvexAuth();
@@ -29,9 +44,31 @@ export default function SettingsPage() {
 
   const [syncBusy, setSyncBusy] = useState(false);
   const [syncMessage, setSyncMessage] = useState<string | null>(null);
+  const [syncProgress, setSyncProgress] = useState<string | null>(null);
+  const [symbolSearch, setSymbolSearch] = useState("");
+
+  const filteredSymbols = useMemo(() => {
+    if (!mt5Symbols || mt5Symbols.length === 0) return [];
+    const q = symbolSearch.trim().toLowerCase();
+    if (!q) return mt5Symbols;
+    return mt5Symbols.filter((row) => {
+      const name = row.name.toLowerCase();
+      const desc = (row.description ?? "").toLowerCase();
+      const cur = [row.currencyBase, row.currencyProfit, row.currencyMargin].filter(Boolean).join(" ").toLowerCase();
+      return name.includes(q) || desc.includes(q) || cur.includes(q);
+    });
+  }, [mt5Symbols, symbolSearch]);
+
+  const tableRows = useMemo(
+    () => filteredSymbols.slice(0, DISPLAY_ROW_CAP),
+    [filteredSymbols],
+  );
+
+  const showDisplayCapHint = filteredSymbols.length > DISPLAY_ROW_CAP;
 
   async function syncPairsFromMt5() {
     setSyncMessage(null);
+    setSyncProgress(null);
     setSyncBusy(true);
     try {
       const res = await fetch("/api/mt5-readonly/symbols", { cache: "no-store" });
@@ -44,20 +81,49 @@ export default function SettingsPage() {
         );
         return;
       }
-      await syncSymbolsMutation({
-        payload: {
-          connected: Boolean(payload.connected),
-          read_only_mode:
-            typeof payload.read_only_mode === "boolean" ? payload.read_only_mode : true,
-          symbols: Array.isArray(payload.symbols) ? payload.symbols : [],
-          error: typeof payload.error === "string" ? payload.error : undefined,
-        },
-      });
-      setSyncMessage("تمت مزامنة الأزواج من MT5 بنجاح (قراءة فقط).");
+      const list = dedupeSymbolsByName(Array.isArray(payload.symbols) ? payload.symbols : []);
+      if (list.length === 0) {
+        setSyncMessage("لا توجد رموز في الاستجابة.");
+        return;
+      }
+      const total = list.length;
+      const syncRunId = `sym-${Date.now()}`;
+      const chunks: Record<string, unknown>[][] = [];
+      for (let i = 0; i < list.length; i += SYMBOL_SYNC_CHUNK) {
+        chunks.push(list.slice(i, i + SYMBOL_SYNC_CHUNK));
+      }
+      const totalChunks = chunks.length;
+      let acc = 0;
+      for (let i = 0; i < totalChunks; i++) {
+        const chunk = chunks[i]!;
+        setSyncProgress(`جاري مزامنة الأزواج: ${acc} / ${total}`);
+        try {
+          await syncSymbolsMutation({
+            connected: true,
+            symbols: chunk,
+            syncRunId,
+            total,
+            chunkIndex: i,
+            totalChunks,
+            read_only_mode: typeof payload.read_only_mode === "boolean" ? payload.read_only_mode : true,
+          });
+        } catch (e) {
+          const reason = e instanceof Error ? e.message : String(e);
+          setSyncMessage(
+            `فشلت المزامنة في الدفعة ${i + 1} من ${totalChunks}. ${reason}`,
+          );
+          setSyncProgress(null);
+          return;
+        }
+        acc += chunk.length;
+        setSyncProgress(`جاري مزامنة الأزواج: ${acc} / ${total}`);
+      }
+      setSyncMessage("تمت مزامنة الأزواج من MT5 (قراءة فقط).");
     } catch {
       setSyncMessage("فشل الاتصال بالخدمة المحلية أو الخادم.");
     } finally {
       setSyncBusy(false);
+      setSyncProgress(null);
     }
   }
 
@@ -97,9 +163,26 @@ export default function SettingsPage() {
           >
             {syncBusy ? "جاري المزامنة…" : "مزامنة الأزواج من MT5"}
           </Button>
+          {syncProgress ? (
+            <span className="text-muted-foreground text-xs leading-snug tabular-nums">{syncProgress}</span>
+          ) : null}
           {syncMessage ? (
             <span className="text-muted-foreground text-xs leading-snug">{syncMessage}</span>
           ) : null}
+        </div>
+
+        <div className="max-w-md space-y-2">
+          <label className="text-sm font-medium leading-none" htmlFor="mt5-symbol-search">
+            بحث في الأزواج
+          </label>
+          <Input
+            id="mt5-symbol-search"
+            value={symbolSearch}
+            onChange={(e) => setSymbolSearch(e.target.value)}
+            placeholder="مثال: XAUUSD أو metal"
+            className="bg-background/80"
+            dir="ltr"
+          />
         </div>
 
         {!canUseConvex && !isConvexAuthLoading ? (
@@ -111,62 +194,69 @@ export default function SettingsPage() {
             لا توجد أزواج متزامنة بعد — استخدم زر المزامنة مع تشغيل خدمة MT5 المحلية.
           </p>
         ) : (
-          <div className="overflow-x-auto rounded-xl border border-amber-500/10">
-            <Table>
-              <TableHeader>
-                <TableRow className="border-amber-500/10 hover:bg-transparent">
-                  <TableHead className="text-foreground">الرمز</TableHead>
-                  <TableHead className="text-foreground">الوصف</TableHead>
-                  <TableHead className="text-foreground">العملات</TableHead>
-                  <TableHead className="text-foreground">ظاهر</TableHead>
-                  <TableHead className="text-foreground">مفعّل</TableHead>
-                  <TableHead className="text-foreground">عرض في المختبر</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {mt5Symbols.map((row) => {
-                  const cur = [row.currencyBase, row.currencyProfit, row.currencyMargin]
-                    .filter(Boolean)
-                    .join(" / ");
-                  return (
-                    <TableRow key={row._id} className="border-border/60">
-                      <TableCell className="font-medium text-amber-100/90 tabular-nums">{row.name}</TableCell>
-                      <TableCell className="max-w-[200px] text-muted-foreground text-xs">
-                        {row.description ?? "—"}
-                      </TableCell>
-                      <TableCell className="text-muted-foreground text-xs tabular-nums">
-                        {cur || "—"}
-                      </TableCell>
-                      <TableCell className="text-muted-foreground text-sm">
-                        {row.visible ? "نعم" : "لا"}
-                      </TableCell>
-                      <TableCell>
-                        <input
-                          type="checkbox"
-                          className="h-4 w-4 rounded border border-amber-500/40 bg-background"
-                          checked={row.enabled}
-                          onChange={(e) =>
-                            void patchSymbol(row.name, { enabled: e.target.checked, showInLab: row.showInLab })
-                          }
-                          aria-label="مفعّل"
-                        />
-                      </TableCell>
-                      <TableCell>
-                        <input
-                          type="checkbox"
-                          className="h-4 w-4 rounded border border-amber-500/40 bg-background"
-                          checked={row.showInLab}
-                          onChange={(e) =>
-                            void patchSymbol(row.name, { enabled: row.enabled, showInLab: e.target.checked })
-                          }
-                          aria-label="عرض في المختبر"
-                        />
-                      </TableCell>
-                    </TableRow>
-                  );
-                })}
-              </TableBody>
-            </Table>
+          <div className="space-y-2">
+            {showDisplayCapHint ? (
+              <p className="rounded-xl border border-amber-500/15 bg-amber-500/5 px-3 py-2 text-amber-100/90 text-xs leading-relaxed">
+                تمت مزامنة جميع الرموز، يتم عرض أول 300 فقط. استخدم البحث للعثور على رمز محدد.
+              </p>
+            ) : null}
+            <div className="overflow-x-auto rounded-xl border border-amber-500/10">
+              <Table>
+                <TableHeader>
+                  <TableRow className="border-amber-500/10 hover:bg-transparent">
+                    <TableHead className="text-foreground">الرمز</TableHead>
+                    <TableHead className="text-foreground">الوصف</TableHead>
+                    <TableHead className="text-foreground">العملات</TableHead>
+                    <TableHead className="text-foreground">ظاهر</TableHead>
+                    <TableHead className="text-foreground">مفعّل</TableHead>
+                    <TableHead className="text-foreground">عرض في المختبر</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {tableRows.map((row) => {
+                    const cur = [row.currencyBase, row.currencyProfit, row.currencyMargin]
+                      .filter(Boolean)
+                      .join(" / ");
+                    return (
+                      <TableRow key={row._id} className="border-border/60">
+                        <TableCell className="font-medium text-amber-100/90 tabular-nums">{row.name}</TableCell>
+                        <TableCell className="max-w-[200px] text-muted-foreground text-xs">
+                          {row.description ?? "—"}
+                        </TableCell>
+                        <TableCell className="text-muted-foreground text-xs tabular-nums">
+                          {cur || "—"}
+                        </TableCell>
+                        <TableCell className="text-muted-foreground text-sm">
+                          {row.visible ? "نعم" : "لا"}
+                        </TableCell>
+                        <TableCell>
+                          <input
+                            type="checkbox"
+                            className="h-4 w-4 rounded border border-amber-500/40 bg-background"
+                            checked={row.enabled}
+                            onChange={(e) =>
+                              void patchSymbol(row.name, { enabled: e.target.checked, showInLab: row.showInLab })
+                            }
+                            aria-label="مفعّل"
+                          />
+                        </TableCell>
+                        <TableCell>
+                          <input
+                            type="checkbox"
+                            className="h-4 w-4 rounded border border-amber-500/40 bg-background"
+                            checked={row.showInLab}
+                            onChange={(e) =>
+                              void patchSymbol(row.name, { enabled: row.enabled, showInLab: e.target.checked })
+                            }
+                            aria-label="عرض في المختبر"
+                          />
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })}
+                </TableBody>
+              </Table>
+            </div>
           </div>
         )}
       </Section>

@@ -293,8 +293,12 @@ def _serialize_symbol_meta(si: Any) -> dict[str, Any]:
 
 
 @app.get("/readonly/symbols")
-def readonly_symbols() -> JSONResponse:
-    """Catalog via symbols_get — read-only."""
+def readonly_symbols(
+    visible_only: bool = Query(default=False, alias="visibleOnly"),
+    limit: int | None = Query(default=None, ge=1, le=10_000),
+    search: str | None = Query(default=None, max_length=128),
+) -> JSONResponse:
+    """Catalog via symbols_get — read-only. Optional visibleOnly / limit / search reduce payload."""
     _enforce_read_only_policy()
     ok, err = _safe_mt5_init()
     if not ok:
@@ -311,6 +315,19 @@ def readonly_symbols() -> JSONResponse:
         raw = mt5.symbols_get()
         rows = raw if raw is not None else ()
         symbols_out = [_serialize_symbol_meta(si) for si in rows]
+        if visible_only:
+            symbols_out = [s for s in symbols_out if s.get("visible")]
+        if search and search.strip():
+            q = search.strip().lower()
+            symbols_out = [
+                s
+                for s in symbols_out
+                if q in (s.get("name") or "").lower()
+                or q in (s.get("path") or "").lower()
+                or q in (s.get("description") or "").lower()
+            ]
+        if limit is not None:
+            symbols_out = symbols_out[: int(limit)]
         return JSONResponse(
             content={
                 "connected": True,

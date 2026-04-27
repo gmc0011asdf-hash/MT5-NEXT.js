@@ -180,7 +180,8 @@ export default defineSchema({
   })
     .index("by_name", ["name"])
     .index("by_capturedAt", ["capturedAt"])
-    .index("by_source", ["source"]),
+    .index("by_source", ["source"])
+    .index("by_source_capturedAt", ["source", "capturedAt"]),
 
   userSymbolSettings: defineTable({
     userId: v.string(),

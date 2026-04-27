@@ -24,21 +24,17 @@ const SOURCE_LOCAL = "mt5-local-readonly" as const;
 const SOURCE_LOCAL_SYMBOL_CATALOG = "mt5-local-catalog" as const;
 const SOURCE_LOCAL_HISTORY = "mt5-local-trade-history" as const;
 
-const symbolsServicePayloadValidator = v.object({
-  connected: v.boolean(),
-  read_only_mode: v.optional(v.boolean()),
-  symbols: v.array(v.any()),
-  error: v.optional(v.string()),
-});
+const MAX_SYMBOLS_PER_MUTATION = 200;
+const MAX_DEALS_PER_MUTATION = 200;
 
-const historyServicePayloadValidator = v.object({
-  connected: v.boolean(),
-  read_only_mode: v.optional(v.boolean()),
-  deals: v.array(v.any()),
-  from: v.optional(v.string()),
-  to: v.optional(v.string()),
-  error: v.optional(v.string()),
-});
+function isFinalChunk(
+  chunkIndex: number | undefined,
+  totalChunks: number | undefined,
+): boolean {
+  if (totalChunks === undefined || totalChunks <= 1) return true;
+  if (chunkIndex === undefined) return true;
+  return chunkIndex === totalChunks - 1;
+}
 
 type SnapshotArg = {
   connected: boolean;
@@ -471,35 +467,46 @@ function readOptionalBool(row: Record<string, unknown>, key: string): boolean | 
 }
 
 /**
- * مزامنة أزواج MT5 (قراءة فقط) — لا order_send ولا أي أمر تداول.
+ * مزامنة أزواج MT5 (قراءة فقط) — دفعة واحدة بحد أقصى 200 رمز؛ لا order_send.
+ * upsert لكل رمز عبر فهرس by_name فقط + إعداد المستخدم بـ by_userId_symbol.
  */
 export const syncReadOnlySymbolsFromLocalService = mutation({
   args: {
-    payload: symbolsServicePayloadValidator,
+    connected: v.boolean(),
+    symbols: v.array(v.any()),
+    syncRunId: v.optional(v.string()),
+    total: v.optional(v.number()),
+    chunkIndex: v.optional(v.number()),
+    totalChunks: v.optional(v.number()),
+    read_only_mode: v.optional(v.boolean()),
+    error: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
     const identity = await ctx.auth.getUserIdentity();
     const userId = requireIdentifiedUser(identity);
     const now = Date.now();
-    const syncRunId = `mt5-cat-${now}`;
-    const p = args.payload;
+    const runId = args.syncRunId ?? `mt5-cat-${now}`;
 
-    if (!p.connected) {
+    if (args.symbols.length > MAX_SYMBOLS_PER_MUTATION) {
+      throw new ConvexError("عدد الرموز كبير جدًا، يجب إرسالها على دفعات");
+    }
+
+    if (!args.connected) {
       await enforceGovernanceReadOnly(ctx, userId, now);
       await ctx.db.insert("auditEvents", {
         userId,
         action: "mt5_local_readonly_symbols_disconnected",
         entity: "mt5LocalService",
-        message: p.error ?? "خدمة MT5 المحلية غير متاحة أو MT5 غير متصل",
+        message: args.error ?? "خدمة MT5 المحلية غير متاحة أو MT5 غير متصل",
         createdAt: now,
         source: SOURCE_LOCAL_SYMBOL_CATALOG,
-        syncRunId,
+        syncRunId: runId,
       });
       return { ok: false as const, connected: false as const };
     }
 
     let symbolRows = 0;
-    for (const row of p.symbols) {
+    for (const row of args.symbols) {
       if (!row || typeof row !== "object") continue;
       const rec = row as Record<string, unknown>;
       const name = typeof rec.name === "string" ? rec.name.trim() : "";
@@ -512,7 +519,12 @@ export const syncReadOnlySymbolsFromLocalService = mutation({
         rec.trade_mode !== undefined ? rec.trade_mode : rec.tradeMode,
       );
 
-      await ctx.db.insert("mt5Symbols", {
+      const existingSym = await ctx.db
+        .query("mt5Symbols")
+        .withIndex("by_name", (q) => q.eq("name", name))
+        .first();
+
+      const doc = {
         name,
         path: readOptionalStringField(rec, "path", "path"),
         description: readOptionalStringField(rec, "description", "description"),
@@ -525,15 +537,21 @@ export const syncReadOnlySymbolsFromLocalService = mutation({
         point,
         spread: spread !== undefined ? Math.floor(spread) : undefined,
         source: SOURCE_LOCAL_SYMBOL_CATALOG,
-        syncRunId,
+        syncRunId: runId,
         capturedAt: now,
-      });
+      };
+
+      if (existingSym) {
+        await ctx.db.patch(existingSym._id, doc);
+      } else {
+        await ctx.db.insert("mt5Symbols", doc);
+      }
       symbolRows += 1;
 
       const existingSetting = await ctx.db
         .query("userSymbolSettings")
         .withIndex("by_userId_symbol", (q) => q.eq("userId", userId).eq("symbol", name))
-        .unique();
+        .first();
       if (!existingSetting) {
         await ctx.db.insert("userSymbolSettings", {
           userId,
@@ -545,62 +563,84 @@ export const syncReadOnlySymbolsFromLocalService = mutation({
       }
     }
 
-    await enforceGovernanceReadOnly(ctx, userId, now);
-    await ctx.db.insert("auditEvents", {
-      userId,
-      action: "mt5_local_readonly_symbols_sync",
-      entity: "mt5LocalService",
-      message: "تمت مزامنة كتالوج أزواج MT5 للقراءة فقط — إنشاء إعدادات جديدة معطّلة افتراضياً.",
-      createdAt: now,
-      source: SOURCE_LOCAL_SYMBOL_CATALOG,
-      syncRunId,
-    });
+    if (isFinalChunk(args.chunkIndex, args.totalChunks)) {
+      await enforceGovernanceReadOnly(ctx, userId, now);
+      const totalLabel = args.total !== undefined ? ` / ${args.total}` : "";
+      await ctx.db.insert("auditEvents", {
+        userId,
+        action: "mt5_local_readonly_symbols_sync",
+        entity: "mt5LocalService",
+        message: `كتالوج أزواج MT5 (دفعات)${totalLabel} — آخر دفعة: ${symbolRows} رمز. قراءة فقط.`,
+        createdAt: now,
+        source: SOURCE_LOCAL_SYMBOL_CATALOG,
+        syncRunId: runId,
+      });
+    }
 
-    return { ok: true as const, connected: true as const, inserted: { symbolRows, syncRunId } };
+    return { ok: true as const, connected: true as const, inserted: { symbolRows, syncRunId: runId } };
   },
 });
 
 /**
- * مزامنة سجل الصفقات المغلقة (قراءة فقط) — لا order_send ولا أي أمر تداول.
+ * مزامنة سجل الصفقات المغلقة (قراءة فقط) — دفعة بحد أقصى 200 صفقة؛ لا order_send.
  */
 export const syncReadOnlyTradeHistoryFromLocalService = mutation({
   args: {
-    payload: historyServicePayloadValidator,
+    connected: v.boolean(),
+    deals: v.array(v.any()),
+    read_only_mode: v.optional(v.boolean()),
+    from: v.optional(v.string()),
+    to: v.optional(v.string()),
+    error: v.optional(v.string()),
+    syncRunId: v.optional(v.string()),
+    chunkIndex: v.optional(v.number()),
+    totalChunks: v.optional(v.number()),
   },
   handler: async (ctx, args) => {
     const identity = await ctx.auth.getUserIdentity();
     const userId = requireIdentifiedUser(identity);
     const now = Date.now();
-    const syncRunId = `mt5-hist-${now}`;
-    const p = args.payload;
+    const runId = args.syncRunId ?? `mt5-hist-${now}`;
 
-    await ctx.db.insert("monitoringStatus", {
-      userId,
-      service: "mt5-local-history-readonly",
-      status: p.connected ? "history_sync_received" : "offline_or_inner_error",
-      message: p.error ?? (p.connected ? "سجل صفقات محلي للقراءة فقط" : "خدمة MT5 المحلية غير متاحة أو MT5 غير متصل"),
-      checkedAt: now,
-      syncRunId,
-    });
+    if (args.deals.length > MAX_DEALS_PER_MUTATION) {
+      throw new ConvexError("عدد صفقات السجل كبير جدًا، يجب إرسالها على دفعات");
+    }
 
-    if (!p.connected) {
-      await enforceGovernanceReadOnly(ctx, userId, now);
-      await ctx.db.insert("auditEvents", {
+    if (isFinalChunk(args.chunkIndex, args.totalChunks)) {
+      await ctx.db.insert("monitoringStatus", {
         userId,
-        action: "mt5_local_readonly_history_disconnected",
-        entity: "mt5LocalService",
-        message: p.error ?? "خدمة MT5 المحلية غير متاحة أو MT5 غير متصل",
-        createdAt: now,
-        source: SOURCE_LOCAL_HISTORY,
-        syncRunId,
+        service: "mt5-local-history-readonly",
+        status: args.connected ? "history_sync_received" : "offline_or_inner_error",
+        message:
+          args.error ??
+          (args.connected
+            ? "سجل صفقات محلي للقراءة فقط (دفعات)"
+            : "خدمة MT5 المحلية غير متاحة أو MT5 غير متصل"),
+        checkedAt: now,
+        syncRunId: runId,
       });
+    }
+
+    if (!args.connected) {
+      if (isFinalChunk(args.chunkIndex, args.totalChunks)) {
+        await enforceGovernanceReadOnly(ctx, userId, now);
+        await ctx.db.insert("auditEvents", {
+          userId,
+          action: "mt5_local_readonly_history_disconnected",
+          entity: "mt5LocalService",
+          message: args.error ?? "خدمة MT5 المحلية غير متاحة أو MT5 غير متصل",
+          createdAt: now,
+          source: SOURCE_LOCAL_HISTORY,
+          syncRunId: runId,
+        });
+      }
       return { ok: false as const, connected: false as const };
     }
 
     let inserted = 0;
     let skippedDuplicates = 0;
 
-    for (const row of p.deals) {
+    for (const row of args.deals) {
       if (!row || typeof row !== "object") continue;
       const d = row as Record<string, unknown>;
       const dealTicket =
@@ -612,7 +652,7 @@ export const syncReadOnlyTradeHistoryFromLocalService = mutation({
         .withIndex("by_userId_dealTicket", (q) =>
           q.eq("userId", userId).eq("dealTicket", dealTicket),
         )
-        .unique();
+        .first();
       if (existing) {
         skippedDuplicates += 1;
         continue;
@@ -666,27 +706,29 @@ export const syncReadOnlyTradeHistoryFromLocalService = mutation({
         comment: typeof d.comment === "string" ? d.comment : undefined,
         magic: magic !== undefined ? Math.floor(magic) : undefined,
         source: SOURCE_LOCAL_HISTORY,
-        syncRunId,
+        syncRunId: runId,
         capturedAt: now,
       });
       inserted += 1;
     }
 
-    await enforceGovernanceReadOnly(ctx, userId, now);
-    await ctx.db.insert("auditEvents", {
-      userId,
-      action: "mt5_local_readonly_trade_history_sync",
-      entity: "mt5LocalService",
-      message: `تمت مزامنة سجل صفقات MT5 للقراءة فقط — صفوف جديدة: ${inserted}، مكرر متجاهل: ${skippedDuplicates}.`,
-      createdAt: now,
-      source: SOURCE_LOCAL_HISTORY,
-      syncRunId,
-    });
+    if (isFinalChunk(args.chunkIndex, args.totalChunks)) {
+      await enforceGovernanceReadOnly(ctx, userId, now);
+      await ctx.db.insert("auditEvents", {
+        userId,
+        action: "mt5_local_readonly_trade_history_sync",
+        entity: "mt5LocalService",
+        message: `سجل صفقات MT5 (دفعات) — صفوف جديدة في آخر دفعة: ${inserted}، مكرر متجاهل: ${skippedDuplicates}. قراءة فقط.`,
+        createdAt: now,
+        source: SOURCE_LOCAL_HISTORY,
+        syncRunId: runId,
+      });
+    }
 
     return {
       ok: true as const,
       connected: true as const,
-      inserted: { deals: inserted, skippedDuplicates, syncRunId },
+      inserted: { deals: inserted, skippedDuplicates, syncRunId: runId },
     };
   },
 });
@@ -706,7 +748,7 @@ export const updateMySymbolSetting = mutation({
     const existing = await ctx.db
       .query("userSymbolSettings")
       .withIndex("by_userId_symbol", (q) => q.eq("userId", userId).eq("symbol", args.symbol))
-      .unique();
+      .first();
     const payload = {
       userId,
       symbol: args.symbol,

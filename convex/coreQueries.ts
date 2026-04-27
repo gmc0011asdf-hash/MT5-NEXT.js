@@ -279,13 +279,15 @@ export const getMyMt5SymbolsWithSettings = query({
 
     const catalogRows = await ctx.db
       .query("mt5Symbols")
-      .withIndex("by_source", (q) => q.eq("source", SOURCE_MT5_LOCAL_CATALOG))
-      .collect();
+      .withIndex("by_source_capturedAt", (q) => q.eq("source", SOURCE_MT5_LOCAL_CATALOG))
+      .order("desc")
+      .take(25_000);
 
     const latestByName = new Map<string, Doc<"mt5Symbols">>();
     for (const row of catalogRows) {
-      const prev = latestByName.get(row.name);
-      if (!prev || row.capturedAt > prev.capturedAt) latestByName.set(row.name, row);
+      if (!latestByName.has(row.name)) {
+        latestByName.set(row.name, row);
+      }
     }
 
     const settingsRows = await ctx.db

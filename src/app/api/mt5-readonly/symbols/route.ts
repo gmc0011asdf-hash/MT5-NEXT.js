@@ -3,18 +3,25 @@
  * Proxies GET http://127.0.0.1:8010/readonly/symbols (symbol catalog) for same-origin browser fetch.
  */
 
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 
 export const dynamic = "force-dynamic";
 
-const LOCAL_URL = "http://127.0.0.1:8010/readonly/symbols";
+const LOCAL_BASE = "http://127.0.0.1:8010/readonly/symbols";
 const FETCH_TIMEOUT_MS = 5000;
 
-export async function GET() {
+export async function GET(request: NextRequest) {
+  const u = new URL(LOCAL_BASE);
+  const sp = request.nextUrl.searchParams;
+  for (const key of ["visibleOnly", "limit", "search"] as const) {
+    const v = sp.get(key);
+    if (v !== null && v !== "") u.searchParams.set(key, v);
+  }
+
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
   try {
-    const res = await fetch(LOCAL_URL, {
+    const res = await fetch(u.toString(), {
       signal: controller.signal,
       cache: "no-store",
     });
