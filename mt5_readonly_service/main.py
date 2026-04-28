@@ -12,6 +12,7 @@ READ-ONLY CONTRACT — يُمنع أي تنفيذ أو أوامر من هذه ا
 
 from __future__ import annotations
 
+import json
 import os
 import time
 from datetime import datetime, timedelta, timezone
@@ -20,6 +21,31 @@ from typing import Any
 from fastapi import FastAPI, Query
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
+
+
+class Utf8JsonResponse(JSONResponse):
+    """
+    JSONResponse subclass that serialises with ensure_ascii=False and sets
+    Content-Type: application/json; charset=utf-8.
+
+    FastAPI's default JSONResponse uses ensure_ascii=True, which escapes every
+    non-ASCII character to \\uXXXX sequences.  Those sequences are valid JSON but
+    PowerShell 5.1's Invoke-RestMethod re-encodes them through the system
+    codepage instead of treating them as literal Unicode, producing mojibake for
+    Arabic text.  Emitting real UTF-8 bytes with an explicit charset header fixes
+    both PowerShell and all standards-compliant clients.
+    """
+
+    media_type = "application/json; charset=utf-8"
+
+    def render(self, content: Any) -> bytes:
+        return json.dumps(
+            content,
+            ensure_ascii=False,
+            allow_nan=False,
+            indent=None,
+            separators=(",", ":"),
+        ).encode("utf-8")
 
 # -----------------------------------------------------------------------------
 # Safety switches — never flip READ_ONLY_MODE without a separate security review.
@@ -344,17 +370,17 @@ def connect_mt5(payload: ConnectRequest) -> JSONResponse:
 
     # Basic field validation
     if login <= 0:
-        return JSONResponse(
+        return Utf8JsonResponse(
             status_code=400,
             content={"connected": False, "error": "رقم الحساب غير صالح — يجب أن يكون رقماً موجباً"},
         )
     if not server:
-        return JSONResponse(
+        return Utf8JsonResponse(
             status_code=400,
             content={"connected": False, "error": "اسم السيرفر مطلوب"},
         )
     if not password:
-        return JSONResponse(
+        return Utf8JsonResponse(
             status_code=400,
             content={"connected": False, "error": "كلمة المرور مطلوبة"},
         )
@@ -362,7 +388,7 @@ def connect_mt5(payload: ConnectRequest) -> JSONResponse:
     # Terminal path validation — checks directory vs file vs missing
     path_error = _validate_terminal_path(terminal_path)
     if path_error:
-        return JSONResponse(
+        return Utf8JsonResponse(
             status_code=400,
             content={"connected": False, "error": path_error},
         )
@@ -375,7 +401,7 @@ def connect_mt5(payload: ConnectRequest) -> JSONResponse:
     )
     if not ok:
         err = mt5.last_error()
-        return JSONResponse(
+        return Utf8JsonResponse(
             status_code=503,
             content={
                 "connected": False,
@@ -385,7 +411,7 @@ def connect_mt5(payload: ConnectRequest) -> JSONResponse:
     try:
         info = mt5.account_info()
         if info is None:
-            return JSONResponse(
+            return Utf8JsonResponse(
                 status_code=503,
                 content={
                     "connected": False,
@@ -393,7 +419,7 @@ def connect_mt5(payload: ConnectRequest) -> JSONResponse:
                 },
             )
         _record_successful_mt5_call()
-        return JSONResponse(
+        return Utf8JsonResponse(
             content={
                 "connected": True,
                 "read_only": True,
@@ -417,7 +443,7 @@ def connect_mt5(payload: ConnectRequest) -> JSONResponse:
 @app.get("/connection-status")
 def connection_status() -> JSONResponse:
     body = _connection_status_payload()
-    return JSONResponse(content=body, status_code=200 if body.get("connected") else 503)
+    return Utf8JsonResponse(content=body, status_code=200 if body.get("connected") else 503)
 
 
 @app.get("/health")
@@ -432,7 +458,7 @@ def health() -> JSONResponse:
     try:
         if ok:
             _record_successful_mt5_call()
-        return JSONResponse(
+        return Utf8JsonResponse(
             content={
                 "status": "ok",
                 "read_only_mode": READ_ONLY_MODE,
@@ -458,16 +484,16 @@ def readonly_account() -> JSONResponse:
     _enforce_read_only_policy()
     ok, err = _safe_mt5_init()
     if not ok:
-        return JSONResponse(
+        return Utf8JsonResponse(
             status_code=503,
             content={"connected": False, "error": err or "MT5 غير متاح"},
         )
     try:
         body = _account_payload()
         if not body.get("connected"):
-            return JSONResponse(status_code=503, content=body)
+            return Utf8JsonResponse(status_code=503, content=body)
         _record_successful_mt5_call()
-        return JSONResponse(content=body)
+        return Utf8JsonResponse(content=body)
     finally:
         mt5.shutdown()
 
@@ -477,7 +503,7 @@ def readonly_ticks() -> JSONResponse:
     _enforce_read_only_policy()
     ok, err = _safe_mt5_init()
     if not ok:
-        return JSONResponse(
+        return Utf8JsonResponse(
             status_code=503,
             content={
                 "connected": False,
@@ -492,7 +518,7 @@ def readonly_ticks() -> JSONResponse:
         payload["connected"] = True
         payload["symbols_configured"] = symbols
         _record_successful_mt5_call()
-        return JSONResponse(content=payload)
+        return Utf8JsonResponse(content=payload)
     finally:
         mt5.shutdown()
 
@@ -502,7 +528,7 @@ def readonly_positions() -> JSONResponse:
     _enforce_read_only_policy()
     ok, err = _safe_mt5_init()
     if not ok:
-        return JSONResponse(
+        return Utf8JsonResponse(
             status_code=503,
             content={"connected": False, "error": err or "MT5 غير متاح", "positions": []},
         )
@@ -510,7 +536,7 @@ def readonly_positions() -> JSONResponse:
         payload = _positions_payload()
         payload["connected"] = True
         _record_successful_mt5_call()
-        return JSONResponse(content=payload)
+        return Utf8JsonResponse(content=payload)
     finally:
         mt5.shutdown()
 
@@ -520,7 +546,7 @@ def readonly_snapshot() -> JSONResponse:
     _enforce_read_only_policy()
     ok, err = _safe_mt5_init()
     if not ok:
-        return JSONResponse(
+        return Utf8JsonResponse(
             status_code=503,
             content={
                 "connected": False,
@@ -549,7 +575,7 @@ def readonly_snapshot() -> JSONResponse:
         if not account.get("connected"):
             combined["connected"] = False
             combined.setdefault("error", account.get("error", "تعذّر جلب بيانات الحساب"))
-        return JSONResponse(content=combined)
+        return Utf8JsonResponse(content=combined)
     finally:
         mt5.shutdown()
 
@@ -581,7 +607,7 @@ def readonly_symbols(
     _enforce_read_only_policy()
     ok, err = _safe_mt5_init()
     if not ok:
-        return JSONResponse(
+        return Utf8JsonResponse(
             status_code=503,
             content={
                 "connected": False,
@@ -611,7 +637,7 @@ def readonly_symbols(
         if limit is not None:
             symbols_out = symbols_out[: int(limit)]
         _record_successful_mt5_call()
-        return JSONResponse(
+        return Utf8JsonResponse(
             content={
                 "connected": True,
                 "read_only_mode": READ_ONLY_MODE,
@@ -634,7 +660,7 @@ def readonly_history_deals(
     _enforce_read_only_policy()
     ok, err = _safe_mt5_init()
     if not ok:
-        return JSONResponse(
+        return Utf8JsonResponse(
             status_code=503,
             content={
                 "connected": False,
@@ -679,7 +705,7 @@ def readonly_history_deals(
             )
 
         _record_successful_mt5_call()
-        return JSONResponse(
+        return Utf8JsonResponse(
             content={
                 "connected": True,
                 "read_only_mode": READ_ONLY_MODE,
@@ -702,7 +728,7 @@ def readonly_candles(
     _enforce_read_only_policy()
     ok, err = _safe_mt5_init()
     if not ok:
-        return JSONResponse(
+        return Utf8JsonResponse(
             status_code=503,
             content={
                 "connected": False,
@@ -719,7 +745,7 @@ def readonly_candles(
         invalid_timeframes = [tf for tf in requested_timeframes if tf not in _TIMEFRAME_MAP]
 
         if len(valid_timeframes) == 0:
-            return JSONResponse(
+            return Utf8JsonResponse(
                 status_code=400,
                 content={
                     "connected": True,
@@ -784,10 +810,12 @@ def readonly_candles(
             response["skipped_note"] = (
                 "بعض الرموز أو الإطارات الزمنية تعذّر جلبها — تحقق من Market Watch"
             )
+            response["skipped_note_ar"] = response["skipped_note"]
+            response["skipped_note_code"] = "some_symbols_or_timeframes_skipped"
         if invalid_timeframes:
             response["invalid_timeframes"] = invalid_timeframes
 
-        return JSONResponse(content=response)
+        return Utf8JsonResponse(content=response)
     finally:
         mt5.shutdown()
 
