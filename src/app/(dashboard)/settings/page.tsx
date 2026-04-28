@@ -592,10 +592,16 @@ export default function SettingsPage() {
 
       <Section title="إعدادات المنصة">
         <div className="grid gap-4 md:grid-cols-2">
-          <Field label="حساب MT5" value="— (عرض)" />
-          <Field label="الخادم" value="غير مُكوَّن" />
-          <Field label="حالة الاتصال" value="غير متصل (واجهة)" />
-          <Field label="وضع العرض" value="Demo" />
+          <Field
+            label="حساب MT5"
+            value={connectionStatus?.connected ? String(connectionStatus.account_login ?? "—") : "—"}
+          />
+          <Field label="الخادم" value={connectionStatus?.connected ? (connectionStatus.server ?? "—") : "—"} />
+          <Field
+            label="حالة الاتصال"
+            value={connectionStatus?.connected ? "متصل بمنصة MT5" : "غير متصل بمنصة MT5"}
+          />
+          <Field label="وضع العرض" value={connectionStatus?.read_only ? "قراءة فقط" : "—"} />
         </div>
       </Section>
 

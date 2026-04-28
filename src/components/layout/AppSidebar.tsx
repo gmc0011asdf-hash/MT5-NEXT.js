@@ -2,141 +2,90 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useEffect, useState } from "react";
-import { ChevronsLeft, ChevronsRight } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
 
-import { Button } from "@/components/ui/button";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
-import { NAV_SECTIONS } from "@/lib/constants/navigation";
-
-const STORAGE_KEY = "mt5_sidebar_collapsed";
+import { NAV_ITEMS } from "@/lib/constants/navigation";
+import { useMt5ConnectionStatus } from "@/lib/hooks/use-mt5-connection-status";
 
 export function AppSidebar() {
   const pathname = usePathname();
-  const [collapsed, setCollapsed] = useState(false);
-  const [storageReady, setStorageReady] = useState(false);
-
-  useEffect(() => {
-    try {
-      const v = localStorage.getItem(STORAGE_KEY);
-      if (v === "true") setCollapsed(true);
-    } catch {
-      // ignore
-    } finally {
-      setStorageReady(true);
-    }
-  }, []);
-
-  useEffect(() => {
-    if (!storageReady) return;
-    try {
-      localStorage.setItem(STORAGE_KEY, String(collapsed));
-    } catch {
-      // ignore
-    }
-  }, [collapsed, storageReady]);
+  const { status } = useMt5ConnectionStatus();
+  const mt5Connected = status?.connected === true;
 
   return (
     <aside
-      className={cn(
-        "sticky top-0 flex h-dvh shrink-0 overflow-y-auto border-l border-amber-500/20 bg-sidebar/95 text-sidebar-foreground backdrop-blur-sm",
-        "transition-[width] duration-200 ease-out",
-        collapsed ? "w-[4.5rem] max-md:max-w-[4.5rem]" : "w-64 max-md:w-56",
-      )}
+      className="sticky top-0 flex h-dvh w-72 min-w-72 max-w-72 shrink-0 flex-col overflow-y-auto border-l border-amber-500/10 bg-black/20 px-4 py-4 text-sidebar-foreground backdrop-blur-sm"
     >
-      <div className="flex min-h-14 items-center gap-1.5 border-b border-amber-500/20 px-1.5 py-2.5 sm:px-2.5">
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon"
-          className="size-8 shrink-0"
-          onClick={() => setCollapsed((c) => !c)}
-          aria-pressed={collapsed}
-          aria-label={collapsed ? "توسيع القائمة" : "طي القائمة"}
-        >
-          {collapsed ? <ChevronsLeft className="size-4" /> : <ChevronsRight className="size-4" />}
-        </Button>
-        <div
-          className={cn("min-w-0 flex-1", collapsed && "sr-only md:sr-only")}
-          aria-hidden={collapsed}
-        >
-          <p className="font-medium text-amber-100/90 text-sm">التنقل</p>
-          <p className="mt-0.5 text-muted-foreground text-xs">واجهة مؤسسية</p>
+      <div className="rounded-xl border border-amber-500/15 bg-amber-500/5 p-3.5">
+        <p className="text-stone-100 text-base font-semibold leading-tight">نظام الملك الهندسي</p>
+        <p className="mt-1 text-stone-400 text-sm leading-tight">للتداول العالمي</p>
+        <Badge variant="outline" className="mt-2.5 border-amber-500/20 bg-amber-500/10 text-amber-100">
+          MT5 Read-only
+        </Badge>
+      </div>
+
+      <div className="mt-3 rounded-xl border border-amber-500/15 bg-white/[0.03] p-3.5">
+        <p className="text-stone-100 text-sm font-semibold">حالة النظام</p>
+        <div className="mt-2.5 space-y-2 text-xs">
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-stone-400">MT5</span>
+            <Badge
+              variant="outline"
+              className={mt5Connected ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-200" : "border-rose-500/30 bg-rose-500/10 text-rose-200"}
+            >
+              {mt5Connected ? "متصل" : "غير متصل"}
+            </Badge>
+          </div>
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-stone-400">البيانات</span>
+            <Badge variant="outline" className="border-amber-500/20 bg-amber-500/10 text-amber-100">
+              {mt5Connected ? "حقيقية من MT5" : "بانتظار الاتصال"}
+            </Badge>
+          </div>
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-stone-400">الوضع</span>
+            <Badge variant="outline" className="border-amber-500/20 bg-amber-500/10 text-amber-100">
+              قراءة فقط
+            </Badge>
+          </div>
         </div>
       </div>
-      <nav className="flex flex-1 flex-col gap-3.5 overflow-y-auto p-2.5 sm:p-3.5">
-        {NAV_SECTIONS.map((section) => (
-          <div key={section.title}>
-            <p
-              className={cn(
-                "mb-1.5 px-2 font-medium text-[11px] text-amber-200/70 uppercase tracking-wide",
-                collapsed && "sr-only",
-              )}
-            >
-              {section.title}
-            </p>
-            <div className="flex flex-col gap-0.5">
-              {section.items.map((item) => {
-                const Icon = item.icon;
-                const active =
-                  pathname === item.href ||
-                  (item.href !== "/dashboard" && pathname.startsWith(item.href));
-                const linkClass = cn(
-                  "min-h-10 items-center gap-2.5 rounded-xl border text-sm transition-colors",
-                  collapsed ? "justify-center px-2" : "px-3 py-2",
+
+      <div className="mt-4 flex flex-1 min-h-0 flex-col">
+        <p className="px-1 text-stone-300 text-sm font-semibold">التنقل</p>
+        <nav className="mt-2 flex min-h-0 flex-1 flex-col gap-1.5 overflow-y-auto pb-2">
+          {NAV_ITEMS.map((item) => {
+            const Icon = item.icon;
+            const active =
+              pathname === item.href ||
+              (item.href !== "/dashboard" && pathname.startsWith(item.href));
+
+            return (
+              <Link
+                key={item.href}
+                href={item.href}
+                aria-current={active ? "page" : undefined}
+                className={cn(
+                  "flex h-11 w-full items-center gap-2.5 rounded-xl border px-3 py-2.5 text-sm transition-colors",
                   active
-                    ? "border-amber-400/40 bg-amber-500/15 text-amber-50 ring-1 ring-amber-400/35 shadow-[inset_0_0_0_1px_rgba(251,191,36,0.15)]"
-                    : "border-transparent text-sidebar-foreground/90 hover:border-amber-500/20 hover:bg-sidebar-accent/60 hover:text-sidebar-accent-foreground",
-                );
+                    ? "border-amber-400/20 bg-amber-500/15 text-amber-100"
+                    : "border-transparent text-stone-300 hover:bg-white/5 hover:text-stone-100",
+                )}
+              >
+                <Icon className="size-4 shrink-0" aria-hidden />
+                <span className="min-w-0 flex-1 truncate whitespace-nowrap text-start font-medium">{item.label}</span>
+              </Link>
+            );
+          })}
+        </nav>
+      </div>
 
-                if (collapsed) {
-                  return (
-                    <Tooltip key={item.href}>
-                      <TooltipTrigger
-                        render={(htmlProps) => (
-                          <Link
-                            {...htmlProps}
-                            href={item.href}
-                            aria-current={active ? "page" : undefined}
-                            className={cn("flex w-full", linkClass, htmlProps.className)}
-                          >
-                            <Icon className="size-4 shrink-0" aria-hidden />
-                          </Link>
-                        )}
-                      />
-                      <TooltipContent side="left" align="center" className="text-xs">
-                        {item.label}
-                      </TooltipContent>
-                    </Tooltip>
-                  );
-                }
-
-                return (
-                  <div key={item.href}>
-                    <Link
-                      href={item.href}
-                      className={cn("flex w-full", linkClass)}
-                      aria-current={active ? "page" : undefined}
-                    >
-                      <Icon className="size-4 shrink-0 text-amber-100/90" aria-hidden />
-                      <span className="min-w-0 flex-1 truncate text-start font-medium">{item.label}</span>
-                    </Link>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        ))}
-      </nav>
-      <div className="border-t border-amber-500/10 px-2 py-2.5 sm:px-3">
-        <p
-          className={cn(
-            "text-muted-foreground text-[10px] leading-relaxed",
-            collapsed && "sr-only",
-          )}
-        >
-          Next UI · Read-only · Demo
+      <div className="mt-2 border-t border-amber-500/10 pt-3">
+        <p className="text-stone-400 text-xs leading-relaxed">
+          MT5 الحقيقي
+          <br />
+          قراءة فقط
         </p>
       </div>
     </aside>

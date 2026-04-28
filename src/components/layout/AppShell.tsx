@@ -9,11 +9,13 @@ type AppShellProps = {
 
 export function AppShell({ children }: AppShellProps) {
   return (
-    <div className="flex min-h-dvh w-full flex-row items-start overflow-x-hidden">
+    <div className="flex min-h-dvh w-full flex-row-reverse items-start overflow-x-hidden">
       <AppSidebar />
       <main className="flex min-w-0 flex-1 flex-col overflow-x-hidden bg-background">
-        <AppHeader />
-        <div className="flex flex-1 flex-col p-4 md:p-6 lg:p-8">{children}</div>
+        <div className="mx-auto flex w-full max-w-[1600px] min-w-0 flex-1 flex-col">
+          <AppHeader />
+          <div className="flex min-w-0 flex-1 flex-col p-4 md:p-6 lg:p-8">{children}</div>
+        </div>
       </main>
     </div>
   );
