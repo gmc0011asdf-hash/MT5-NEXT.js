@@ -26,6 +26,41 @@ const SOURCE_LOCAL_HISTORY = "mt5-local-readonly" as const;
 
 const MAX_SYMBOLS_PER_MUTATION = 200;
 const MAX_DEALS_PER_MUTATION = 200;
+const MAX_CANDLES_PER_MUTATION = 1000;
+
+/**
+ * T3-04: Upsert a single monitoringStatus row by (userId, service).
+ * Uses the by_userId_service compound index so no unbounded collect() is needed.
+ * Replaces every direct ctx.db.insert("monitoringStatus", ...) call.
+ */
+async function _upsertMonitoringStatus(
+  ctx: MutationCtx,
+  doc: {
+    userId: string;
+    service: string;
+    status: string;
+    message?: string;
+    checkedAt: number;
+    syncRunId?: string;
+  },
+): Promise<void> {
+  const existing = await ctx.db
+    .query("monitoringStatus")
+    .withIndex("by_userId_service", (q) =>
+      q.eq("userId", doc.userId).eq("service", doc.service),
+    )
+    .first();
+  if (existing) {
+    await ctx.db.patch(existing._id, {
+      status: doc.status,
+      message: doc.message,
+      checkedAt: doc.checkedAt,
+      syncRunId: doc.syncRunId,
+    });
+  } else {
+    await ctx.db.insert("monitoringStatus", doc);
+  }
+}
 
 function isFinalChunk(
   chunkIndex: number | undefined,
@@ -206,7 +241,7 @@ export const demoSyncReadOnlySnapshotsFromMt5Stub = mutation({
       source: SOURCE,
     });
 
-    await ctx.db.insert("monitoringStatus", {
+    await _upsertMonitoringStatus(ctx, {
       userId,
       service: "mt5-bridge-read-only",
       status: "stub_synced",
@@ -297,7 +332,7 @@ export const syncReadOnlySnapshotFromLocalService = mutation({
     const snapshot = args.snapshot as SnapshotArg;
     const syncRunId = `mt5-local-${now}`;
 
-    await ctx.db.insert("monitoringStatus", {
+    await _upsertMonitoringStatus(ctx, {
       userId,
       service: "mt5-local-readonly",
       status: snapshot.connected ? "snapshot_received" : "offline_or_inner_error",
@@ -613,7 +648,7 @@ export const syncReadOnlyTradeHistoryFromLocalService = mutation({
     }
 
     if (isFinalChunk(args.chunkIndex, args.totalChunks)) {
-      await ctx.db.insert("monitoringStatus", {
+      await _upsertMonitoringStatus(ctx, {
         userId,
         service: "mt5-local-history-readonly",
         status: args.connected ? "history_sync_received" : "offline_or_inner_error",
@@ -777,6 +812,210 @@ export const updateMySymbolSetting = mutation({
       source: "user-symbol-settings",
     });
     return { ok: true as const };
+  },
+});
+
+/**
+ * T3-02: مزامنة شموع OHLCV من الخدمة المحلية لـ MT5 — دفعة بحد أقصى 1000 شمعة.
+ *
+ * Deduplication logic (read-only, no trading):
+ *   - For each candle keyed by (userId, symbol, timeframe, time):
+ *     a) If no existing row → insert.
+ *     b) If existing row with identical OHLC → skip (no write).
+ *     c) If existing row with different OHLC → patch (MT5 history revision) + log to auditEvents.
+ *
+ * Uses the by_userId_symbol_timeframe_time compound index — no collect() on large tables.
+ */
+export const syncReadOnlyCandlesFromLocalService = mutation({
+  args: {
+    connected: v.boolean(),
+    candles: v.array(v.any()),
+    symbols: v.optional(v.array(v.string())),
+    timeframes: v.optional(v.array(v.string())),
+    read_only_mode: v.optional(v.boolean()),
+    error: v.optional(v.string()),
+    syncRunId: v.optional(v.string()),
+    chunkIndex: v.optional(v.number()),
+    totalChunks: v.optional(v.number()),
+  },
+  handler: async (ctx, args) => {
+    const identity = await ctx.auth.getUserIdentity();
+    const userId = requireIdentifiedUser(identity);
+    const now = Date.now();
+    const runId = args.syncRunId ?? `mt5-candles-${now}`;
+
+    if (args.candles.length > MAX_CANDLES_PER_MUTATION) {
+      throw new ConvexError("عدد الشموع كبير جدًا، يجب إرسالها على دفعات بحد أقصى 1000 شمعة");
+    }
+
+    await _upsertMonitoringStatus(ctx, {
+      userId,
+      service: "mt5-local-candles-readonly",
+      status: args.connected ? "candles_sync_received" : "offline_or_inner_error",
+      message:
+        args.error ??
+        (args.connected
+          ? "شموع OHLCV محلية للقراءة فقط"
+          : "خدمة MT5 المحلية غير متاحة أو MT5 غير متصل"),
+      checkedAt: now,
+      syncRunId: runId,
+    });
+
+    if (!args.connected) {
+      if (isFinalChunk(args.chunkIndex, args.totalChunks)) {
+        await enforceGovernanceReadOnly(ctx, userId, now);
+        await ctx.db.insert("auditEvents", {
+          userId,
+          action: "mt5_local_readonly_candles_disconnected",
+          entity: "mt5LocalService",
+          message: args.error ?? "خدمة MT5 المحلية غير متاحة أو MT5 غير متصل",
+          createdAt: now,
+          source: SOURCE_LOCAL,
+          syncRunId: runId,
+        });
+      }
+      return { ok: false as const, connected: false as const };
+    }
+
+    let inserted = 0;
+    let skippedIdentical = 0;
+    let patchedRevisions = 0;
+    let skippedInvalid = 0;
+
+    for (const row of args.candles) {
+      if (!row || typeof row !== "object") {
+        skippedInvalid += 1;
+        continue;
+      }
+      const c = row as Record<string, unknown>;
+
+      const symbol = typeof c.symbol === "string" ? c.symbol.trim() : "";
+      const timeframe = typeof c.timeframe === "string" ? c.timeframe.trim() : "";
+      const open = readNumeric(c.open);
+      const high = readNumeric(c.high);
+      const low = readNumeric(c.low);
+      const close = readNumeric(c.close);
+
+      // time arrives as epoch-ms from Python service (ts * 1000)
+      const timeRaw = readNumeric(c.time);
+
+      if (
+        !symbol ||
+        !timeframe ||
+        open === undefined ||
+        high === undefined ||
+        low === undefined ||
+        close === undefined ||
+        timeRaw === undefined ||
+        !Number.isFinite(timeRaw)
+      ) {
+        skippedInvalid += 1;
+        continue;
+      }
+
+      // Normalise to ms — Python sends ts*1000, but guard against bare seconds
+      const timeMs = timeRaw > 10_000_000_000 ? Math.floor(timeRaw) : Math.floor(timeRaw * 1000);
+
+      const tickVolume = readNumeric(c.tick_volume !== undefined ? c.tick_volume : c.tickVolume);
+      const spreadVal = readNumeric(c.spread);
+      const realVolume = readNumeric(c.real_volume !== undefined ? c.real_volume : c.realVolume);
+
+      // T3-02 dedup: indexed lookup by (userId, symbol, timeframe, time)
+      const existing = await ctx.db
+        .query("mt5Candles")
+        .withIndex("by_userId_symbol_timeframe_time", (q) =>
+          q
+            .eq("userId", userId)
+            .eq("symbol", symbol)
+            .eq("timeframe", timeframe)
+            .eq("time", timeMs),
+        )
+        .first();
+
+      if (existing) {
+        // Case (b): identical OHLC — skip without any write
+        if (
+          existing.open === open &&
+          existing.high === high &&
+          existing.low === low &&
+          existing.close === close
+        ) {
+          skippedIdentical += 1;
+          continue;
+        }
+
+        // Case (c): OHLC differs — MT5 history revision; patch and log
+        await ctx.db.patch(existing._id, {
+          open,
+          high,
+          low,
+          close,
+          tickVolume: tickVolume !== undefined ? tickVolume : existing.tickVolume,
+          spread: spreadVal !== undefined ? spreadVal : existing.spread,
+          realVolume: realVolume !== undefined ? realVolume : existing.realVolume,
+          capturedAt: now,
+          syncRunId: runId,
+        });
+        await ctx.db.insert("auditEvents", {
+          userId,
+          action: "mt5_candle_ohlc_revision",
+          entity: "mt5Candles",
+          entityId: `${symbol}/${timeframe}/${timeMs}`,
+          message: `تعديل OHLC تاريخي للشمعة ${symbol}/${timeframe}@${timeMs} — مراجعة بيانات MT5`,
+          createdAt: now,
+          source: SOURCE_LOCAL,
+          syncRunId: runId,
+        });
+        patchedRevisions += 1;
+        continue;
+      }
+
+      // Case (a): new candle — insert
+      await ctx.db.insert("mt5Candles", {
+        userId,
+        symbol,
+        timeframe,
+        time: timeMs,
+        open,
+        high,
+        low,
+        close,
+        tickVolume,
+        spread: spreadVal !== undefined ? Math.floor(spreadVal) : undefined,
+        realVolume,
+        source: SOURCE_LOCAL,
+        syncRunId: runId,
+        capturedAt: now,
+      });
+      inserted += 1;
+    }
+
+    if (isFinalChunk(args.chunkIndex, args.totalChunks)) {
+      await enforceGovernanceReadOnly(ctx, userId, now);
+      await ctx.db.insert("auditEvents", {
+        userId,
+        action: "mt5_local_readonly_candles_sync",
+        entity: "mt5LocalService",
+        message:
+          `شموع OHLCV — جديد: ${inserted}، مكرر متجاهل: ${skippedIdentical}، ` +
+          `مراجعة: ${patchedRevisions}، غير صالح: ${skippedInvalid}. قراءة فقط.`,
+        createdAt: now,
+        source: SOURCE_LOCAL,
+        syncRunId: runId,
+      });
+    }
+
+    return {
+      ok: true as const,
+      connected: true as const,
+      inserted: {
+        candles: inserted,
+        skippedIdentical,
+        patchedRevisions,
+        skippedInvalid,
+        syncRunId: runId,
+      },
+    };
   },
 });
 

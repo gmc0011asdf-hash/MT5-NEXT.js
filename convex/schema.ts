@@ -161,7 +161,8 @@ export default defineSchema({
   })
     .index("by_userId", ["userId"])
     .index("by_service", ["service"])
-    .index("by_checkedAt", ["checkedAt"]),
+    .index("by_checkedAt", ["checkedAt"])
+    .index("by_userId_service", ["userId", "service"]),
 
   mt5Symbols: defineTable({
     name: v.string(),
@@ -244,7 +245,8 @@ export default defineSchema({
     .index("by_userId", ["userId"])
     .index("by_symbol_timeframe", ["symbol", "timeframe"])
     .index("by_symbol_timeframe_time", ["symbol", "timeframe", "time"])
-    .index("by_userId_symbol_timeframe", ["userId", "symbol", "timeframe"]),
+    .index("by_userId_symbol_timeframe", ["userId", "symbol", "timeframe"])
+    .index("by_userId_symbol_timeframe_time", ["userId", "symbol", "timeframe", "time"]),
 
   technicalIndicatorSnapshots: defineTable({
     userId: v.string(),
