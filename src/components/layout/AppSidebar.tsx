@@ -40,12 +40,12 @@ export function AppSidebar() {
   return (
     <aside
       className={cn(
-        "sticky top-0 flex h-dvh shrink-0 overflow-y-auto border-l border-amber-500/10 bg-sidebar/95 text-sidebar-foreground backdrop-blur-sm",
+        "sticky top-0 flex h-dvh shrink-0 overflow-y-auto border-l border-amber-500/20 bg-sidebar/95 text-sidebar-foreground backdrop-blur-sm",
         "transition-[width] duration-200 ease-out",
         collapsed ? "w-[4.5rem] max-md:max-w-[4.5rem]" : "w-64 max-md:w-56",
       )}
     >
-      <div className="flex min-h-14 items-center gap-1 border-b border-amber-500/10 px-1.5 py-2.5 sm:px-2">
+      <div className="flex min-h-14 items-center gap-1.5 border-b border-amber-500/20 px-1.5 py-2.5 sm:px-2.5">
         <Button
           type="button"
           variant="ghost"
@@ -65,7 +65,7 @@ export function AppSidebar() {
           <p className="mt-0.5 text-muted-foreground text-xs">واجهة مؤسسية</p>
         </div>
       </div>
-      <nav className="flex flex-1 flex-col gap-3 overflow-y-auto p-2 sm:p-3">
+      <nav className="flex flex-1 flex-col gap-3.5 overflow-y-auto p-2.5 sm:p-3.5">
         {NAV_SECTIONS.map((section) => (
           <div key={section.title}>
             <p
@@ -83,11 +83,11 @@ export function AppSidebar() {
                   pathname === item.href ||
                   (item.href !== "/dashboard" && pathname.startsWith(item.href));
                 const linkClass = cn(
-                  "min-h-10 items-center gap-2 rounded-xl border text-sm transition-colors",
+                  "min-h-10 items-center gap-2.5 rounded-xl border text-sm transition-colors",
                   collapsed ? "justify-center px-2" : "px-3 py-2",
                   active
-                    ? "border-amber-500/20 bg-amber-500/10 text-amber-50 ring-1 ring-amber-500/20"
-                    : "border-transparent hover:border-amber-500/10 hover:bg-sidebar-accent/50 hover:text-sidebar-accent-foreground",
+                    ? "border-amber-400/40 bg-amber-500/15 text-amber-50 ring-1 ring-amber-400/35 shadow-[inset_0_0_0_1px_rgba(251,191,36,0.15)]"
+                    : "border-transparent text-sidebar-foreground/90 hover:border-amber-500/20 hover:bg-sidebar-accent/60 hover:text-sidebar-accent-foreground",
                 );
 
                 if (collapsed) {
@@ -119,8 +119,8 @@ export function AppSidebar() {
                       className={cn("flex w-full", linkClass)}
                       aria-current={active ? "page" : undefined}
                     >
-                      <Icon className="size-4 shrink-0" aria-hidden />
-                      <span className="min-w-0 flex-1 truncate text-start">{item.label}</span>
+                      <Icon className="size-4 shrink-0 text-amber-100/90" aria-hidden />
+                      <span className="min-w-0 flex-1 truncate text-start font-medium">{item.label}</span>
                     </Link>
                   </div>
                 );

@@ -38,6 +38,17 @@ FORBIDDEN_MT5_FUNCTION_NAMES: tuple[str, ...] = (
 import MetaTrader5 as mt5
 
 _DEFAULT_SYMBOLS: tuple[str, ...] = ("EURUSD", "GBPUSD", "XAUUSD")
+_DEFAULT_CANDLE_TIMEFRAMES: tuple[str, ...] = ("M15", "H1", "H4", "D1")
+_MAX_CANDLE_COUNT: int = 1000
+_TIMEFRAME_MAP: dict[str, int] = {
+    "M1": mt5.TIMEFRAME_M1,
+    "M5": mt5.TIMEFRAME_M5,
+    "M15": mt5.TIMEFRAME_M15,
+    "M30": mt5.TIMEFRAME_M30,
+    "H1": mt5.TIMEFRAME_H1,
+    "H4": mt5.TIMEFRAME_H4,
+    "D1": mt5.TIMEFRAME_D1,
+}
 
 
 class ConnectRequest(BaseModel):
@@ -59,6 +70,12 @@ def _symbols_from_env() -> list[str]:
         return list(_DEFAULT_SYMBOLS)
     parts = [s.strip().upper() for s in raw.split(",") if s.strip()]
     return parts or list(_DEFAULT_SYMBOLS)
+
+
+def _parse_csv_param(raw: str | None) -> list[str]:
+    if raw is None:
+        return []
+    return [p.strip().upper() for p in raw.split(",") if p.strip()]
 
 
 def _iso_from_mt5_time(ts: int | float | None) -> str | None:
@@ -532,6 +549,86 @@ def readonly_history_deals(
                 "to": to_date.isoformat(),
                 "deals": deals_out,
             },
+        )
+    finally:
+        mt5.shutdown()
+
+
+@app.get("/readonly/candles")
+def readonly_candles(
+    symbols: str | None = Query(default=None),
+    timeframes: str | None = Query(default=None),
+    count: int = Query(default=200, ge=1, le=_MAX_CANDLE_COUNT),
+) -> JSONResponse:
+    """Candles via copy_rates_from_pos — read-only only."""
+    _enforce_read_only_policy()
+    ok, err = _safe_mt5_init()
+    if not ok:
+        return JSONResponse(
+            status_code=503,
+            content={
+                "connected": False,
+                "read_only_mode": READ_ONLY_MODE,
+                "source": "mt5-local-readonly-candles",
+                "candles": [],
+                "error": err or "MT5 unavailable",
+            },
+        )
+    try:
+        symbols_list = _parse_csv_param(symbols) or _symbols_from_env()
+        requested_timeframes = _parse_csv_param(timeframes) or list(_DEFAULT_CANDLE_TIMEFRAMES)
+        valid_timeframes = [tf for tf in requested_timeframes if tf in _TIMEFRAME_MAP]
+        if len(valid_timeframes) == 0:
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "connected": True,
+                    "read_only_mode": READ_ONLY_MODE,
+                    "source": "mt5-local-readonly-candles",
+                    "candles": [],
+                    "error": "No valid timeframes. Use M1,M5,M15,M30,H1,H4,D1",
+                },
+            )
+
+        candles: list[dict[str, Any]] = []
+        for sym in symbols_list:
+            if not mt5.symbol_select(sym, True):
+                continue
+            for tf in valid_timeframes:
+                tf_const = _TIMEFRAME_MAP.get(tf)
+                if tf_const is None:
+                    continue
+                rates = mt5.copy_rates_from_pos(sym, tf_const, 0, int(count))
+                if rates is None:
+                    continue
+                for rate in rates:
+                    ts = int(rate["time"])
+                    candles.append(
+                        {
+                            "symbol": sym,
+                            "timeframe": tf,
+                            "time": ts * 1000,
+                            "time_iso": _iso_from_mt5_time(ts),
+                            "open": float(rate["open"]),
+                            "high": float(rate["high"]),
+                            "low": float(rate["low"]),
+                            "close": float(rate["close"]),
+                            "tick_volume": int(rate["tick_volume"]),
+                            "spread": int(rate["spread"]),
+                            "real_volume": int(rate["real_volume"]),
+                        }
+                    )
+
+        return JSONResponse(
+            content={
+                "connected": True,
+                "read_only_mode": READ_ONLY_MODE,
+                "source": "mt5-local-readonly-candles",
+                "symbols": symbols_list,
+                "timeframes": valid_timeframes,
+                "count": int(count),
+                "candles": candles,
+            }
         )
     finally:
         mt5.shutdown()
