@@ -21,6 +21,42 @@ import { api } from "../../../../convex/_generated/api";
 const SYMBOL_SYNC_CHUNK = 100;
 const DISPLAY_ROW_CAP = 300;
 
+function SymbolToggleSwitch({
+  checked,
+  onToggle,
+  label,
+}: {
+  checked: boolean;
+  onToggle: () => void;
+  label: string;
+}) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      aria-label={label}
+      onClick={onToggle}
+      className={`group relative inline-flex h-8 w-[78px] items-center rounded-full border px-1 transition-all focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-300/60 ${
+        checked
+          ? "border-emerald-500/50 bg-emerald-500/20"
+          : "border-rose-500/45 bg-rose-500/20"
+      }`}
+    >
+      <span className={`w-full px-1 text-[10px] font-semibold tracking-wide ${checked ? "text-emerald-100 text-right" : "text-rose-100 text-left"}`}>
+        {checked ? "ON" : "OFF"}
+      </span>
+      <span
+        className={`absolute top-1 h-6 w-6 rounded-full border shadow-sm transition-transform ${
+          checked
+            ? "left-1 border-emerald-300/50 bg-emerald-100/90 translate-x-0"
+            : "left-1 border-rose-300/50 bg-rose-100/90 translate-x-[48px]"
+        }`}
+      />
+    </button>
+  );
+}
+
 function dedupeSymbolsByName(raw: unknown[]): Record<string, unknown>[] {
   const map = new Map<string, Record<string, unknown>>();
   for (const item of raw) {
@@ -42,6 +78,8 @@ export default function SettingsPage() {
 
   const mt5Symbols = useQuery(api.coreQueries.getMyMt5SymbolsWithSettings, canUseConvex ? {} : "skip");
   const auditEvents = useQuery(api.coreQueries.getMyAuditEvents, canUseConvex ? {} : "skip");
+  const mt5Summary = useQuery(api.coreQueries.getMyMt5ReadOnlySummary, canUseConvex ? {} : "skip");
+  const governance = useQuery(api.coreQueries.getMyGovernanceState, canUseConvex ? {} : "skip");
 
   const [syncBusy, setSyncBusy] = useState(false);
   const [syncMessage, setSyncMessage] = useState<string | null>(null);
@@ -236,28 +274,22 @@ export default function SettingsPage() {
                         </TableCell>
                         <TableCell className="text-muted-foreground text-xs">MT5 Market Watch</TableCell>
                         <TableCell>
-                          <Button
-                            type="button"
-                            size="sm"
-                            variant={row.enabled ? "default" : "outline"}
-                            onClick={() =>
+                          <SymbolToggleSwitch
+                            checked={row.enabled}
+                            label={`تبديل مفعّل للرمز ${row.name}`}
+                            onToggle={() =>
                               void patchSymbol(row.name, { enabled: !row.enabled, showInLab: row.showInLab })
                             }
-                          >
-                            {row.enabled ? "تشغيل" : "إيقاف"}
-                          </Button>
+                          />
                         </TableCell>
                         <TableCell>
-                          <Button
-                            type="button"
-                            size="sm"
-                            variant={row.showInLab ? "default" : "outline"}
-                            onClick={() =>
+                          <SymbolToggleSwitch
+                            checked={row.showInLab}
+                            label={`تبديل عرض المختبر للرمز ${row.name}`}
+                            onToggle={() =>
                               void patchSymbol(row.name, { enabled: row.enabled, showInLab: !row.showInLab })
                             }
-                          >
-                            {row.showInLab ? "تشغيل" : "إيقاف"}
-                          </Button>
+                          />
                         </TableCell>
                       </TableRow>
                     );
@@ -309,6 +341,23 @@ export default function SettingsPage() {
             </Table>
           </div>
         )}
+      </Section>
+
+      <Section title="جاهزية مرحلة العقول واللجان">
+        <p className="text-muted-foreground text-xs leading-relaxed">
+          قائمة تحقق للقراءة فقط قبل تشغيل مرحلة العقول واللجان.
+        </p>
+        <div className="grid gap-2 text-sm">
+          <CheckItem label="اتصال MT5 قراءة فقط" ok={mt5Summary?.hasRealMt5LocalData === true} />
+          <CheckItem label="مزامنة الحساب" ok={Boolean(mt5Summary?.latestAccountSnapshot)} />
+          <CheckItem label="مزامنة الأسعار" ok={(mt5Summary?.lastSyncAt ?? 0) > 0} />
+          <CheckItem label="مزامنة الصفقات النشطة" ok={(mt5Summary?.openPositionsCount ?? 0) >= 0} />
+          <CheckItem label="مزامنة سجل الصفقات" ok={(auditEvents?.some((e) => e.action.includes("trade_history")) ?? false)} />
+          <CheckItem label="الرموز الظاهرة من MT5" ok={(mt5Symbols?.length ?? 0) > 0} />
+          <CheckItem label="إعدادات الأزواج للمختبر" ok={(mt5Symbols?.some((s) => s.showInLab) ?? false)} />
+          <CheckItem label="الحوكمة readOnly" ok={governance?.readOnly === true} />
+          <CheckItem label="منع تنفيذ التداول" ok={governance?.tradingEnabled === false} />
+        </div>
       </Section>
 
       <Section title="إعدادات المنصة">
@@ -406,6 +455,17 @@ function Field({
         placeholder={placeholder}
         className="bg-muted/30"
       />
+    </div>
+  );
+}
+
+function CheckItem({ label, ok }: { label: string; ok: boolean }) {
+  return (
+    <div className="flex items-center justify-between rounded-lg border border-amber-500/10 bg-muted/20 px-3 py-2">
+      <span>{label}</span>
+      <Badge variant={ok ? "outline" : "secondary"} className={ok ? "border-emerald-500/30 text-emerald-200" : ""}>
+        {ok ? "جاهز" : "غير جاهز"}
+      </Badge>
     </div>
   );
 }

@@ -431,7 +431,56 @@ export const getMyTradeHistoryDeals = query({
       .query("mt5TradeHistoryDeals")
       .withIndex("by_userId_time", (q) => q.eq("userId", userId))
       .order("desc")
-      .take(250);
-    return rows.filter((r) => r.source === SOURCE_MT5_LOCAL).slice(0, 100);
+      .take(300);
+    return rows.filter((r) => r.source === SOURCE_MT5_LOCAL).slice(0, 300);
+  },
+});
+
+export const getMyRealMt5ReportSummary = query({
+  args: {},
+  handler: async (ctx) => {
+    const userId = await requireUserId(ctx);
+    if (!userId) return null;
+    const activeRows = await ctx.db
+      .query("mt5OpenPositions")
+      .withIndex("by_userId", (q) => q.eq("userId", userId))
+      .collect();
+    const active = resolveLocalOpenPositions(activeRows.filter((r) => r.source === SOURCE_MT5_LOCAL));
+
+    const historyRows = await ctx.db
+      .query("mt5TradeHistoryDeals")
+      .withIndex("by_userId_time", (q) => q.eq("userId", userId))
+      .order("desc")
+      .take(300);
+    const history = historyRows.filter((r) => r.source === SOURCE_MT5_LOCAL);
+
+    const buyCount = history.filter((r) => String(r.type ?? "").toUpperCase() === "BUY" || r.type === "0").length;
+    const sellCount = history.filter((r) => String(r.type ?? "").toUpperCase() === "SELL" || r.type === "1").length;
+    const winners = history.filter((r) => r.profit > 0).length;
+    const losers = history.filter((r) => r.profit < 0).length;
+    const grossProfit = history.reduce((sum, r) => sum + (r.profit > 0 ? r.profit : 0), 0);
+    const grossLoss = history.reduce((sum, r) => sum + (r.profit < 0 ? r.profit : 0), 0);
+    const totalCommission = history.reduce((sum, r) => sum + (r.commission ?? 0), 0);
+    const totalSwap = history.reduce((sum, r) => sum + (r.swap ?? 0), 0);
+    const totalVolume = history.reduce((sum, r) => sum + r.volume, 0);
+    const netResult = history.reduce(
+      (sum, r) => sum + r.profit + (r.commission ?? 0) + (r.swap ?? 0) + (r.fee ?? 0),
+      0,
+    );
+    return {
+      activeCount: active.length,
+      floatingProfit: active.reduce((sum, r) => sum + r.profit, 0),
+      historyCount: history.length,
+      buyCount,
+      sellCount,
+      winners,
+      losers,
+      grossProfit,
+      grossLoss,
+      netResult,
+      totalCommission,
+      totalSwap,
+      totalVolume,
+    };
   },
 });

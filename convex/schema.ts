@@ -65,6 +65,7 @@ export default defineSchema({
     stopLoss: v.optional(v.number()),
     takeProfit: v.optional(v.number()),
     profit: v.number(),
+    comment: v.optional(v.string()),
     openedAt: v.optional(v.number()),
     capturedAt: v.number(),
     source: v.string(),

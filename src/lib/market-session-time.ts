@@ -49,47 +49,47 @@ export function getMinutesFromTimeString(hhmm: string): number {
 
 const pad2 = (n: number) => String(n).padStart(2, "0");
 
-/** 24-hour wall-clock string "HH:mm" from constants → "hh:mm ص|م" (display only). */
+/** 24-hour wall-clock string "HH:mm" from constants → "hh:mm AM/PM" (display only). */
 export function formatTimeString12h(hhmm: string): string {
   const [h24, min] = hhmm.split(":").map((x) => parseInt(x, 10));
   if (Number.isNaN(h24) || Number.isNaN(min)) return hhmm;
   let h12: number;
-  let period: "ص" | "م";
+  let period: "AM" | "PM";
   if (h24 === 0) {
     h12 = 12;
-    period = "ص";
+    period = "AM";
   } else if (h24 < 12) {
     h12 = h24;
-    period = "ص";
+    period = "AM";
   } else if (h24 === 12) {
     h12 = 12;
-    period = "م";
+    period = "PM";
   } else {
     h12 = h24 - 12;
-    period = "م";
+    period = "PM";
   }
   return `${pad2(h12)}:${pad2(min)} ${period}`;
 }
 
-/** 24-hour numeric parts → "hh:mm:ss ص|م" (Latin digits). */
+/** 24-hour numeric parts → "hh:mm:ss AM/PM" (Latin digits). */
 export function formatTime12hFromParts(parts: TimeParts, includeSeconds = true): string {
   const h24 = parts.hour;
   const m = parts.minute;
   const s = parts.second;
   let h12: number;
-  let period: "ص" | "م";
+  let period: "AM" | "PM";
   if (h24 === 0) {
     h12 = 12;
-    period = "ص";
+    period = "AM";
   } else if (h24 < 12) {
     h12 = h24;
-    period = "ص";
+    period = "AM";
   } else if (h24 === 12) {
     h12 = 12;
-    period = "م";
+    period = "PM";
   } else {
     h12 = h24 - 12;
-    period = "م";
+    period = "PM";
   }
   if (includeSeconds) {
     return `${pad2(h12)}:${pad2(m)}:${pad2(s)} ${period}`;
@@ -97,7 +97,7 @@ export function formatTime12hFromParts(parts: TimeParts, includeSeconds = true):
   return `${pad2(h12)}:${pad2(m)} ${period}`;
 }
 
-/** Live clock label in zone (12-hour Arabic ص/م). */
+/** Live clock label in zone (12-hour with AM/PM). */
 export function formatZoneTimeLabel12h(timeZone: string, date: Date): string {
   return formatTime12hFromParts(getTimePartsForZone(timeZone, date), true);
 }

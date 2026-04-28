@@ -30,9 +30,48 @@ function shortTz(session: MarketSession, date: Date): string {
   return name ?? session.timezone;
 }
 
-function SessionCard({ session, at }: { session: MarketSession; at: Date }) {
-  const st = getSessionStatus(session, at);
-  const tzShort = shortTz(session, at);
+const TIME_PLACEHOLDER = "--:--:--";
+
+function formatBaghdadTime(date: Date | null): string {
+  if (!date) return TIME_PLACEHOLDER;
+  return new Intl.DateTimeFormat("en-US", {
+    timeZone: "Asia/Baghdad",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: true,
+  }).format(date);
+}
+
+function formatSessionDate(date: Date | null, timeZone: string): string {
+  if (!date) return "—";
+  return new Intl.DateTimeFormat("ar-IQ", {
+    timeZone,
+    weekday: "long",
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+  }).format(date);
+}
+
+function formatSessionTime12(date: Date | null, timeZone: string): string {
+  if (!date) return TIME_PLACEHOLDER;
+  return new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: true,
+  }).format(date);
+}
+
+function SessionCard({ session, at }: { session: MarketSession; at: Date | null }) {
+  const stableDate = at ?? new Date("1970-01-01T00:00:00Z");
+  const st = getSessionStatus(session, stableDate);
+  const tzShort = shortTz(session, stableDate);
+  const localTime12 = formatSessionTime12(at, session.timezone);
+  const baghdadTime = formatBaghdadTime(at);
+  const dateLabel = formatSessionDate(at, session.timezone);
   const hoursLine =
     session.type === "market" && session.openTime && session.closeTime
       ? `${formatTimeString12h(session.openTime)} – ${formatTimeString12h(session.closeTime)} (محلي)`
@@ -58,12 +97,13 @@ function SessionCard({ session, at }: { session: MarketSession; at: Date }) {
           <p className="font-semibold text-base text-foreground leading-tight md:text-lg">{session.nameAr}</p>
           <p className="truncate text-muted-foreground text-[11px] tracking-wide">{session.nameEn}</p>
           <p className="whitespace-nowrap font-mono text-amber-100/90 text-sm tabular-nums leading-tight">
-            {st.localTimeLabel}
+            {localTime12}
           </p>
           <p className="whitespace-nowrap text-muted-foreground text-[10px] tabular-nums leading-tight">{tzShort}</p>
+          <p className="text-muted-foreground text-[10px] leading-tight">{dateLabel}</p>
         </div>
         <div className="mx-auto sm:mx-0">
-          <AnalogMarketClock session={session} at={at} size={88} tone={st.tone} />
+          <AnalogMarketClock session={session} at={stableDate} size={88} tone={st.tone} />
         </div>
       </div>
       <div className="flex flex-wrap items-center justify-between gap-2 border-t border-amber-500/10 pt-2">
@@ -84,7 +124,7 @@ function SessionCard({ session, at }: { session: MarketSession; at: Date }) {
         </div>
       ) : null}
       {eta ? <p className="text-amber-200/90 text-[11px]">{eta}</p> : null}
-      <p className="line-clamp-2 text-muted-foreground text-[10px] leading-snug">{st.localDateLabel}</p>
+      <p className="font-mono text-[11px] text-amber-100/90 tabular-nums">بغداد: {baghdadTime}</p>
     </Card>
   );
 }
@@ -98,8 +138,6 @@ export function MarketSessionsPanel() {
     return () => window.clearInterval(id);
   }, []);
 
-  const renderAt = now ?? new Date("1970-01-01T00:00:00Z");
-
   return (
     <section className="space-y-4" suppressHydrationWarning>
       <div className="space-y-1">
@@ -109,7 +147,7 @@ export function MarketSessionsPanel() {
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-5">
         {MARKET_SESSIONS.map((session) => (
-          <SessionCard key={session.id} session={session} at={renderAt} />
+          <SessionCard key={session.id} session={session} at={now} />
         ))}
       </div>
 
