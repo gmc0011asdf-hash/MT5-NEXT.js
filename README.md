@@ -30,7 +30,40 @@ cp .env.local.example .env.local
 - `CONVEX_DEPLOYMENT` — اسم نشر Convex
 - `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` — مفتاح Clerk العام
 - `CLERK_SECRET_KEY` — مفتاح Clerk السري
+- `CLERK_FRONTEND_API_URL` — نطاق Clerk للمصادقة (انظر القسم 1-د أدناه)
 - `MT5_SERVICE_URL` — عنوان خدمة Python (الافتراضي: `http://127.0.0.1:8010`)
+
+### د. إعداد قالب JWT في Clerk (مطلوب لحفظ الشموع في Convex)
+
+حفظ بيانات MT5 في Convex من مسارات Next.js API يتطلب قالب JWT باسم `convex` في لوحة تحكم Clerk.
+**بدون هذه الخطوة يظهر خطأ `NoAuthProvider` و `persisted: false`.**
+
+**الخطوات:**
+
+1. افتح [Clerk Dashboard](https://dashboard.clerk.com) → اختر تطبيقك
+2. من القائمة الجانبية: **JWT Templates**
+3. اضغط **New template** (أو عدّل موجوداً باسم `convex`)
+4. الإعدادات المطلوبة:
+   - **Name**: `convex` (بالضبط، حساسة لحالة الأحرف)
+   - **Audience** (`aud`): `convex`
+   - **Lifetime**: `60` ثانية (كافٍ)
+   - اترك باقي الحقول افتراضية
+5. احفظ القالب
+6. من نفس الصفحة: انسخ **Issuer URL** (يبدأ بـ `https://xxxx.clerk.accounts.dev`)
+7. ضع هذه القيمة في:
+   - `.env.local` → `CLERK_FRONTEND_API_URL=https://xxxx.clerk.accounts.dev`
+   - لوحة تحكم Convex → **Settings → Environment Variables** → `CLERK_FRONTEND_API_URL`
+8. شغّل:
+   ```bash
+   pnpm exec convex codegen
+   ```
+
+**تشخيص المشكلة:**
+إذا استمر فشل الحفظ، أضف `?debugAuth=1` للرابط وهو لن يكشف الـ token كاملاً:
+```
+http://localhost:3000/api/mt5-readonly/candles?symbols=EURUSD&timeframes=M15&count=5&debugAuth=1
+```
+ستظهر في الرد `authDiagnostics` تحتوي على `iss` و `aud` الفعلية مع إرشادات الإصلاح.
 
 ### ب. تثبيت التبعيات (Node.js)
 
