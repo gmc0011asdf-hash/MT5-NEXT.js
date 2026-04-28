@@ -224,4 +224,53 @@ export default defineSchema({
     .index("by_userId_time", ["userId", "time"])
     .index("by_dealTicket", ["dealTicket"])
     .index("by_userId_dealTicket", ["userId", "dealTicket"]),
+
+  mt5Candles: defineTable({
+    userId: v.string(),
+    symbol: v.string(),
+    timeframe: v.string(),
+    time: v.number(),
+    open: v.number(),
+    high: v.number(),
+    low: v.number(),
+    close: v.number(),
+    tickVolume: v.optional(v.number()),
+    spread: v.optional(v.number()),
+    realVolume: v.optional(v.number()),
+    source: v.string(),
+    syncRunId: v.optional(v.string()),
+    capturedAt: v.number(),
+  })
+    .index("by_userId", ["userId"])
+    .index("by_symbol_timeframe", ["symbol", "timeframe"])
+    .index("by_symbol_timeframe_time", ["symbol", "timeframe", "time"])
+    .index("by_userId_symbol_timeframe", ["userId", "symbol", "timeframe"]),
+
+  technicalIndicatorSnapshots: defineTable({
+    userId: v.string(),
+    symbol: v.string(),
+    timeframe: v.string(),
+    candleCount: v.number(),
+    ema20: v.optional(v.number()),
+    ema50: v.optional(v.number()),
+    ema200: v.optional(v.number()),
+    rsi14: v.optional(v.number()),
+    atr14: v.optional(v.number()),
+    macd: v.optional(v.number()),
+    macdSignal: v.optional(v.number()),
+    macdHistogram: v.optional(v.number()),
+    volatility: v.optional(v.number()),
+    recentHigh: v.optional(v.number()),
+    recentLow: v.optional(v.number()),
+    lastClose: v.optional(v.number()),
+    trendBias: v.string(),
+    momentumBias: v.string(),
+    createdAt: v.number(),
+    source: v.string(),
+    syncRunId: v.optional(v.string()),
+  })
+    .index("by_userId_symbol_timeframe", ["userId", "symbol", "timeframe"])
+    .index("by_symbol_timeframe", ["symbol", "timeframe"])
+    .index("by_createdAt", ["createdAt"])
+    .index("by_userId_createdAt", ["userId", "createdAt"]),
 });

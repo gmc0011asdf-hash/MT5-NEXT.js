@@ -13,7 +13,8 @@ import {
 } from "@/components/ui/table";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { institutionalCardClass } from "@/lib/ui-institutional";
-import { useConvexAuth, useQuery } from "convex/react";
+import { useConvexAuth, useMutation, useQuery } from "convex/react";
+import { useState } from "react";
 
 import { api } from "../../../../convex/_generated/api";
 
@@ -23,12 +24,20 @@ const NO_CONVEX_DATA_AR =
 export default function LabPage() {
   const { isLoading: isConvexAuthLoading, isAuthenticated } = useConvexAuth();
   const canUseConvex = !isConvexAuthLoading && isAuthenticated;
+  const [computeBusy, setComputeBusy] = useState(false);
+  const [computeMessage, setComputeMessage] = useState<string | null>(null);
+
+  const computeIndicators = useMutation(api.technicalIndicators.computeTechnicalIndicatorsForEnabledSymbols);
 
   const convexSignals = useQuery(api.coreQueries.getMyLatestRealSignals, canUseConvex ? {} : "skip");
   const labSymbolsForFilter = useQuery(api.coreQueries.getMyEnabledLabSymbols, canUseConvex ? {} : "skip");
   const protectionEvents = useQuery(api.coreQueries.getMyProtectionEvents, canUseConvex ? {} : "skip");
   const governance = useQuery(api.coreQueries.getMyGovernanceState, canUseConvex ? {} : "skip");
   const committeeReports = useQuery(api.coreQueries.getMyCommitteeReports, canUseConvex ? {} : "skip");
+  const technicalIndicators = useQuery(
+    api.technicalIndicators.getMyLatestTechnicalIndicators,
+    canUseConvex ? {} : "skip",
+  );
 
   const executionBlocked =
     !canUseConvex ||
@@ -66,6 +75,22 @@ export default function LabPage() {
     return (
       <span className="tabular-nums">{Number.isInteger(n) ? n : n.toFixed(n < 10 ? 4 : 2)}</span>
     );
+  }
+
+  async function handleComputeIndicators() {
+    setComputeMessage(null);
+    setComputeBusy(true);
+    try {
+      const result = await computeIndicators({});
+      setComputeMessage(
+        `تم الحساب: ${result.computed} كامل، ${result.partial} جزئي، ${result.skipped} متجاوز.`,
+      );
+    } catch (e) {
+      const reason = e instanceof Error ? e.message : "تعذّر حساب المؤشرات.";
+      setComputeMessage(reason);
+    } finally {
+      setComputeBusy(false);
+    }
   }
 
   return (
@@ -123,6 +148,72 @@ export default function LabPage() {
           هذه نسخة واجهة Next.js للعرض والقراءة فقط، التنفيذ ما زال غير مفعل هنا.
         </AlertDescription>
       </Alert>
+
+      <Card className={institutionalCardClass("p-0")}>
+        <CardHeader className="border-b border-amber-500/10 px-4 py-4 md:px-6">
+          <CardTitle className="card-title-inst">المؤشرات الفنية من MT5</CardTitle>
+          <p className="text-muted-foreground text-xs leading-relaxed">
+            حساب المؤشرات لا ينفذ أي صفقة.
+          </p>
+          <div className="flex flex-wrap items-center gap-3 pt-1">
+            <Button
+              type="button"
+              variant="outline"
+              disabled={!canUseConvex || computeBusy}
+              onClick={() => void handleComputeIndicators()}
+            >
+              {computeBusy ? "جاري الحساب…" : "حساب المؤشرات الفنية"}
+            </Button>
+            {computeMessage ? <p className="text-muted-foreground text-xs">{computeMessage}</p> : null}
+          </div>
+        </CardHeader>
+        <CardContent className="overflow-x-auto px-2 pb-4 md:px-4">
+          {!canUseConvex && !isConvexAuthLoading ? (
+            <p className="text-muted-foreground px-2 py-4 text-sm">{NO_CONVEX_DATA_AR}</p>
+          ) : technicalIndicators === undefined ? (
+            <p className="text-muted-foreground px-2 py-4 text-sm">جاري تحميل المؤشرات...</p>
+          ) : technicalIndicators.length === 0 ? (
+            <p className="text-muted-foreground px-2 py-4 text-sm">
+              لا توجد مؤشرات بعد — زامن الشموع ثم احسب المؤشرات.
+            </p>
+          ) : (
+            <Table>
+              <TableHeader>
+                <TableRow className="border-amber-500/10 hover:bg-transparent">
+                  <TableHead className="text-foreground">الرمز</TableHead>
+                  <TableHead className="text-foreground">الإطار</TableHead>
+                  <TableHead className="text-foreground">EMA20</TableHead>
+                  <TableHead className="text-foreground">EMA50</TableHead>
+                  <TableHead className="text-foreground">EMA200</TableHead>
+                  <TableHead className="text-foreground">RSI14</TableHead>
+                  <TableHead className="text-foreground">ATR14</TableHead>
+                  <TableHead className="text-foreground">MACD Histogram</TableHead>
+                  <TableHead className="text-foreground">اتجاه الترند</TableHead>
+                  <TableHead className="text-foreground">اتجاه الزخم</TableHead>
+                  <TableHead className="text-foreground">المصدر</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {technicalIndicators.map((row) => (
+                  <TableRow key={row._id} className="border-border/60">
+                    <TableCell className="font-medium text-amber-100/90 tabular-nums">{row.symbol}</TableCell>
+                    <TableCell className="tabular-nums text-muted-foreground">{row.timeframe}</TableCell>
+                    <TableCell className="tabular-nums">{fmtOptionalNum(row.ema20)}</TableCell>
+                    <TableCell className="tabular-nums">{fmtOptionalNum(row.ema50)}</TableCell>
+                    <TableCell className="tabular-nums">{fmtOptionalNum(row.ema200)}</TableCell>
+                    <TableCell className="tabular-nums">{fmtOptionalNum(row.rsi14)}</TableCell>
+                    <TableCell className="tabular-nums">{fmtOptionalNum(row.atr14)}</TableCell>
+                    <TableCell className="tabular-nums">{fmtOptionalNum(row.macdHistogram)}</TableCell>
+                    <TableCell className="text-muted-foreground text-sm">{row.trendBias}</TableCell>
+                    <TableCell className="text-muted-foreground text-sm">{row.momentumBias}</TableCell>
+                    <TableCell className="text-muted-foreground text-xs">{row.source}</TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          )}
+        </CardContent>
+      </Card>
 
       <Card className={institutionalCardClass("p-0")}>
         <CardHeader className="border-b border-amber-500/10 px-4 py-4 md:px-6">
