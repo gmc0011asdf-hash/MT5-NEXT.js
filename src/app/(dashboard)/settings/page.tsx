@@ -41,6 +41,7 @@ export default function SettingsPage() {
   const updateSymbolMutation = useMutation(api.mt5Bridge.updateMySymbolSetting);
 
   const mt5Symbols = useQuery(api.coreQueries.getMyMt5SymbolsWithSettings, canUseConvex ? {} : "skip");
+  const auditEvents = useQuery(api.coreQueries.getMyAuditEvents, canUseConvex ? {} : "skip");
 
   const [syncBusy, setSyncBusy] = useState(false);
   const [syncMessage, setSyncMessage] = useState<string | null>(null);
@@ -150,7 +151,7 @@ export default function SettingsPage() {
         </p>
       </div>
 
-      <Section title="أزواج وأدوات MT5">
+      <Section title="أزواج وأدوات MT5 الظاهرة">
         <p className="rounded-xl border border-amber-500/20 bg-amber-500/5 px-3 py-2 text-amber-100/90 text-xs leading-relaxed">
           هذه إعدادات عرض فقط ولا تنفذ أي صفقة.
         </p>
@@ -194,7 +195,7 @@ export default function SettingsPage() {
           <p className="text-muted-foreground text-sm">جاري تحميل بيانات الأزواج…</p>
         ) : mt5Symbols.length === 0 ? (
           <p className="text-muted-foreground text-sm">
-            لا توجد أزواج متزامنة بعد — استخدم زر المزامنة مع تشغيل خدمة MT5 المحلية.
+            لا توجد رموز ظاهرة من MT5 بعد — افتح Market Watch في MT5 ثم اضغط مزامنة الرموز الظاهرة.
           </p>
         ) : (
           <div className="space-y-2">
@@ -211,6 +212,7 @@ export default function SettingsPage() {
                     <TableHead className="text-foreground">الوصف</TableHead>
                     <TableHead className="text-foreground">العملات</TableHead>
                     <TableHead className="text-foreground">ظاهر</TableHead>
+                    <TableHead className="text-foreground">المصدر</TableHead>
                     <TableHead className="text-foreground">مفعّل</TableHead>
                     <TableHead className="text-foreground">عرض في المختبر</TableHead>
                   </TableRow>
@@ -232,27 +234,30 @@ export default function SettingsPage() {
                         <TableCell className="text-muted-foreground text-sm">
                           {row.visible ? "نعم" : "لا"}
                         </TableCell>
+                        <TableCell className="text-muted-foreground text-xs">MT5 Market Watch</TableCell>
                         <TableCell>
-                          <input
-                            type="checkbox"
-                            className="h-4 w-4 rounded border border-amber-500/40 bg-background"
-                            checked={row.enabled}
-                            onChange={(e) =>
-                              void patchSymbol(row.name, { enabled: e.target.checked, showInLab: row.showInLab })
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant={row.enabled ? "default" : "outline"}
+                            onClick={() =>
+                              void patchSymbol(row.name, { enabled: !row.enabled, showInLab: row.showInLab })
                             }
-                            aria-label="مفعّل"
-                          />
+                          >
+                            {row.enabled ? "تشغيل" : "إيقاف"}
+                          </Button>
                         </TableCell>
                         <TableCell>
-                          <input
-                            type="checkbox"
-                            className="h-4 w-4 rounded border border-amber-500/40 bg-background"
-                            checked={row.showInLab}
-                            onChange={(e) =>
-                              void patchSymbol(row.name, { enabled: row.enabled, showInLab: e.target.checked })
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant={row.showInLab ? "default" : "outline"}
+                            onClick={() =>
+                              void patchSymbol(row.name, { enabled: row.enabled, showInLab: !row.showInLab })
                             }
-                            aria-label="عرض في المختبر"
-                          />
+                          >
+                            {row.showInLab ? "تشغيل" : "إيقاف"}
+                          </Button>
                         </TableCell>
                       </TableRow>
                     );
@@ -260,6 +265,48 @@ export default function SettingsPage() {
                 </TableBody>
               </Table>
             </div>
+          </div>
+        )}
+      </Section>
+
+      <Section title="سجل التدقيق (Convex)">
+        <p className="text-muted-foreground text-xs leading-relaxed">
+          هذا سجل إداري للقراءة فقط يوضح عمليات المزامنة والإعدادات.
+        </p>
+        {!canUseConvex && !isConvexAuthLoading ? (
+          <p className="text-muted-foreground text-sm">سجّل الدخول لعرض سجل التدقيق.</p>
+        ) : isConvexAuthLoading || auditEvents === undefined ? (
+          <p className="text-muted-foreground text-sm">جاري تحميل سجل التدقيق…</p>
+        ) : auditEvents.length === 0 ? (
+          <p className="text-muted-foreground text-sm">لا توجد أحداث تدقيق بعد.</p>
+        ) : (
+          <div className="overflow-x-auto rounded-xl border border-amber-500/10">
+            <Table>
+              <TableHeader>
+                <TableRow className="border-amber-500/10 hover:bg-transparent">
+                  <TableHead className="text-foreground">الوقت</TableHead>
+                  <TableHead className="text-foreground">الإجراء</TableHead>
+                  <TableHead className="text-foreground">الكيان</TableHead>
+                  <TableHead className="text-foreground">الرسالة</TableHead>
+                  <TableHead className="text-foreground">المصدر</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {auditEvents.slice(0, 50).map((row) => (
+                  <TableRow key={row._id} className="border-border/60">
+                    <TableCell className="whitespace-nowrap text-muted-foreground text-xs tabular-nums">
+                      {new Date(row.createdAt).toLocaleString("ar-SA", { hour12: false })}
+                    </TableCell>
+                    <TableCell className="font-medium text-xs">{row.action}</TableCell>
+                    <TableCell className="text-xs">{row.entity}</TableCell>
+                    <TableCell className="max-w-[280px] text-muted-foreground text-xs leading-snug">
+                      {row.message}
+                    </TableCell>
+                    <TableCell className="text-muted-foreground text-xs">{row.source}</TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
           </div>
         )}
       </Section>

@@ -24,7 +24,7 @@ export default function LabPage() {
   const { isLoading: isConvexAuthLoading, isAuthenticated } = useConvexAuth();
   const canUseConvex = !isConvexAuthLoading && isAuthenticated;
 
-  const convexSignals = useQuery(api.coreQueries.getMyLatestSignals, canUseConvex ? {} : "skip");
+  const convexSignals = useQuery(api.coreQueries.getMyLatestRealSignals, canUseConvex ? {} : "skip");
   const labSymbolsForFilter = useQuery(api.coreQueries.getMyEnabledLabSymbols, canUseConvex ? {} : "skip");
   const protectionEvents = useQuery(api.coreQueries.getMyProtectionEvents, canUseConvex ? {} : "skip");
   const governance = useQuery(api.coreQueries.getMyGovernanceState, canUseConvex ? {} : "skip");
@@ -72,7 +72,7 @@ export default function LabPage() {
     <div className="mx-auto flex max-w-7xl flex-col gap-6">
       <div>
         <h2 className="page-title">المختبر المؤسسي</h2>
-        <p className="label-secondary mt-1">جدول تجريبي — بدون أزرار تنفيذ.</p>
+        <p className="label-secondary mt-1">تحليل رموز MT5 الظاهرة — قراءة فقط.</p>
       </div>
 
       <Card className={institutionalCardClass("p-4")}>
@@ -126,9 +126,9 @@ export default function LabPage() {
 
       <Card className={institutionalCardClass("p-0")}>
         <CardHeader className="border-b border-amber-500/10 px-4 py-4 md:px-6">
-          <CardTitle className="card-title-inst">إشارات Convex (قراءة)</CardTitle>
+          <CardTitle className="card-title-inst">إشارات MT5 (قراءة)</CardTitle>
           <p className="text-muted-foreground text-xs">
-            من قاعدة البيانات — لا تنفيذ.
+            من بيانات MT5 الحقيقية فقط — لا تنفيذ.
           </p>
           <p className="mt-1 text-muted-foreground text-xs leading-relaxed">
             الأزواج تأتي من Market Watch في MT5 ومن إعدادات العرض.
@@ -168,7 +168,7 @@ export default function LabPage() {
                       {labSymbolsForFilter[0]}
                     </TableCell>
                     <TableCell colSpan={9} className="text-muted-foreground text-sm">
-                      بانتظار التحليل
+                      بانتظار التحليل (الرمز ظاهر في Market Watch داخل MT5)
                     </TableCell>
                   </TableRow>
                 ) : (

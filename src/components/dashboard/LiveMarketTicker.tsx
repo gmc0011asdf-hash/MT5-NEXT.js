@@ -1,5 +1,7 @@
 "use client";
 
+import { useEffect, useState } from "react";
+
 import { ScrollArea, ScrollBar } from "@/components/ui/scroll-area";
 import { LiveMarketCard } from "@/components/dashboard/LiveMarketCard";
 import { useMockMarketStream } from "@/hooks/use-mock-market-stream";
@@ -7,6 +9,10 @@ import { MARKET_SYMBOLS } from "@/lib/mock-market-stream";
 
 export function LiveMarketTicker() {
   const { bySymbol, lastTickAt } = useMockMarketStream();
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => {
+    setMounted(true);
+  }, []);
 
   const ordered = MARKET_SYMBOLS.map((s) => bySymbol[s]);
 
@@ -28,7 +34,7 @@ export function LiveMarketTicker() {
       </ScrollArea>
       <p className="text-muted-foreground text-[11px] tabular-nums">
         آخر تحديث للتيار الوهمي:{" "}
-        {lastTickAt ? new Date(lastTickAt).toLocaleTimeString("ar-SA", { hour12: false }) : "—"}
+        {mounted && lastTickAt ? new Date(lastTickAt).toLocaleTimeString("ar-SA", { hour12: false }) : "--:--:--"}
       </p>
     </section>
   );

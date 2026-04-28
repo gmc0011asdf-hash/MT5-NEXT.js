@@ -1,5 +1,6 @@
 "use client";
 
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
@@ -10,10 +11,9 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { mockDecisionReport } from "@/lib/constants/mock-data";
 import { institutionalCardClass } from "@/lib/ui-institutional";
 import { useConvexAuth, useMutation, useQuery } from "convex/react";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 
 import { api } from "../../../../convex/_generated/api";
 
@@ -31,16 +31,40 @@ function fmtNum(n: number | undefined) {
   return <span className="tabular-nums">{Number.isInteger(n) ? n : n.toFixed(2)}</span>;
 }
 
-export default function ReportsPage() {
-  const r = mockDecisionReport;
+function StatCard({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-lg border border-amber-500/15 bg-muted/20 px-3 py-2">
+      <p className="text-muted-foreground text-[11px]">{label}</p>
+      <p className="font-semibold text-amber-100/90 text-sm tabular-nums">{value}</p>
+    </div>
+  );
+}
 
+function mapPositionType(value: string | undefined) {
+  if (value === "0" || value?.toUpperCase() === "BUY") return "شراء";
+  if (value === "1" || value?.toUpperCase() === "SELL") return "بيع";
+  return "غير محدد";
+}
+
+function mapDealType(value: string | undefined) {
+  if (value === "0" || value?.toUpperCase() === "BUY") return "شراء";
+  if (value === "1" || value?.toUpperCase() === "SELL") return "بيع";
+  if (value === "2") return "رصيد";
+  return "غير محدد";
+}
+
+function mapEntry(value: string | undefined) {
+  if (value === "0" || value?.toUpperCase() === "IN") return "دخول";
+  if (value === "1" || value?.toUpperCase() === "OUT") return "خروج / مغلقة";
+  if (value === "2" || value?.toUpperCase() === "INOUT") return "دخول/خروج";
+  if (value === "3" || value?.toUpperCase() === "OUT_BY") return "إغلاق مقابل";
+  return "غير محدد";
+}
+
+export default function ReportsPage() {
   const { isLoading: isConvexAuthLoading, isAuthenticated } = useConvexAuth();
   const canUseConvex = !isConvexAuthLoading && isAuthenticated;
 
-  const auditEvents = useQuery(api.coreQueries.getMyAuditEvents, canUseConvex ? {} : "skip");
-  const committeeReports = useQuery(api.coreQueries.getMyCommitteeReports, canUseConvex ? {} : "skip");
-  const protectionEvents = useQuery(api.coreQueries.getMyProtectionEvents, canUseConvex ? {} : "skip");
-  const signalSnapshots = useQuery(api.coreQueries.getMySignalReportSnapshots, canUseConvex ? {} : "skip");
   const governance = useQuery(api.coreQueries.getMyGovernanceState, canUseConvex ? {} : "skip");
   const tradeHistoryDeals = useQuery(api.coreQueries.getMyTradeHistoryDeals, canUseConvex ? {} : "skip");
   const activePositions = useQuery(api.coreQueries.getMyActiveMt5Positions, canUseConvex ? {} : "skip");
@@ -49,6 +73,40 @@ export default function ReportsPage() {
   const [historyDays, setHistoryDays] = useState("30");
   const [historySyncBusy, setHistorySyncBusy] = useState(false);
   const [historySyncMessage, setHistorySyncMessage] = useState<string | null>(null);
+  const mt5Stats = useMemo(() => {
+    const active = activePositions ?? [];
+    const history = tradeHistoryDeals ?? [];
+    const floating = active.reduce((sum, row) => sum + row.profit, 0);
+    const buyCount = history.filter((row) => mapDealType(row.type) === "شراء").length;
+    const sellCount = history.filter((row) => mapDealType(row.type) === "بيع").length;
+    const winners = history.filter((row) => row.profit > 0).length;
+    const losers = history.filter((row) => row.profit < 0).length;
+    const totalProfit = history.reduce((sum, row) => sum + (row.profit > 0 ? row.profit : 0), 0);
+    const totalLoss = history.reduce((sum, row) => sum + (row.profit < 0 ? row.profit : 0), 0);
+    const totalCommissionSwap = history.reduce(
+      (sum, row) => sum + (row.commission ?? 0) + (row.swap ?? 0),
+      0,
+    );
+    const totalLot = history.reduce((sum, row) => sum + row.volume, 0);
+    const net = history.reduce(
+      (sum, row) => sum + row.profit + (row.commission ?? 0) + (row.swap ?? 0) + (row.fee ?? 0),
+      0,
+    );
+    return {
+      activeCount: active.length,
+      floating,
+      historyCount: history.length,
+      buyCount,
+      sellCount,
+      winners,
+      losers,
+      totalProfit,
+      totalLoss,
+      net,
+      totalCommissionSwap,
+      totalLot,
+    };
+  }, [activePositions, tradeHistoryDeals]);
 
   async function pullTradeHistoryFromMt5() {
     setHistorySyncMessage(null);
@@ -164,337 +222,178 @@ export default function ReportsPage() {
 
       <Card className={institutionalCardClass("p-0")}>
         <CardHeader className="space-y-2 border-b border-amber-500/10 px-4 py-4 md:px-6">
-          <CardTitle className="card-title-inst">الصفقات النشطة من MT5 — قراءة فقط</CardTitle>
-        </CardHeader>
-        <CardContent className="overflow-x-auto px-2 pb-4 md:px-4">
-          {convexEmptyOrLoading(activePositions) ??
-            (activePositions && (
-              <Table>
-                <TableHeader>
-                  <TableRow className="border-amber-500/10 hover:bg-transparent">
-                    <TableHead className="text-foreground">الرمز</TableHead>
-                    <TableHead className="text-foreground">النوع</TableHead>
-                    <TableHead className="text-foreground">الحجم</TableHead>
-                    <TableHead className="text-foreground">سعر الفتح</TableHead>
-                    <TableHead className="text-foreground">السعر الحالي</TableHead>
-                    <TableHead className="text-foreground">وقف الخسارة</TableHead>
-                    <TableHead className="text-foreground">جني الربح</TableHead>
-                    <TableHead className="text-foreground">الربح</TableHead>
-                    <TableHead className="text-foreground">التذكرة</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {activePositions.map((row) => (
-                    <TableRow key={row._id} className="border-border/60">
-                      <TableCell className="font-medium text-amber-100/90 tabular-nums">{row.symbol}</TableCell>
-                      <TableCell className="text-muted-foreground text-sm">{row.type}</TableCell>
-                      <TableCell className="tabular-nums">{row.volume}</TableCell>
-                      <TableCell className="tabular-nums">{row.openPrice}</TableCell>
-                      <TableCell className="tabular-nums">{row.currentPrice}</TableCell>
-                      <TableCell className="tabular-nums">{fmtNum(row.stopLoss)}</TableCell>
-                      <TableCell className="tabular-nums">{fmtNum(row.takeProfit)}</TableCell>
-                      <TableCell className="tabular-nums">{fmtNum(row.profit)}</TableCell>
-                      <TableCell className="tabular-nums text-muted-foreground text-xs">{row.ticket ?? "—"}</TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            ))}
-        </CardContent>
-      </Card>
-
-      <Card className={institutionalCardClass("p-0")}>
-        <CardHeader className="space-y-2 border-b border-amber-500/10 px-4 py-4 md:px-6">
-          <CardTitle className="card-title-inst">سجل صفقات MT5 — قراءة فقط</CardTitle>
+          <CardTitle className="card-title-inst">تقرير صفقات MT5 — قراءة فقط</CardTitle>
           <p className="text-muted-foreground text-xs leading-relaxed">
-            هذا سجل قراءة فقط من MT5 ولا توجد أي أوامر تداول.
+            هذا التقرير قراءة فقط من MT5 ولا توجد أي أوامر تداول.
           </p>
-          <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
-            <label className="text-muted-foreground flex items-center gap-2 text-sm">
-              <span>نطاق الأيام</span>
-              <select
-                className="rounded-md border border-amber-500/20 bg-background px-2 py-1.5 text-foreground text-sm"
-                value={historyDays}
-                onChange={(e) => setHistoryDays(e.target.value)}
-              >
-                <option value="7">7</option>
-                <option value="30">30</option>
-                <option value="90">90</option>
-              </select>
-            </label>
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              disabled={!canUseConvex || historySyncBusy}
-              onClick={() => void pullTradeHistoryFromMt5()}
-            >
-              {historySyncBusy ? "جاري السحب…" : "سحب سجل الصفقات من MT5"}
-            </Button>
-            {historySyncMessage ? (
-              <span className="text-muted-foreground text-xs leading-snug">{historySyncMessage}</span>
-            ) : null}
+        </CardHeader>
+        <CardContent className="space-y-4 px-2 pb-4 md:px-4">
+          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+            <StatCard label="عدد الصفقات النشطة" value={String(mt5Stats.activeCount)} />
+            <StatCard label="إجمالي الربح/الخسارة العائم" value={mt5Stats.floating.toFixed(2)} />
+            <StatCard label="عدد صفقات السجل" value={String(mt5Stats.historyCount)} />
+            <StatCard label="صفقات شراء" value={String(mt5Stats.buyCount)} />
+            <StatCard label="صفقات بيع" value={String(mt5Stats.sellCount)} />
+            <StatCard label="الصفقات الرابحة" value={String(mt5Stats.winners)} />
+            <StatCard label="الصفقات الخاسرة" value={String(mt5Stats.losers)} />
+            <StatCard label="إجمالي الربح" value={mt5Stats.totalProfit.toFixed(2)} />
+            <StatCard label="إجمالي الخسارة" value={mt5Stats.totalLoss.toFixed(2)} />
+            <StatCard label="صافي النتيجة" value={mt5Stats.net.toFixed(2)} />
+            <StatCard label="إجمالي العمولة والسواب" value={mt5Stats.totalCommissionSwap.toFixed(2)} />
+            <StatCard label="إجمالي اللوت" value={mt5Stats.totalLot.toFixed(2)} />
           </div>
-        </CardHeader>
-        <CardContent className="overflow-x-auto px-2 pb-4 md:px-4">
-          {convexEmptyOrLoading(tradeHistoryDeals) ??
-            (tradeHistoryDeals && (
-              <Table>
-                <TableHeader>
-                  <TableRow className="border-amber-500/10 hover:bg-transparent">
-                    <TableHead className="text-foreground">الوقت</TableHead>
-                    <TableHead className="text-foreground">الرمز</TableHead>
-                    <TableHead className="text-foreground">النوع</TableHead>
-                    <TableHead className="text-foreground">الدخول</TableHead>
-                    <TableHead className="text-foreground">الحجم</TableHead>
-                    <TableHead className="text-foreground">السعر</TableHead>
-                    <TableHead className="text-foreground">الربح</TableHead>
-                    <TableHead className="text-foreground">العمولة</TableHead>
-                    <TableHead className="text-foreground">السواب</TableHead>
-                    <TableHead className="text-foreground">تعليق</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {tradeHistoryDeals.map((row) => (
-                    <TableRow key={row._id} className="border-border/60">
-                      <TableCell className="whitespace-nowrap text-muted-foreground text-xs tabular-nums">
-                        {fmtTs(row.time)}
-                      </TableCell>
-                      <TableCell className="font-medium text-amber-100/90 tabular-nums">{row.symbol}</TableCell>
-                      <TableCell className="text-muted-foreground text-sm">{row.type ?? "—"}</TableCell>
-                      <TableCell className="text-muted-foreground text-sm">{row.entry ?? "—"}</TableCell>
-                      <TableCell className="tabular-nums">{row.volume}</TableCell>
-                      <TableCell className="tabular-nums">{row.price}</TableCell>
-                      <TableCell className="tabular-nums">{fmtNum(row.profit)}</TableCell>
-                      <TableCell className="tabular-nums">{fmtNum(row.commission)}</TableCell>
-                      <TableCell className="tabular-nums">{fmtNum(row.swap)}</TableCell>
-                      <TableCell className="max-w-[200px] text-muted-foreground text-xs">
-                        {row.comment ?? "—"}
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            ))}
+
+          <div className="space-y-3">
+            <h4 className="font-semibold text-amber-100/90 text-sm">A) الصفقات النشطة من MT5</h4>
+            <div className="overflow-x-auto">
+              {convexEmptyOrLoading(activePositions, false) ??
+                (activePositions && activePositions.length === 0 ? (
+                  <p className="text-muted-foreground px-2 py-4 text-sm">
+                    لا توجد صفقات نشطة حاليًا في MT5.
+                  </p>
+                ) : (
+                  <Table>
+                    <TableHeader>
+                      <TableRow className="border-amber-500/10 hover:bg-transparent">
+                        <TableHead className="text-foreground">الحالة</TableHead>
+                        <TableHead className="text-foreground">التذكرة</TableHead>
+                        <TableHead className="text-foreground">الرمز</TableHead>
+                        <TableHead className="text-foreground">النوع</TableHead>
+                        <TableHead className="text-foreground">الحجم</TableHead>
+                        <TableHead className="text-foreground">سعر الدخول</TableHead>
+                        <TableHead className="text-foreground">السعر الحالي</TableHead>
+                        <TableHead className="text-foreground">وقف الخسارة</TableHead>
+                        <TableHead className="text-foreground">جني الربح</TableHead>
+                        <TableHead className="text-foreground">الربح/الخسارة العائم</TableHead>
+                        <TableHead className="text-foreground">المصدر</TableHead>
+                        <TableHead className="text-foreground">آخر مزامنة</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {activePositions?.map((row) => (
+                        <TableRow key={row._id} className="border-border/60">
+                          <TableCell>
+                            <Badge variant="outline" className="border-amber-500/30 text-amber-100/90">نشطة</Badge>
+                          </TableCell>
+                          <TableCell className="tabular-nums text-muted-foreground text-xs">{row.ticket ?? "—"}</TableCell>
+                          <TableCell className="font-medium text-amber-100/90 tabular-nums">{row.symbol}</TableCell>
+                          <TableCell>
+                            <Badge variant="outline">{mapPositionType(row.type)}</Badge>
+                          </TableCell>
+                          <TableCell className="tabular-nums">{row.volume}</TableCell>
+                          <TableCell className="tabular-nums">{row.openPrice}</TableCell>
+                          <TableCell className="tabular-nums">{row.currentPrice}</TableCell>
+                          <TableCell className="tabular-nums">{fmtNum(row.stopLoss)}</TableCell>
+                          <TableCell className="tabular-nums">{fmtNum(row.takeProfit)}</TableCell>
+                          <TableCell className="tabular-nums">{fmtNum(row.profit)}</TableCell>
+                          <TableCell className="text-muted-foreground text-xs">{row.source}</TableCell>
+                          <TableCell className="whitespace-nowrap text-muted-foreground text-xs tabular-nums">
+                            {fmtTs(row.capturedAt)}
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                ))}
+            </div>
+          </div>
+
+          <div className="space-y-3">
+            <h4 className="font-semibold text-amber-100/90 text-sm">B) سجل الصفقات المغلقة / التاريخية من MT5</h4>
+            <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
+              <label className="text-muted-foreground flex items-center gap-2 text-sm">
+                <span>نطاق الأيام</span>
+                <select
+                  className="rounded-md border border-amber-500/20 bg-background px-2 py-1.5 text-foreground text-sm"
+                  value={historyDays}
+                  onChange={(e) => setHistoryDays(e.target.value)}
+                >
+                  <option value="7">7</option>
+                  <option value="30">30</option>
+                  <option value="90">90</option>
+                </select>
+              </label>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                disabled={!canUseConvex || historySyncBusy}
+                onClick={() => void pullTradeHistoryFromMt5()}
+              >
+                {historySyncBusy ? "جاري السحب…" : "سحب سجل الصفقات من MT5"}
+              </Button>
+              {historySyncMessage ? (
+                <span className="text-muted-foreground text-xs leading-snug">{historySyncMessage}</span>
+              ) : null}
+            </div>
+            <div className="overflow-x-auto">
+              {convexEmptyOrLoading(tradeHistoryDeals, false) ??
+                (tradeHistoryDeals && tradeHistoryDeals.length === 0 ? (
+                  <p className="text-muted-foreground px-2 py-4 text-sm">
+                    لا يوجد سجل صفقات بعد — اضغط سحب سجل الصفقات من MT5.
+                  </p>
+                ) : (
+                  <Table>
+                    <TableHeader>
+                      <TableRow className="border-amber-500/10 hover:bg-transparent">
+                        <TableHead className="text-foreground">الحالة</TableHead>
+                        <TableHead className="text-foreground">رقم الصفقة</TableHead>
+                        <TableHead className="text-foreground">الرمز</TableHead>
+                        <TableHead className="text-foreground">النوع</TableHead>
+                        <TableHead className="text-foreground">الدخول/الخروج</TableHead>
+                        <TableHead className="text-foreground">الحجم</TableHead>
+                        <TableHead className="text-foreground">السعر</TableHead>
+                        <TableHead className="text-foreground">الربح</TableHead>
+                        <TableHead className="text-foreground">العمولة</TableHead>
+                        <TableHead className="text-foreground">السواب</TableHead>
+                        <TableHead className="text-foreground">الصافي</TableHead>
+                        <TableHead className="text-foreground">الوقت</TableHead>
+                        <TableHead className="text-foreground">التعليق</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {tradeHistoryDeals?.map((row) => {
+                        const entry = mapEntry(row.entry);
+                        const net = row.profit + (row.commission ?? 0) + (row.swap ?? 0) + (row.fee ?? 0);
+                        return (
+                          <TableRow key={row._id} className="border-border/60">
+                            <TableCell>
+                              <Badge variant="outline" className="border-amber-500/30 text-amber-100/90">
+                                {entry === "خروج / مغلقة" ? "مغلقة" : entry}
+                              </Badge>
+                            </TableCell>
+                            <TableCell className="tabular-nums text-muted-foreground text-xs">{row.dealTicket}</TableCell>
+                            <TableCell className="font-medium text-amber-100/90 tabular-nums">{row.symbol}</TableCell>
+                            <TableCell>
+                              <Badge variant="outline">{mapDealType(row.type)}</Badge>
+                            </TableCell>
+                            <TableCell className="text-muted-foreground text-sm">{entry}</TableCell>
+                            <TableCell className="tabular-nums">{row.volume}</TableCell>
+                            <TableCell className="tabular-nums">{row.price}</TableCell>
+                            <TableCell>
+                              <Badge variant={row.profit >= 0 ? "outline" : "secondary"}>
+                                {row.profit >= 0 ? "رابحة" : "خاسرة"}
+                              </Badge>
+                              <span className="mr-2 tabular-nums">{row.profit.toFixed(2)}</span>
+                            </TableCell>
+                            <TableCell className="tabular-nums">{(row.commission ?? 0).toFixed(2)}</TableCell>
+                            <TableCell className="tabular-nums">{(row.swap ?? 0).toFixed(2)}</TableCell>
+                            <TableCell className="tabular-nums">{net.toFixed(2)}</TableCell>
+                            <TableCell className="whitespace-nowrap text-muted-foreground text-xs tabular-nums">
+                              {fmtTs(row.time)}
+                            </TableCell>
+                            <TableCell className="max-w-[220px] text-muted-foreground text-xs">{row.comment ?? "—"}</TableCell>
+                          </TableRow>
+                        );
+                      })}
+                    </TableBody>
+                  </Table>
+                ))}
+            </div>
+          </div>
         </CardContent>
       </Card>
 
-      <Card className={institutionalCardClass("p-0")}>
-        <CardHeader className="border-b border-amber-500/10 px-4 py-4 md:px-6">
-          <CardTitle className="card-title-inst">أحداث التدقيق (Convex)</CardTitle>
-        </CardHeader>
-        <CardContent className="overflow-x-auto px-2 pb-4 md:px-4">
-          {convexEmptyOrLoading(auditEvents) ??
-            (auditEvents && (
-              <Table>
-                <TableHeader>
-                  <TableRow className="border-amber-500/10 hover:bg-transparent">
-                    <TableHead className="text-foreground">الإجراء</TableHead>
-                    <TableHead className="text-foreground">الكيان</TableHead>
-                    <TableHead className="text-foreground">الرسالة</TableHead>
-                    <TableHead className="text-foreground">المصدر</TableHead>
-                    <TableHead className="text-foreground">الوقت</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {auditEvents.map((row) => (
-                    <TableRow key={row._id} className="border-border/60">
-                      <TableCell className="font-medium">{row.action}</TableCell>
-                      <TableCell>{row.entity}</TableCell>
-                      <TableCell className="max-w-[240px] text-muted-foreground text-xs leading-snug">
-                        {row.message}
-                      </TableCell>
-                      <TableCell className="text-muted-foreground text-xs">{row.source}</TableCell>
-                      <TableCell className="tabular-nums text-muted-foreground text-xs">
-                        {fmtTs(row.createdAt)}
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            ))}
-        </CardContent>
-      </Card>
-
-      <Card className={institutionalCardClass("p-0")}>
-        <CardHeader className="border-b border-amber-500/10 px-4 py-4 md:px-6">
-          <CardTitle className="card-title-inst">تقارير اللجنة (Convex)</CardTitle>
-        </CardHeader>
-        <CardContent className="overflow-x-auto px-2 pb-4 md:px-4">
-          {convexEmptyOrLoading(committeeReports) ??
-            (committeeReports && (
-              <Table>
-                <TableHeader>
-                  <TableRow className="border-amber-500/10 hover:bg-transparent">
-                    <TableHead className="text-foreground">الرمز</TableHead>
-                    <TableHead className="text-foreground">القرار النهائي</TableHead>
-                    <TableHead className="text-foreground">عقل السوق</TableHead>
-                    <TableHead className="text-foreground">عقل الحماية</TableHead>
-                    <TableHead className="text-foreground">عقل التنفيذ</TableHead>
-                    <TableHead className="text-foreground">ملخص</TableHead>
-                    <TableHead className="text-foreground">الوقت</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {committeeReports.map((row) => (
-                    <TableRow key={row._id} className="border-border/60">
-                      <TableCell className="font-medium text-amber-100/90">{row.symbol}</TableCell>
-                      <TableCell>{row.finalVerdict}</TableCell>
-                      <TableCell className="tabular-nums">{row.marketMindScore}</TableCell>
-                      <TableCell className="tabular-nums">{row.protectionMindScore}</TableCell>
-                      <TableCell className="tabular-nums">{row.executionMindScore}</TableCell>
-                      <TableCell className="max-w-[220px] text-muted-foreground text-xs leading-snug">
-                        {row.summary}
-                      </TableCell>
-                      <TableCell className="tabular-nums text-muted-foreground text-xs">
-                        {fmtTs(row.createdAt)}
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            ))}
-        </CardContent>
-      </Card>
-
-      <Card className={institutionalCardClass("p-0")}>
-        <CardHeader className="border-b border-amber-500/10 px-4 py-4 md:px-6">
-          <CardTitle className="card-title-inst">أحداث الحماية (Convex)</CardTitle>
-        </CardHeader>
-        <CardContent className="overflow-x-auto px-2 pb-4 md:px-4">
-          {convexEmptyOrLoading(protectionEvents) ??
-            (protectionEvents && (
-              <Table>
-                <TableHeader>
-                  <TableRow className="border-amber-500/10 hover:bg-transparent">
-                    <TableHead className="text-foreground">الخطورة</TableHead>
-                    <TableHead className="text-foreground">محظور</TableHead>
-                    <TableHead className="text-foreground">الرسالة</TableHead>
-                    <TableHead className="text-foreground">الرمز</TableHead>
-                    <TableHead className="text-foreground">الوقت</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {protectionEvents.map((row) => (
-                    <TableRow key={row._id} className="border-border/60">
-                      <TableCell>{row.severity}</TableCell>
-                      <TableCell className="tabular-nums">{row.blocked ? "نعم" : "لا"}</TableCell>
-                      <TableCell className="max-w-[280px] text-muted-foreground text-sm leading-snug">
-                        {row.message}
-                      </TableCell>
-                      <TableCell className="text-muted-foreground text-sm">
-                        {row.symbol ?? "—"}
-                      </TableCell>
-                      <TableCell className="tabular-nums text-muted-foreground text-xs">
-                        {fmtTs(row.createdAt)}
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            ))}
-        </CardContent>
-      </Card>
-
-      <Card className={institutionalCardClass("p-0")}>
-        <CardHeader className="border-b border-amber-500/10 px-4 py-4 md:px-6">
-          <CardTitle className="card-title-inst">لقطات الإشارات (Convex)</CardTitle>
-        </CardHeader>
-        <CardContent className="overflow-x-auto px-2 pb-4 md:px-4">
-          {convexEmptyOrLoading(signalSnapshots) ??
-            (signalSnapshots && (
-              <Table>
-                <TableHeader>
-                  <TableRow className="border-amber-500/10 hover:bg-transparent">
-                    <TableHead className="text-foreground">الرمز</TableHead>
-                    <TableHead className="text-foreground">الإطار</TableHead>
-                    <TableHead className="text-foreground">الحكم</TableHead>
-                    <TableHead className="text-foreground">الاحتمالية</TableHead>
-                    <TableHead className="text-foreground">الحالة</TableHead>
-                    <TableHead className="text-foreground">المصدر</TableHead>
-                    <TableHead className="text-foreground">الوقت</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {signalSnapshots.map((row) => (
-                    <TableRow key={row._id} className="border-border/60">
-                      <TableCell className="font-medium text-amber-100/90">{row.symbol}</TableCell>
-                      <TableCell className="tabular-nums text-muted-foreground">{row.timeframe}</TableCell>
-                      <TableCell>{row.verdict}</TableCell>
-                      <TableCell className="tabular-nums">{(row.probability * 100).toFixed(0)}٪</TableCell>
-                      <TableCell className="text-muted-foreground text-sm">{row.status}</TableCell>
-                      <TableCell className="text-muted-foreground text-xs">{row.source}</TableCell>
-                      <TableCell className="tabular-nums text-muted-foreground text-xs">
-                        {fmtTs(row.createdAt)}
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            ))}
-        </CardContent>
-      </Card>
-
-      <div className="grid gap-4 md:grid-cols-2">
-        <Card className={institutionalCardClass("p-4 md:col-span-2")}>
-          <CardHeader className="p-0 pb-2">
-            <CardTitle className="card-title-inst">القرار المؤسسي</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-2 p-0">
-            <p className="text-muted-foreground text-sm">{r.title}</p>
-            <p className="border-t border-amber-500/10 pt-2 text-foreground text-sm leading-relaxed">
-              {r.mainReason}
-            </p>
-          </CardContent>
-        </Card>
-
-        <Card className={institutionalCardClass("p-4")}>
-          <CardHeader className="p-0 pb-2">
-            <CardTitle className="card-title-inst">السبب الرئيسي</CardTitle>
-          </CardHeader>
-          <CardContent className="p-0 text-muted-foreground text-sm leading-relaxed">{r.mainReason}</CardContent>
-        </Card>
-
-        <Card className={institutionalCardClass("p-4")}>
-          <CardHeader className="p-0 pb-2">
-            <CardTitle className="card-title-inst">عوامل الدعم</CardTitle>
-          </CardHeader>
-          <CardContent className="p-0">
-            <ul className="list-inside list-disc space-y-1.5 text-muted-foreground text-sm leading-relaxed">
-              {r.supportFactors.map((x) => (
-                <li key={x}>{x}</li>
-              ))}
-            </ul>
-          </CardContent>
-        </Card>
-
-        <Card className={institutionalCardClass("p-4")}>
-          <CardHeader className="p-0 pb-2">
-            <CardTitle className="card-title-inst">عوامل المنع</CardTitle>
-          </CardHeader>
-          <CardContent className="p-0">
-            <ul className="list-inside list-disc space-y-1.5 text-muted-foreground text-sm leading-relaxed">
-              {r.blockFactors.map((x) => (
-                <li key={x}>{x}</li>
-              ))}
-            </ul>
-          </CardContent>
-        </Card>
-
-        <Card className={institutionalCardClass("p-4")}>
-          <CardHeader className="p-0 pb-2">
-            <CardTitle className="card-title-inst">خطة الصفقة</CardTitle>
-          </CardHeader>
-          <CardContent className="p-0 text-muted-foreground text-sm leading-relaxed">{r.tradePlan}</CardContent>
-        </Card>
-
-        <Card className={institutionalCardClass("p-4 md:col-span-2")}>
-          <CardHeader className="p-0 pb-2">
-            <CardTitle className="card-title-inst">ملاحظة الثقة</CardTitle>
-          </CardHeader>
-          <CardContent className="p-0 text-muted-foreground text-sm leading-relaxed">{r.confidenceNote}</CardContent>
-        </Card>
-      </div>
     </div>
   );
 }

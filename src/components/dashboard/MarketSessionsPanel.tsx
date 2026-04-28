@@ -53,13 +53,17 @@ function SessionCard({ session, at }: { session: MarketSession; at: Date }) {
         "flex flex-col gap-3 p-4 transition-shadow hover:shadow-md/10",
       )}
     >
-      <div className="flex items-start justify-between gap-2">
-        <AnalogMarketClock session={session} at={at} size={104} tone={st.tone} />
-        <div className="min-w-0 flex-1 space-y-1 text-end">
+      <div className="grid grid-cols-1 items-start gap-3 sm:grid-cols-[minmax(0,1fr)_auto]">
+        <div className="min-w-0 space-y-1 text-end">
           <p className="font-semibold text-base text-foreground leading-tight md:text-lg">{session.nameAr}</p>
-          <p className="text-muted-foreground text-[11px] tracking-wide">{session.nameEn}</p>
-          <p className="font-mono text-amber-100/90 text-xs tabular-nums sm:text-sm">{st.localTimeLabel}</p>
-          <p className="text-muted-foreground text-[10px] tabular-nums">{tzShort}</p>
+          <p className="truncate text-muted-foreground text-[11px] tracking-wide">{session.nameEn}</p>
+          <p className="whitespace-nowrap font-mono text-amber-100/90 text-sm tabular-nums leading-tight">
+            {st.localTimeLabel}
+          </p>
+          <p className="whitespace-nowrap text-muted-foreground text-[10px] tabular-nums leading-tight">{tzShort}</p>
+        </div>
+        <div className="mx-auto sm:mx-0">
+          <AnalogMarketClock session={session} at={at} size={88} tone={st.tone} />
         </div>
       </div>
       <div className="flex flex-wrap items-center justify-between gap-2 border-t border-amber-500/10 pt-2">
@@ -86,12 +90,15 @@ function SessionCard({ session, at }: { session: MarketSession; at: Date }) {
 }
 
 export function MarketSessionsPanel() {
-  const [now, setNow] = useState(() => new Date());
+  const [now, setNow] = useState<Date | null>(null);
 
   useEffect(() => {
+    setNow(new Date());
     const id = window.setInterval(() => setNow(new Date()), 1000);
     return () => window.clearInterval(id);
   }, []);
+
+  const renderAt = now ?? new Date("1970-01-01T00:00:00Z");
 
   return (
     <section className="space-y-4" suppressHydrationWarning>
@@ -102,7 +109,7 @@ export function MarketSessionsPanel() {
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-5">
         {MARKET_SESSIONS.map((session) => (
-          <SessionCard key={session.id} session={session} at={now} />
+          <SessionCard key={session.id} session={session} at={renderAt} />
         ))}
       </div>
 

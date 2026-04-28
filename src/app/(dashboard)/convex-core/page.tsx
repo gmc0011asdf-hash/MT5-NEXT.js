@@ -151,45 +151,6 @@ export default function ConvexCorePage() {
       )}
 
       <div className={institutionalCardClass("flex flex-col gap-3 p-4")}>
-        <h2 className="font-medium text-amber-100/90">بيانات تجريبية</h2>
-        <Button type="button" disabled={buttonDisabled} onClick={() => void handleSeed()}>
-          إنشاء بيانات تجريبية للنظام
-        </Button>
-        {message && (
-          <p
-            className={
-              message.startsWith("تم")
-                ? "text-emerald-300/95 text-sm"
-                : "text-rose-300/95 text-sm"
-            }
-          >
-            {message}
-          </p>
-        )}
-      </div>
-
-      <div className={institutionalCardClass("flex flex-col gap-3 p-4")}>
-        <h2 className="font-medium text-amber-100/90">جسر MT5 — قراءة فقط</h2>
-        <p className="text-muted-foreground text-xs leading-relaxed">
-          قراءة فقط — لا يوجد تنفيذ صفقات
-        </p>
-        <Button type="button" disabled={buttonDisabled} onClick={() => void handleBridgeStubSync()}>
-          مزامنة قراءة تجريبية من MT5
-        </Button>
-        {bridgeMessage && (
-          <p
-            className={
-              bridgeMessage.startsWith("تمت")
-                ? "text-emerald-300/95 text-sm"
-                : "text-rose-300/95 text-sm"
-            }
-          >
-            {bridgeMessage}
-          </p>
-        )}
-      </div>
-
-      <div className={institutionalCardClass("flex flex-col gap-3 p-4")}>
         <h2 className="font-medium text-amber-100/90">مزامنة محلية MT5</h2>
         <p className="text-muted-foreground text-xs leading-relaxed">
           هذه المزامنة قراءة فقط ولا تنفذ أي صفقة حتى لو كان حساب MT5 يسمح بالتداول.
@@ -206,6 +167,41 @@ export default function ConvexCorePage() {
             }
           >
             {localMessage}
+          </p>
+        )}
+      </div>
+
+      <div className={institutionalCardClass("flex flex-col gap-3 p-4")}>
+        <h2 className="font-medium text-amber-100/90">بيانات تجريبية للتطوير</h2>
+        <p className="rounded-xl border border-amber-500/20 bg-amber-500/5 px-3 py-2 text-amber-100/90 text-xs leading-relaxed">
+          لا تستخدم البيانات التجريبية عند اختبار النظام الحقيقي.
+        </p>
+        <Button type="button" disabled={buttonDisabled} onClick={() => void handleSeed()}>
+          إنشاء بيانات تجريبية للنظام
+        </Button>
+        <Button type="button" disabled={buttonDisabled} onClick={() => void handleBridgeStubSync()}>
+          مزامنة قراءة تجريبية من MT5
+        </Button>
+        {message && (
+          <p
+            className={
+              message.startsWith("تم")
+                ? "text-emerald-300/95 text-sm"
+                : "text-rose-300/95 text-sm"
+            }
+          >
+            {message}
+          </p>
+        )}
+        {bridgeMessage && (
+          <p
+            className={
+              bridgeMessage.startsWith("تمت")
+                ? "text-emerald-300/95 text-sm"
+                : "text-rose-300/95 text-sm"
+            }
+          >
+            {bridgeMessage}
           </p>
         )}
       </div>

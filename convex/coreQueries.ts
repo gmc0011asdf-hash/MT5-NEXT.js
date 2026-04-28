@@ -61,6 +61,21 @@ export const getMyLatestAccountSnapshot = query({
   },
 });
 
+export const getMyLatestRealMt5AccountSnapshot = query({
+  args: {},
+  handler: async (ctx) => {
+    const userId = await requireUserId(ctx);
+    if (!userId) return null;
+    const rows = await ctx.db
+      .query("mt5AccountSnapshots")
+      .withIndex("by_userId", (q) => q.eq("userId", userId))
+      .collect();
+    const locals = rows.filter((r) => r.source === SOURCE_MT5_LOCAL);
+    if (locals.length === 0) return null;
+    return [...locals].sort((a, b) => b.capturedAt - a.capturedAt)[0] ?? null;
+  },
+});
+
 export const getLatestMarketTicks = query({
   args: {},
   handler: async (ctx) => {
@@ -99,6 +114,25 @@ export const getLatestMarketTicks = query({
   },
 });
 
+export const getLatestRealMt5MarketTicks = query({
+  args: {},
+  handler: async (ctx) => {
+    const userId = await requireUserId(ctx);
+    if (!userId) return [];
+    const rows = await ctx.db
+      .query("mt5MarketTicks")
+      .withIndex("by_capturedAt")
+      .order("desc")
+      .take(1000);
+    const locals = rows.filter((r) => r.source === SOURCE_MT5_LOCAL);
+    const bySymbol = new Map<string, Doc<"mt5MarketTicks">>();
+    for (const row of locals) {
+      if (!bySymbol.has(row.symbol)) bySymbol.set(row.symbol, row);
+    }
+    return [...bySymbol.values()].sort((a, b) => b.capturedAt - a.capturedAt).slice(0, 12);
+  },
+});
+
 export const getMyLatestSignals = query({
   args: {},
   handler: async (ctx) => {
@@ -109,6 +143,20 @@ export const getMyLatestSignals = query({
       .withIndex("by_userId_createdAt", (q) => q.eq("userId", userId))
       .order("desc")
       .take(8);
+  },
+});
+
+export const getMyLatestRealSignals = query({
+  args: {},
+  handler: async (ctx) => {
+    const userId = await requireUserId(ctx);
+    if (!userId) return [];
+    const rows = await ctx.db
+      .query("labSignalSnapshots")
+      .withIndex("by_userId_createdAt", (q) => q.eq("userId", userId))
+      .order("desc")
+      .take(100);
+    return rows.filter((r) => r.source === SOURCE_MT5_LOCAL).slice(0, 20);
   },
 });
 
@@ -154,7 +202,11 @@ export const getMyMt5ReadOnlySummary = query({
       .withIndex("by_userId", (q) => q.eq("userId", userId))
       .collect();
 
-    const latestAccountSnapshot = pickLatestAccountSnapshot(snapshots);
+    const localSnapshots = snapshots.filter((s) => s.source === SOURCE_MT5_LOCAL);
+    const latestAccountSnapshot =
+      localSnapshots.length > 0
+        ? [...localSnapshots].sort((a, b) => b.capturedAt - a.capturedAt)[0]
+        : null;
 
     const posRows = await ctx.db
       .query("mt5OpenPositions")
@@ -177,8 +229,7 @@ export const getMyMt5ReadOnlySummary = query({
     const mt5Monitoring = mt5Rows[0] ?? null;
 
     const hasRealMt5LocalData =
-      snapshots.some((s) => s.source === SOURCE_MT5_LOCAL) ||
-      posRows.some((p) => p.source === SOURCE_MT5_LOCAL);
+      localSnapshots.length > 0 || posRows.some((p) => p.source === SOURCE_MT5_LOCAL);
 
     const positionsCapturedMax =
       resolvedPositions.length === 0
@@ -195,7 +246,7 @@ export const getMyMt5ReadOnlySummary = query({
     return {
       latestAccountSnapshot,
       lastSyncAt: lastSyncAt > 0 ? lastSyncAt : null,
-      source: latestAccountSnapshot?.source ?? null,
+      source: hasRealMt5LocalData ? SOURCE_MT5_LOCAL : null,
       openPositionsCount,
       totalFloatingProfit,
       mt5Monitoring,

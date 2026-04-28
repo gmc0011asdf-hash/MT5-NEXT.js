@@ -40,7 +40,7 @@ export function AppSidebar() {
   return (
     <aside
       className={cn(
-        "flex shrink-0 flex-col border-l border-amber-500/10 bg-sidebar/95 text-sidebar-foreground backdrop-blur-sm",
+        "flex h-dvh shrink-0 flex-col border-l border-amber-500/10 bg-sidebar/95 text-sidebar-foreground backdrop-blur-sm",
         "transition-[width] duration-200 ease-out",
         collapsed ? "w-[4.5rem] max-md:max-w-[4.5rem]" : "w-64 max-md:w-56",
       )}

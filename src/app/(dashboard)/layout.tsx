@@ -8,7 +8,9 @@ export default function DashboardGroupLayout({
 }) {
   return (
     <DashboardExperienceProviders>
-      <AppShell>{children}</AppShell>
+      <div className="min-h-dvh">
+        <AppShell>{children}</AppShell>
+      </div>
     </DashboardExperienceProviders>
   );
 }
