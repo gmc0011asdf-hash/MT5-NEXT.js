@@ -2,8 +2,9 @@ import { NextResponse } from "next/server";
 
 export const dynamic = "force-dynamic";
 
-const LOCAL_CONNECTION_STATUS_URL = "http://127.0.0.1:8010/connection-status";
-const FETCH_TIMEOUT_MS = 5000;
+const MT5_SERVICE_BASE = process.env.MT5_SERVICE_URL ?? "http://127.0.0.1:8010";
+const LOCAL_CONNECTION_STATUS_URL = `${MT5_SERVICE_BASE}/connection-status`;
+const FETCH_TIMEOUT_MS = 8000;
 
 export async function GET() {
   const controller = new AbortController();

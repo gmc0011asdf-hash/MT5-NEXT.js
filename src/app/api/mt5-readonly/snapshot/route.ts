@@ -7,8 +7,9 @@ import { NextResponse } from "next/server";
 
 export const dynamic = "force-dynamic";
 
-const LOCAL_SNAPSHOT_URL = "http://127.0.0.1:8010/readonly/snapshot";
-const FETCH_TIMEOUT_MS = 5000;
+const MT5_SERVICE_BASE = process.env.MT5_SERVICE_URL ?? "http://127.0.0.1:8010";
+const LOCAL_SNAPSHOT_URL = `${MT5_SERVICE_BASE}/readonly/snapshot`;
+const FETCH_TIMEOUT_MS = 8000;
 
 export async function GET() {
   const controller = new AbortController();

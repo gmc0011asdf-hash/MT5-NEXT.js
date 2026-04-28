@@ -7,7 +7,8 @@ import { NextRequest, NextResponse } from "next/server";
 
 export const dynamic = "force-dynamic";
 
-const LOCAL_BASE = "http://127.0.0.1:8010/readonly/candles";
+const MT5_SERVICE_BASE = process.env.MT5_SERVICE_URL ?? "http://127.0.0.1:8010";
+const LOCAL_BASE = `${MT5_SERVICE_BASE}/readonly/candles`;
 const FETCH_TIMEOUT_MS = 8000;
 
 export async function GET(request: NextRequest) {

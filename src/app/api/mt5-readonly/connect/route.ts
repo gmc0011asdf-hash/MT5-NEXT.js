@@ -2,7 +2,8 @@ import { NextResponse } from "next/server";
 
 export const dynamic = "force-dynamic";
 
-const LOCAL_CONNECT_URL = "http://127.0.0.1:8010/connect";
+const MT5_SERVICE_BASE = process.env.MT5_SERVICE_URL ?? "http://127.0.0.1:8010";
+const LOCAL_CONNECT_URL = `${MT5_SERVICE_BASE}/connect`;
 const FETCH_TIMEOUT_MS = 8000;
 
 export async function POST(request: Request) {

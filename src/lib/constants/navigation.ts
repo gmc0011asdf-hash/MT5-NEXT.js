@@ -1,13 +1,16 @@
 import type { LucideIcon } from "lucide-react";
 import {
   Activity,
+  BarChart2,
   Database,
   FileText,
   FlaskConical,
+  Globe,
   LayoutDashboard,
   Play,
   Server,
   Settings,
+  Shield,
 } from "lucide-react";
 
 export type NavItem = {
@@ -16,11 +19,60 @@ export type NavItem = {
   icon: LucideIcon;
 };
 
-export type NavSection = {
+export type NavGroup = {
+  id: string;
   title: string;
+  icon: LucideIcon;
   items: NavItem[];
 };
 
+export const NAV_GROUPS: NavGroup[] = [
+  {
+    id: "home",
+    title: "الرئيسية",
+    icon: LayoutDashboard,
+    items: [
+      { label: "لوحة التحكم", href: "/dashboard", icon: LayoutDashboard },
+    ],
+  },
+  {
+    id: "mt5",
+    title: "منصة MT5",
+    icon: Globe,
+    items: [
+      { label: "المراقبة", href: "/monitoring", icon: Activity },
+      { label: "إعادة التشغيل", href: "/replay", icon: Play },
+    ],
+  },
+  {
+    id: "analysis",
+    title: "التحليل والمختبر",
+    icon: FlaskConical,
+    items: [
+      { label: "المختبر", href: "/lab", icon: FlaskConical },
+    ],
+  },
+  {
+    id: "reports",
+    title: "التقارير والمراقبة",
+    icon: BarChart2,
+    items: [
+      { label: "التقارير", href: "/reports", icon: FileText },
+    ],
+  },
+  {
+    id: "system",
+    title: "الإعدادات والنظام",
+    icon: Shield,
+    items: [
+      { label: "الإعدادات", href: "/settings", icon: Settings },
+      { label: "Convex Core", href: "/convex-core", icon: Server },
+      { label: "Convex Test", href: "/convex-test", icon: Database },
+    ],
+  },
+];
+
+// Legacy flat list kept for any existing consumers
 export const NAV_ITEMS: NavItem[] = [
   { label: "لوحة التحكم", href: "/dashboard", icon: LayoutDashboard },
   { label: "المختبر", href: "/lab", icon: FlaskConical },
@@ -29,6 +81,11 @@ export const NAV_ITEMS: NavItem[] = [
   { label: "إعادة التشغيل", href: "/replay", icon: Play },
   { label: "الإعدادات", href: "/settings", icon: Settings },
 ];
+
+export type NavSection = {
+  title: string;
+  items: NavItem[];
+};
 
 export const NAV_SECTIONS: NavSection[] = [
   {
