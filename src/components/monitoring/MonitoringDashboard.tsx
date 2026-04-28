@@ -19,12 +19,21 @@ function statusBadgeVariant(s: MonitoringRow["status"]) {
   return "neutral" as const;
 }
 
-function MonitoringCard({ row }: { row: MonitoringRow }) {
+function MonitoringCard({ row, isMock }: { row: MonitoringRow; isMock: boolean }) {
   return (
     <Card className={institutionalCardClass("p-4")}>
       <CardHeader className="flex flex-row items-center justify-between space-y-0 p-0 pb-2">
-        <CardTitle className="card-title-inst">{row.labelAr}</CardTitle>
-        <StatusBadge variant={statusBadgeVariant(row.status)}>{row.status}</StatusBadge>
+        <div className="flex items-center gap-1.5">
+          <CardTitle className="card-title-inst">{row.labelAr}</CardTitle>
+          {isMock && (
+            <span className="rounded border border-sky-500/25 bg-sky-500/10 px-1 py-px text-[9px] font-medium leading-none text-sky-300">
+              تجريبي
+            </span>
+          )}
+        </div>
+        <StatusBadge variant={isMock ? "neutral" : statusBadgeVariant(row.status)}>
+          {row.status}
+        </StatusBadge>
       </CardHeader>
       <CardContent className="p-0">
         <p className="text-muted-foreground text-sm leading-relaxed">{row.detail}</p>
@@ -39,6 +48,7 @@ function SectionTitle({ children }: { children: React.ReactNode }) {
 
 export function MonitoringDashboard() {
   const snap = useReadOnlyMonitoringSnapshot();
+  const isMock = snap.phase === "mock";
 
   const systemRows = snap.rows?.filter((r) => SYSTEM_KEYS.has(r.key)) ?? [];
   const govRows = snap.rows?.filter((r) => GOV_KEYS.has(r.key)) ?? [];
@@ -103,7 +113,7 @@ export function MonitoringDashboard() {
             <SectionTitle>حالة النظام</SectionTitle>
             <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
               {systemRows.map((row) => (
-                <MonitoringCard key={row.key} row={row} />
+                <MonitoringCard key={row.key} row={row} isMock={isMock} />
               ))}
             </div>
           </section>
@@ -112,20 +122,20 @@ export function MonitoringDashboard() {
             <SectionTitle>الحوكمة والحماية</SectionTitle>
             <div className="grid gap-4 sm:grid-cols-2">
               {govRows.map((row) => (
-                <MonitoringCard key={row.key} row={row} />
+                <MonitoringCard key={row.key} row={row} isMock={isMock} />
               ))}
             </div>
           </section>
 
           <section className="space-y-3">
             <SectionTitle>قاعدة البيانات</SectionTitle>
-            {dbRow ? <MonitoringCard row={dbRow} /> : null}
+            {dbRow ? <MonitoringCard row={dbRow} isMock={isMock} /> : null}
           </section>
 
           <section className="space-y-3">
             <SectionTitle>آخر الأحداث</SectionTitle>
             <div className="grid gap-4 lg:grid-cols-2">
-              {lifecycleRow ? <MonitoringCard row={lifecycleRow} /> : null}
+              {lifecycleRow ? <MonitoringCard row={lifecycleRow} isMock={isMock} /> : null}
               <Card className={institutionalCardClass("p-4")}>
                 <CardHeader className="p-0 pb-2">
                   <CardTitle className="card-title-inst">مختبر — آخر القرارات</CardTitle>

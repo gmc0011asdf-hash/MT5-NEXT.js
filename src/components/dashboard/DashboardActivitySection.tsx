@@ -1,7 +1,7 @@
 "use client";
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { mockSignals } from "@/lib/constants/mock-data";
+import { Mt5EmptyState } from "@/components/common/Mt5EmptyState";
 import { institutionalCardClass } from "@/lib/ui-institutional";
 import { useReadOnlyMonitoringSnapshot } from "@/lib/hooks/use-read-only-monitoring-snapshot";
 
@@ -21,12 +21,7 @@ export function DashboardActivitySection() {
   const labDecisions =
     snap.phase === "live" && snap.live.lab.last_decisions?.length
       ? snap.live.lab.last_decisions
-      : mockSignals.slice(0, 3).map((s) => ({
-          pair: s.pair,
-          verdict: s.verdict,
-          timeframe: s.timeframe,
-          source: "mock-ui",
-        }));
+      : null;
 
   const guardEvents = snap.phase === "live" ? snap.live.execution.last_guard_events ?? [] : [];
   const lifecycleEvents = snap.phase === "live" ? snap.live.execution.last_lifecycle_events ?? [] : [];
@@ -39,10 +34,15 @@ export function DashboardActivitySection() {
           <p className="text-muted-foreground text-xs">قراءة فقط — بدون تنفيذ.</p>
         </CardHeader>
         <CardContent className="space-y-2 px-4 pb-4">
-          {Array.isArray(labDecisions) &&
+          {snap.phase === "loading" ? (
+            <p className="text-muted-foreground text-sm">جاري التحميل…</p>
+          ) : labDecisions === null ? (
+            <Mt5EmptyState reason="not_synced" className="py-4" />
+          ) : (
             labDecisions.slice(0, 4).map((row, idx) => {
               const pair = (row as { pair?: string }).pair ?? `item-${idx}`;
-              const verdict = (row as { verdict?: string }).verdict ?? JSON.stringify(row).slice(0, 40);
+              const verdict =
+                (row as { verdict?: string }).verdict ?? JSON.stringify(row).slice(0, 40);
               return (
                 <div
                   key={`${pair}-${idx}`}
@@ -52,7 +52,8 @@ export function DashboardActivitySection() {
                   <span className="text-muted-foreground text-xs">{verdict}</span>
                 </div>
               );
-            })}
+            })
+          )}
         </CardContent>
       </Card>
 
@@ -60,7 +61,11 @@ export function DashboardActivitySection() {
         <CardHeader className="border-b border-amber-500/10 px-4 pb-3 pt-4">
           <CardTitle className="text-base md:text-lg">آخر أحداث المراقبة</CardTitle>
           <p className="text-muted-foreground text-xs">
-            {snap.phase === "live" ? "من واجهة البرمجة (مختصر)." : "وضع تجريبي — لا API."}
+            {snap.phase === "live"
+              ? "من واجهة البرمجة (مختصر)."
+              : snap.phase === "loading"
+                ? "جاري التحميل…"
+                : "لا بيانات حية — تعذّر الاتصال بالخادم."}
           </p>
         </CardHeader>
         <CardContent className="space-y-3 px-4 pb-4">

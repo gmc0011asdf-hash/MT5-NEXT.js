@@ -34,7 +34,12 @@ export function LiveMarketCard({ tick }: LiveMarketCardProps) {
     >
       <div className="flex items-start justify-between gap-2">
         <div>
-          <p className="font-semibold text-amber-100/90 text-xs tracking-wide">{symbol}</p>
+          <div className="flex items-center gap-1.5">
+            <p className="font-semibold text-amber-100/90 text-xs tracking-wide">{symbol}</p>
+            <span className="rounded border border-sky-500/25 bg-sky-500/10 px-1 py-px text-[9px] font-medium leading-none text-sky-300">
+              تجريبي
+            </span>
+          </div>
           <p className="mt-1 font-semibold text-2xl text-foreground tabular-nums tracking-tight md:text-3xl">
             {fmtPrice(symbol, tick.mid)}
           </p>
