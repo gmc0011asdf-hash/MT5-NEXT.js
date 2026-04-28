@@ -14,12 +14,28 @@ import {
 } from "@/components/ui/table";
 import { institutionalCardClass } from "@/lib/ui-institutional";
 import { useConvexAuth, useMutation, useQuery } from "convex/react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import { api } from "../../../../convex/_generated/api";
 
 const SYMBOL_SYNC_CHUNK = 100;
 const DISPLAY_ROW_CAP = 300;
+const DEFAULT_TERMINAL_PATH = "C:\\Program Files\\MetaTrader 5\\terminal64.exe";
+
+type Mt5ConnectionStatus = {
+  connected: boolean;
+  account_login: number | null;
+  server: string | null;
+  company: string | null;
+  name: string | null;
+  balance: number | null;
+  equity: number | null;
+  free_margin: number | null;
+  currency: string | null;
+  leverage: number | null;
+  read_only: boolean;
+  error?: string;
+};
 
 function SymbolToggleSwitch({
   checked,
@@ -74,6 +90,7 @@ export default function SettingsPage() {
   const canUseConvex = !isConvexAuthLoading && isAuthenticated;
 
   const syncSymbolsMutation = useMutation(api.mt5Bridge.syncReadOnlySymbolsFromLocalService);
+  const syncSnapshotMutation = useMutation(api.mt5Bridge.syncReadOnlySnapshotFromLocalService);
   const updateSymbolMutation = useMutation(api.mt5Bridge.updateMySymbolSetting);
 
   const mt5Symbols = useQuery(api.coreQueries.getMyMt5SymbolsWithSettings, canUseConvex ? {} : "skip");
@@ -85,6 +102,13 @@ export default function SettingsPage() {
   const [syncMessage, setSyncMessage] = useState<string | null>(null);
   const [syncProgress, setSyncProgress] = useState<string | null>(null);
   const [symbolSearch, setSymbolSearch] = useState("");
+  const [connectBusy, setConnectBusy] = useState(false);
+  const [connectMessage, setConnectMessage] = useState<string | null>(null);
+  const [connectionStatus, setConnectionStatus] = useState<Mt5ConnectionStatus | null>(null);
+  const [mt5Login, setMt5Login] = useState("");
+  const [mt5Server, setMt5Server] = useState("");
+  const [mt5Password, setMt5Password] = useState("");
+  const [mt5TerminalPath, setMt5TerminalPath] = useState(DEFAULT_TERMINAL_PATH);
 
   const filteredSymbols = useMemo(() => {
     if (!mt5Symbols || mt5Symbols.length === 0) return [];
@@ -104,6 +128,37 @@ export default function SettingsPage() {
   );
 
   const showDisplayCapHint = filteredSymbols.length > DISPLAY_ROW_CAP;
+
+  useEffect(() => {
+    let mounted = true;
+    async function loadConnectionStatus() {
+      try {
+        const res = await fetch("/api/mt5-readonly/connection-status", { cache: "no-store" });
+        const payload = (await res.json()) as Mt5ConnectionStatus;
+        if (mounted) setConnectionStatus(payload);
+      } catch {
+        if (mounted) {
+          setConnectionStatus({
+            connected: false,
+            account_login: null,
+            server: null,
+            company: null,
+            name: null,
+            balance: null,
+            equity: null,
+            free_margin: null,
+            currency: null,
+            leverage: null,
+            read_only: true,
+          });
+        }
+      }
+    }
+    void loadConnectionStatus();
+    return () => {
+      mounted = false;
+    };
+  }, []);
 
   async function syncPairsFromMt5() {
     setSyncMessage(null);
@@ -179,6 +234,95 @@ export default function SettingsPage() {
     }
   }
 
+  async function syncSnapshotAfterConnect() {
+    const res = await fetch("/api/mt5-readonly/snapshot", { cache: "no-store" });
+    const payload = (await res.json()) as { ok?: boolean; snapshot?: unknown; error?: string };
+    if (!res.ok || !payload.ok || payload.snapshot === undefined) {
+      throw new Error(payload.error ?? "فشل مزامنة لقطة MT5 بعد الاتصال.");
+    }
+    await syncSnapshotMutation({ snapshot: payload.snapshot as never });
+  }
+
+  async function connectRealMt5Account() {
+    setConnectMessage(null);
+    setConnectBusy(true);
+    try {
+      const loginValue = Number(mt5Login);
+      if (!Number.isFinite(loginValue) || loginValue <= 0) {
+        setConnectMessage("رقم الحساب غير صالح.");
+        return;
+      }
+      if (!mt5Server.trim()) {
+        setConnectMessage("السيرفر مطلوب.");
+        return;
+      }
+      if (!mt5Password) {
+        setConnectMessage("كلمة المرور مطلوبة.");
+        return;
+      }
+      if (!mt5TerminalPath.trim()) {
+        setConnectMessage("مسار terminal64.exe مطلوب.");
+        return;
+      }
+
+      const res = await fetch("/api/mt5-readonly/connect", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          login: loginValue,
+          server: mt5Server.trim(),
+          password: mt5Password,
+          terminal_path: mt5TerminalPath.trim(),
+        }),
+      });
+      const payload = (await res.json()) as {
+        connected?: boolean;
+        account?: {
+          login?: number;
+          name?: string | null;
+          company?: string | null;
+          server?: string | null;
+          balance?: number | null;
+          equity?: number | null;
+          free_margin?: number | null;
+          currency?: string | null;
+          leverage?: number | null;
+        };
+        error?: string;
+      };
+      if (!res.ok || payload.connected !== true) {
+        setConnectMessage(payload.error ?? "فشل الاتصال بمنصة MT5.");
+        return;
+      }
+
+      const account = payload.account;
+      setConnectionStatus({
+        connected: true,
+        account_login: account?.login ?? null,
+        server: account?.server ?? null,
+        company: account?.company ?? null,
+        name: account?.name ?? null,
+        balance: account?.balance ?? null,
+        equity: account?.equity ?? null,
+        free_margin: account?.free_margin ?? null,
+        currency: account?.currency ?? null,
+        leverage: account?.leverage ?? null,
+        read_only: true,
+      });
+
+      if (canUseConvex) {
+        await syncSnapshotAfterConnect();
+      }
+      setConnectMessage("تم الاتصال بمنصة MT5 بنجاح (قراءة فقط).");
+    } catch (e) {
+      const reason = e instanceof Error ? e.message : "فشل الاتصال بخدمة MT5 المحلية.";
+      setConnectMessage(reason);
+    } finally {
+      setMt5Password("");
+      setConnectBusy(false);
+    }
+  }
+
   return (
     <div className="mx-auto flex max-w-7xl flex-col gap-6">
       <div>
@@ -188,6 +332,92 @@ export default function SettingsPage() {
           إعدادات عرض فقط في هذه النسخة الأولية.
         </p>
       </div>
+
+      <Section title="اتصال منصة MT5 الحقيقية">
+        <p className="rounded-xl border border-amber-500/20 bg-amber-500/5 px-3 py-2 text-amber-100/90 text-xs leading-relaxed">
+          اتصال قراءة فقط. لا يتم تنفيذ أي أوامر تداول.
+        </p>
+        <div className="grid gap-4 md:grid-cols-2">
+          <div className="space-y-2">
+            <label className="text-sm font-medium leading-none" htmlFor="mt5-login">
+              رقم الحساب
+            </label>
+            <Input
+              id="mt5-login"
+              value={mt5Login}
+              onChange={(e) => setMt5Login(e.target.value)}
+              placeholder="123456"
+              dir="ltr"
+              autoComplete="off"
+            />
+          </div>
+          <div className="space-y-2">
+            <label className="text-sm font-medium leading-none" htmlFor="mt5-server">
+              السيرفر
+            </label>
+            <Input
+              id="mt5-server"
+              value={mt5Server}
+              onChange={(e) => setMt5Server(e.target.value)}
+              placeholder="Broker-Server"
+              dir="ltr"
+              autoComplete="off"
+            />
+          </div>
+          <div className="space-y-2">
+            <label className="text-sm font-medium leading-none" htmlFor="mt5-password">
+              كلمة المرور
+            </label>
+            <Input
+              id="mt5-password"
+              type="password"
+              value={mt5Password}
+              onChange={(e) => setMt5Password(e.target.value)}
+              placeholder="********"
+              dir="ltr"
+              autoComplete="new-password"
+            />
+          </div>
+          <div className="space-y-2">
+            <label className="text-sm font-medium leading-none" htmlFor="mt5-terminal-path">
+              مسار terminal64.exe
+            </label>
+            <Input
+              id="mt5-terminal-path"
+              value={mt5TerminalPath}
+              onChange={(e) => setMt5TerminalPath(e.target.value)}
+              placeholder={DEFAULT_TERMINAL_PATH}
+              dir="ltr"
+              autoComplete="off"
+            />
+          </div>
+        </div>
+        <div className="flex flex-wrap items-center gap-3">
+          <Button
+            type="button"
+            variant="outline"
+            disabled={connectBusy}
+            onClick={() => void connectRealMt5Account()}
+          >
+            {connectBusy ? "جاري الاتصال…" : "اتصال بمنصة MT5"}
+          </Button>
+          {connectMessage ? <span className="text-muted-foreground text-xs">{connectMessage}</span> : null}
+        </div>
+        {connectionStatus?.connected ? (
+          <div className="grid gap-2 rounded-xl border border-emerald-500/20 bg-emerald-500/5 p-3 text-sm md:grid-cols-2">
+            <div>رقم الحساب: <span className="tabular-nums">{connectionStatus.account_login ?? "—"}</span></div>
+            <div>الاسم: {connectionStatus.name ?? "—"}</div>
+            <div>الشركة: {connectionStatus.company ?? "—"}</div>
+            <div>السيرفر: {connectionStatus.server ?? "—"}</div>
+            <div>الرصيد: <span className="tabular-nums">{connectionStatus.balance ?? "—"}</span></div>
+            <div>Equity: <span className="tabular-nums">{connectionStatus.equity ?? "—"}</span></div>
+            <div>Free Margin: <span className="tabular-nums">{connectionStatus.free_margin ?? "—"}</span></div>
+            <div>العملة: {connectionStatus.currency ?? "—"}</div>
+            <div>الرافعة: <span className="tabular-nums">{connectionStatus.leverage ?? "—"}</span></div>
+            <div>وضع القراءة فقط: {connectionStatus.read_only ? "نعم" : "لا"}</div>
+          </div>
+        ) : null}
+      </Section>
 
       <Section title="أزواج وأدوات MT5 الظاهرة">
         <p className="rounded-xl border border-amber-500/20 bg-amber-500/5 px-3 py-2 text-amber-100/90 text-xs leading-relaxed">

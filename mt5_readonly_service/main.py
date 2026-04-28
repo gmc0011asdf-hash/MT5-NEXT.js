@@ -18,6 +18,7 @@ from typing import Any
 
 from fastapi import FastAPI, Query
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel
 
 # -----------------------------------------------------------------------------
 # Safety switches — never flip READ_ONLY_MODE without a separate security review.
@@ -37,6 +38,13 @@ FORBIDDEN_MT5_FUNCTION_NAMES: tuple[str, ...] = (
 import MetaTrader5 as mt5
 
 _DEFAULT_SYMBOLS: tuple[str, ...] = ("EURUSD", "GBPUSD", "XAUUSD")
+
+
+class ConnectRequest(BaseModel):
+    login: int
+    server: str
+    password: str
+    terminal_path: str
 
 
 def _enforce_read_only_policy() -> None:
@@ -87,6 +95,22 @@ def _safe_mt5_init() -> tuple[bool, str | None]:
     return True, None
 
 
+def _empty_connection_status() -> dict[str, Any]:
+    return {
+        "connected": False,
+        "account_login": None,
+        "server": None,
+        "company": None,
+        "name": None,
+        "balance": None,
+        "equity": None,
+        "free_margin": None,
+        "currency": None,
+        "leverage": None,
+        "read_only": True,
+    }
+
+
 def _account_payload() -> dict[str, Any]:
     info = mt5.account_info()
     if info is None:
@@ -103,6 +127,36 @@ def _account_payload() -> dict[str, Any]:
         "trade_allowed": bool(info.trade_allowed),
         "company": info.company,
     }
+
+
+def _connection_status_payload() -> dict[str, Any]:
+    _enforce_read_only_policy()
+    ok, err = _safe_mt5_init()
+    if not ok:
+        body = _empty_connection_status()
+        body["error"] = err or "MT5 unavailable"
+        return body
+    try:
+        info = mt5.account_info()
+        if info is None:
+            body = _empty_connection_status()
+            body["error"] = "account_info returned None"
+            return body
+        return {
+            "connected": True,
+            "account_login": int(getattr(info, "login", 0) or 0),
+            "server": getattr(info, "server", None),
+            "company": getattr(info, "company", None),
+            "name": getattr(info, "name", None),
+            "balance": float(getattr(info, "balance", 0.0) or 0.0),
+            "equity": float(getattr(info, "equity", 0.0) or 0.0),
+            "free_margin": float(getattr(info, "margin_free", 0.0) or 0.0),
+            "currency": getattr(info, "currency", None),
+            "leverage": int(getattr(info, "leverage", 0) or 0),
+            "read_only": True,
+        }
+    finally:
+        mt5.shutdown()
 
 
 def _ticks_payload(symbols: list[str]) -> dict[str, Any]:
@@ -167,6 +221,76 @@ app = FastAPI(
     description="Read-only REST facade beside MetaTrader 5 terminal (Windows). No trading endpoints.",
     version="0.1.0",
 )
+
+
+@app.post("/connect")
+def connect_mt5(payload: ConnectRequest) -> JSONResponse:
+    _enforce_read_only_policy()
+    login = int(payload.login)
+    server = payload.server.strip()
+    password = payload.password
+    terminal_path = payload.terminal_path.strip()
+
+    if login <= 0:
+        return JSONResponse(status_code=400, content={"connected": False, "error": "رقم الحساب غير صالح"})
+    if not server:
+        return JSONResponse(status_code=400, content={"connected": False, "error": "السيرفر مطلوب"})
+    if not password:
+        return JSONResponse(status_code=400, content={"connected": False, "error": "كلمة المرور مطلوبة"})
+    if not terminal_path:
+        return JSONResponse(
+            status_code=400, content={"connected": False, "error": "مسار terminal64.exe مطلوب"}
+        )
+    if not os.path.isfile(terminal_path):
+        return JSONResponse(
+            status_code=400,
+            content={"connected": False, "error": "مسار terminal64.exe غير صالح أو الملف غير موجود"},
+        )
+
+    ok = mt5.initialize(
+        path=terminal_path,
+        login=login,
+        password=password,
+        server=server,
+    )
+    if not ok:
+        err = mt5.last_error()
+        return JSONResponse(
+            status_code=503,
+            content={"connected": False, "error": f"فشل الاتصال أو تهيئة MT5: {err}"},
+        )
+    try:
+        info = mt5.account_info()
+        if info is None:
+            return JSONResponse(
+                status_code=503,
+                content={"connected": False, "error": "تم فتح MT5 لكن تعذّر جلب account_info"},
+            )
+        return JSONResponse(
+            content={
+                "connected": True,
+                "read_only": True,
+                "account": {
+                    "login": int(getattr(info, "login", 0) or 0),
+                    "name": getattr(info, "name", None),
+                    "company": getattr(info, "company", None),
+                    "server": getattr(info, "server", None),
+                    "balance": float(getattr(info, "balance", 0.0) or 0.0),
+                    "equity": float(getattr(info, "equity", 0.0) or 0.0),
+                    "free_margin": float(getattr(info, "margin_free", 0.0) or 0.0),
+                    "currency": getattr(info, "currency", None),
+                    "leverage": int(getattr(info, "leverage", 0) or 0),
+                },
+            }
+        )
+    finally:
+        mt5.shutdown()
+
+
+@app.get("/connection-status")
+def connection_status() -> JSONResponse:
+    body = _connection_status_payload()
+    return JSONResponse(content=body, status_code=200 if body.get("connected") else 503)
 
 
 @app.get("/health")
