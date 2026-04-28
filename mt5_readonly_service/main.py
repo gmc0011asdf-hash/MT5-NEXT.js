@@ -13,6 +13,7 @@ READ-ONLY CONTRACT — يُمنع أي تنفيذ أو أوامر من هذه ا
 from __future__ import annotations
 
 import os
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -32,6 +33,17 @@ FORBIDDEN_MT5_FUNCTION_NAMES: tuple[str, ...] = (
     "order_modify",
     "order_check",
 )
+
+# Service identity — increment build_version on every release.
+_BUILD_VERSION: str = "0.2.0"
+_SERVICE_START_TIME: float = time.monotonic()
+
+# Tracks the wall-clock time of the last call that returned real MT5 data.
+_last_successful_mt5_call_at: datetime | None = None
+
+# How many seconds a tick timestamp can be old before we consider the market closed.
+# Forex closes ~Friday 22:00 UTC; a tick older than 4 hours during session is suspicious.
+_STALE_TICK_THRESHOLD_SECONDS: int = 4 * 3600  # 4 hours
 
 # Import MetaTrader5 only for documented read paths.
 # The underlying DLL exposes trading APIs; we deliberately never call them here.
@@ -58,10 +70,24 @@ class ConnectRequest(BaseModel):
     terminal_path: str
 
 
+# -----------------------------------------------------------------------------
+# Internal helpers
+# -----------------------------------------------------------------------------
+
 def _enforce_read_only_policy() -> None:
     """Fail fast if someone disables read-only mode by mistake."""
     if READ_ONLY_MODE is not True:
         raise RuntimeError("READ_ONLY_MODE must remain True for this service.")
+
+
+def _record_successful_mt5_call() -> None:
+    """Update the global last-success timestamp after a real MT5 data response."""
+    global _last_successful_mt5_call_at
+    _last_successful_mt5_call_at = datetime.now(timezone.utc)
+
+
+def _service_uptime_seconds() -> float:
+    return round(time.monotonic() - _SERVICE_START_TIME, 1)
 
 
 def _symbols_from_env() -> list[str]:
@@ -108,8 +134,45 @@ def _safe_mt5_init() -> tuple[bool, str | None]:
     _enforce_read_only_policy()
     if not mt5.initialize():
         err = mt5.last_error()
-        return False, f"MT5 initialize failed (terminal closed or not installed?): {err}"
+        return False, f"تعذّر تهيئة MT5 (هل المنصة مفتوحة؟): {err}"
     return True, None
+
+
+def _validate_terminal_path(terminal_path: str) -> str | None:
+    """
+    Return an Arabic error string if terminal_path is unusable, else None.
+    Accepts either the exact terminal64.exe path or the terminal directory.
+    """
+    path = terminal_path.strip()
+    if not path:
+        return "مسار المنصة مطلوب"
+    if os.path.isdir(path):
+        return (
+            "المسار المُدخَل هو مجلد وليس ملف تنفيذي — "
+            "أدخل المسار الكامل لـ terminal64.exe"
+        )
+    if not os.path.isfile(path):
+        return (
+            f"ملف terminal64.exe غير موجود في المسار: {path} — "
+            "تحقق من مسار تثبيت MetaTrader 5"
+        )
+    if not path.lower().endswith(".exe"):
+        return "المسار يجب أن يشير إلى ملف .exe — مثال: C:\\Program Files\\MetaTrader 5\\terminal64.exe"
+    return None
+
+
+def _is_tick_stale(tick_time_iso: str | None) -> bool:
+    """Return True when the tick timestamp is older than _STALE_TICK_THRESHOLD_SECONDS."""
+    if tick_time_iso is None:
+        return True
+    try:
+        tick_dt = datetime.fromisoformat(tick_time_iso)
+        if tick_dt.tzinfo is None:
+            tick_dt = tick_dt.replace(tzinfo=timezone.utc)
+        age_seconds = (datetime.now(timezone.utc) - tick_dt).total_seconds()
+        return age_seconds > _STALE_TICK_THRESHOLD_SECONDS
+    except (ValueError, TypeError):
+        return True
 
 
 def _empty_connection_status() -> dict[str, Any]:
@@ -131,7 +194,7 @@ def _empty_connection_status() -> dict[str, Any]:
 def _account_payload() -> dict[str, Any]:
     info = mt5.account_info()
     if info is None:
-        return {"connected": False, "error": "account_info returned None"}
+        return {"connected": False, "error": "تعذّر جلب account_info من MT5"}
     return {
         "connected": True,
         "login": info.login,
@@ -148,17 +211,21 @@ def _account_payload() -> dict[str, Any]:
 
 def _connection_status_payload() -> dict[str, Any]:
     _enforce_read_only_policy()
+    now_iso = datetime.now(timezone.utc).isoformat()
     ok, err = _safe_mt5_init()
     if not ok:
         body = _empty_connection_status()
-        body["error"] = err or "MT5 unavailable"
+        body["error"] = err or "MT5 غير متاح"
+        body["last_check_at"] = now_iso
         return body
     try:
         info = mt5.account_info()
         if info is None:
             body = _empty_connection_status()
-            body["error"] = "account_info returned None"
+            body["error"] = "تعذّر جلب account_info من MT5"
+            body["last_check_at"] = now_iso
             return body
+        _record_successful_mt5_call()
         return {
             "connected": True,
             "account_login": int(getattr(info, "login", 0) or 0),
@@ -171,6 +238,7 @@ def _connection_status_payload() -> dict[str, Any]:
             "currency": getattr(info, "currency", None),
             "leverage": int(getattr(info, "leverage", 0) or 0),
             "read_only": True,
+            "last_check_at": now_iso,
         }
     finally:
         mt5.shutdown()
@@ -178,23 +246,43 @@ def _connection_status_payload() -> dict[str, Any]:
 
 def _ticks_payload(symbols: list[str]) -> dict[str, Any]:
     ticks_out: list[dict[str, Any]] = []
+    any_fresh_tick = False
+
     for sym in symbols:
         if not mt5.symbol_select(sym, True):
+            # Per-symbol error — does not fail the whole request.
             ticks_out.append(
                 {
                     "symbol": sym,
-                    "error": "symbol_select failed or unknown symbol",
+                    "error": f"الرمز '{sym}' غير موجود في Market Watch أو تعذّر تفعيله",
+                    "market_closed": None,
                 }
             )
             continue
+
         tick = mt5.symbol_info_tick(sym)
         info = mt5.symbol_info(sym)
         spread_pts = int(info.spread) if info is not None else None
+
         if tick is None:
-            ticks_out.append({"symbol": sym, "error": "no tick"})
+            ticks_out.append(
+                {
+                    "symbol": sym,
+                    "error": f"لا يوجد تيك للرمز '{sym}' — قد يكون السوق مغلقاً",
+                    "market_closed": True,
+                }
+            )
             continue
+
         bid_f = float(tick.bid)
         ask_f = float(tick.ask)
+        raw_ts = getattr(tick, "time_msc", None) or getattr(tick, "time", None)
+        time_iso = _iso_from_mt5_time(raw_ts)
+        stale = _is_tick_stale(time_iso)
+
+        if not stale:
+            any_fresh_tick = True
+
         ticks_out.append(
             {
                 "symbol": sym,
@@ -202,10 +290,12 @@ def _ticks_payload(symbols: list[str]) -> dict[str, Any]:
                 "ask": ask_f,
                 "spread": round(ask_f - bid_f, 10),
                 "spread_points": spread_pts,
-                "time": _iso_from_mt5_time(getattr(tick, "time_msc", None) or getattr(tick, "time", None)),
+                "time": time_iso,
+                "market_closed": stale,
             }
         )
-    return {"ticks": ticks_out}
+
+    return {"ticks": ticks_out, "market_closed": not any_fresh_tick}
 
 
 def _positions_payload() -> dict[str, Any]:
@@ -213,7 +303,7 @@ def _positions_payload() -> dict[str, Any]:
     rows = mt5.positions_get()
     if rows is None:
         err = mt5.last_error()
-        return {"positions": [], "error": f"positions_get failed: {err}"}
+        return {"positions": [], "error": f"تعذّر جلب المراكز المفتوحة: {err}"}
     out: list[dict[str, Any]] = []
     for p in rows:
         out.append(
@@ -233,10 +323,14 @@ def _positions_payload() -> dict[str, Any]:
     return {"positions": out, "count": len(out)}
 
 
+# -----------------------------------------------------------------------------
+# FastAPI application
+# -----------------------------------------------------------------------------
+
 app = FastAPI(
     title="MT5 Read-only Local Connector",
     description="Read-only REST facade beside MetaTrader 5 terminal (Windows). No trading endpoints.",
-    version="0.1.0",
+    version=_BUILD_VERSION,
 )
 
 
@@ -248,20 +342,29 @@ def connect_mt5(payload: ConnectRequest) -> JSONResponse:
     password = payload.password
     terminal_path = payload.terminal_path.strip()
 
+    # Basic field validation
     if login <= 0:
-        return JSONResponse(status_code=400, content={"connected": False, "error": "رقم الحساب غير صالح"})
-    if not server:
-        return JSONResponse(status_code=400, content={"connected": False, "error": "السيرفر مطلوب"})
-    if not password:
-        return JSONResponse(status_code=400, content={"connected": False, "error": "كلمة المرور مطلوبة"})
-    if not terminal_path:
-        return JSONResponse(
-            status_code=400, content={"connected": False, "error": "مسار terminal64.exe مطلوب"}
-        )
-    if not os.path.isfile(terminal_path):
         return JSONResponse(
             status_code=400,
-            content={"connected": False, "error": "مسار terminal64.exe غير صالح أو الملف غير موجود"},
+            content={"connected": False, "error": "رقم الحساب غير صالح — يجب أن يكون رقماً موجباً"},
+        )
+    if not server:
+        return JSONResponse(
+            status_code=400,
+            content={"connected": False, "error": "اسم السيرفر مطلوب"},
+        )
+    if not password:
+        return JSONResponse(
+            status_code=400,
+            content={"connected": False, "error": "كلمة المرور مطلوبة"},
+        )
+
+    # Terminal path validation — checks directory vs file vs missing
+    path_error = _validate_terminal_path(terminal_path)
+    if path_error:
+        return JSONResponse(
+            status_code=400,
+            content={"connected": False, "error": path_error},
         )
 
     ok = mt5.initialize(
@@ -274,15 +377,22 @@ def connect_mt5(payload: ConnectRequest) -> JSONResponse:
         err = mt5.last_error()
         return JSONResponse(
             status_code=503,
-            content={"connected": False, "error": f"فشل الاتصال أو تهيئة MT5: {err}"},
+            content={
+                "connected": False,
+                "error": f"فشل الاتصال بـ MT5: {err} — تحقق من بيانات الدخول والسيرفر",
+            },
         )
     try:
         info = mt5.account_info()
         if info is None:
             return JSONResponse(
                 status_code=503,
-                content={"connected": False, "error": "تم فتح MT5 لكن تعذّر جلب account_info"},
+                content={
+                    "connected": False,
+                    "error": "تم فتح MT5 لكن تعذّر جلب بيانات الحساب — تحقق من رقم الحساب",
+                },
             )
+        _record_successful_mt5_call()
         return JSONResponse(
             content={
                 "connected": True,
@@ -311,16 +421,33 @@ def connection_status() -> JSONResponse:
 
 
 @app.get("/health")
-def health() -> dict[str, Any]:
+def health() -> JSONResponse:
+    """
+    Service health — includes uptime, build version, last successful MT5 call,
+    and configured symbols. All fields are backward-compatible additions.
+    """
     _enforce_read_only_policy()
+    symbols_configured = _symbols_from_env()
     ok, err = _safe_mt5_init()
     try:
-        return {
-            "status": "ok",
-            "read_only_mode": READ_ONLY_MODE,
-            "mt5_connected": ok,
-            "detail": None if ok else err,
-        }
+        if ok:
+            _record_successful_mt5_call()
+        return JSONResponse(
+            content={
+                "status": "ok",
+                "read_only_mode": READ_ONLY_MODE,
+                "build_version": _BUILD_VERSION,
+                "uptime_seconds": _service_uptime_seconds(),
+                "mt5_connected": ok,
+                "last_successful_mt5_call_at": (
+                    _last_successful_mt5_call_at.isoformat()
+                    if _last_successful_mt5_call_at is not None
+                    else None
+                ),
+                "symbols_configured": symbols_configured,
+                "detail": None if ok else err,
+            }
+        )
     finally:
         if ok:
             mt5.shutdown()
@@ -333,12 +460,13 @@ def readonly_account() -> JSONResponse:
     if not ok:
         return JSONResponse(
             status_code=503,
-            content={"connected": False, "error": err or "MT5 unavailable"},
+            content={"connected": False, "error": err or "MT5 غير متاح"},
         )
     try:
         body = _account_payload()
         if not body.get("connected"):
             return JSONResponse(status_code=503, content=body)
+        _record_successful_mt5_call()
         return JSONResponse(content=body)
     finally:
         mt5.shutdown()
@@ -351,13 +479,19 @@ def readonly_ticks() -> JSONResponse:
     if not ok:
         return JSONResponse(
             status_code=503,
-            content={"connected": False, "error": err or "MT5 unavailable", "ticks": []},
+            content={
+                "connected": False,
+                "error": err or "MT5 غير متاح",
+                "ticks": [],
+                "market_closed": None,
+            },
         )
     try:
         symbols = _symbols_from_env()
         payload = _ticks_payload(symbols)
         payload["connected"] = True
         payload["symbols_configured"] = symbols
+        _record_successful_mt5_call()
         return JSONResponse(content=payload)
     finally:
         mt5.shutdown()
@@ -370,11 +504,12 @@ def readonly_positions() -> JSONResponse:
     if not ok:
         return JSONResponse(
             status_code=503,
-            content={"connected": False, "error": err or "MT5 unavailable", "positions": []},
+            content={"connected": False, "error": err or "MT5 غير متاح", "positions": []},
         )
     try:
         payload = _positions_payload()
         payload["connected"] = True
+        _record_successful_mt5_call()
         return JSONResponse(content=payload)
     finally:
         mt5.shutdown()
@@ -389,10 +524,11 @@ def readonly_snapshot() -> JSONResponse:
             status_code=503,
             content={
                 "connected": False,
-                "error": err or "MT5 unavailable",
+                "error": err or "MT5 غير متاح",
                 "account": None,
                 "ticks": [],
                 "positions": [],
+                "market_closed": None,
             },
         )
     try:
@@ -400,6 +536,8 @@ def readonly_snapshot() -> JSONResponse:
         account = _account_payload()
         ticks_block = _ticks_payload(symbols)
         pos_block = _positions_payload()
+        if account.get("connected"):
+            _record_successful_mt5_call()
         combined = {
             "connected": account.get("connected", False),
             "read_only_mode": READ_ONLY_MODE,
@@ -410,7 +548,7 @@ def readonly_snapshot() -> JSONResponse:
         }
         if not account.get("connected"):
             combined["connected"] = False
-            combined.setdefault("error", account.get("error", "account unavailable"))
+            combined.setdefault("error", account.get("error", "تعذّر جلب بيانات الحساب"))
         return JSONResponse(content=combined)
     finally:
         mt5.shutdown()
@@ -452,7 +590,7 @@ def readonly_symbols(
                 "visible_only": bool(visible_only),
                 "count": 0,
                 "symbols": [],
-                "error": err or "MT5 unavailable",
+                "error": err or "MT5 غير متاح",
             },
         )
     try:
@@ -472,6 +610,7 @@ def readonly_symbols(
             ]
         if limit is not None:
             symbols_out = symbols_out[: int(limit)]
+        _record_successful_mt5_call()
         return JSONResponse(
             content={
                 "connected": True,
@@ -501,7 +640,7 @@ def readonly_history_deals(
                 "connected": False,
                 "read_only_mode": READ_ONLY_MODE,
                 "deals": [],
-                "error": err or "MT5 unavailable",
+                "error": err or "MT5 غير متاح",
             },
         )
     try:
@@ -531,9 +670,7 @@ def readonly_history_deals(
                     "profit": float(getattr(d, "profit", 0.0) or 0.0),
                     "commission": float(getattr(d, "commission", 0.0) or 0.0),
                     "swap": float(getattr(d, "swap", 0.0) or 0.0),
-                    "fee": float(getattr(d, "fee", 0.0))
-                    if hasattr(d, "fee")
-                    else None,
+                    "fee": float(getattr(d, "fee", 0.0)) if hasattr(d, "fee") else None,
                     "time": time_ms if time_ms is not None else 0,
                     "time_iso": _iso_from_mt5_time(ts) if ts is not None else None,
                     "comment": getattr(d, "comment", "") or "",
@@ -541,6 +678,7 @@ def readonly_history_deals(
                 }
             )
 
+        _record_successful_mt5_call()
         return JSONResponse(
             content={
                 "connected": True,
@@ -571,13 +709,15 @@ def readonly_candles(
                 "read_only_mode": READ_ONLY_MODE,
                 "source": "mt5-local-readonly-candles",
                 "candles": [],
-                "error": err or "MT5 unavailable",
+                "error": err or "MT5 غير متاح",
             },
         )
     try:
         symbols_list = _parse_csv_param(symbols) or _symbols_from_env()
         requested_timeframes = _parse_csv_param(timeframes) or list(_DEFAULT_CANDLE_TIMEFRAMES)
         valid_timeframes = [tf for tf in requested_timeframes if tf in _TIMEFRAME_MAP]
+        invalid_timeframes = [tf for tf in requested_timeframes if tf not in _TIMEFRAME_MAP]
+
         if len(valid_timeframes) == 0:
             return JSONResponse(
                 status_code=400,
@@ -586,13 +726,20 @@ def readonly_candles(
                     "read_only_mode": READ_ONLY_MODE,
                     "source": "mt5-local-readonly-candles",
                     "candles": [],
-                    "error": "No valid timeframes. Use M1,M5,M15,M30,H1,H4,D1",
+                    "error": (
+                        f"لا توجد إطارات زمنية صالحة. الإطارات المقبولة: M1,M5,M15,M30,H1,H4,D1. "
+                        f"المُدخَل: {','.join(requested_timeframes)}"
+                    ),
                 },
             )
 
         candles: list[dict[str, Any]] = []
+        skipped_symbols: list[str] = []
+
         for sym in symbols_list:
             if not mt5.symbol_select(sym, True):
+                # Per-symbol failure — does not abort the whole request.
+                skipped_symbols.append(sym)
                 continue
             for tf in valid_timeframes:
                 tf_const = _TIMEFRAME_MAP.get(tf)
@@ -600,6 +747,7 @@ def readonly_candles(
                     continue
                 rates = mt5.copy_rates_from_pos(sym, tf_const, 0, int(count))
                 if rates is None:
+                    skipped_symbols.append(f"{sym}/{tf}")
                     continue
                 for rate in rates:
                     ts = int(rate["time"])
@@ -619,17 +767,27 @@ def readonly_candles(
                         }
                     )
 
-        return JSONResponse(
-            content={
-                "connected": True,
-                "read_only_mode": READ_ONLY_MODE,
-                "source": "mt5-local-readonly-candles",
-                "symbols": symbols_list,
-                "timeframes": valid_timeframes,
-                "count": int(count),
-                "candles": candles,
-            }
-        )
+        if candles:
+            _record_successful_mt5_call()
+
+        response: dict[str, Any] = {
+            "connected": True,
+            "read_only_mode": READ_ONLY_MODE,
+            "source": "mt5-local-readonly-candles",
+            "symbols": symbols_list,
+            "timeframes": valid_timeframes,
+            "count": int(count),
+            "candles": candles,
+        }
+        if skipped_symbols:
+            response["skipped_symbols"] = skipped_symbols
+            response["skipped_note"] = (
+                "بعض الرموز أو الإطارات الزمنية تعذّر جلبها — تحقق من Market Watch"
+            )
+        if invalid_timeframes:
+            response["invalid_timeframes"] = invalid_timeframes
+
+        return JSONResponse(content=response)
     finally:
         mt5.shutdown()
 
