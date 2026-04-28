@@ -43,6 +43,7 @@ export default function ReportsPage() {
   const signalSnapshots = useQuery(api.coreQueries.getMySignalReportSnapshots, canUseConvex ? {} : "skip");
   const governance = useQuery(api.coreQueries.getMyGovernanceState, canUseConvex ? {} : "skip");
   const tradeHistoryDeals = useQuery(api.coreQueries.getMyTradeHistoryDeals, canUseConvex ? {} : "skip");
+  const activePositions = useQuery(api.coreQueries.getMyActiveMt5Positions, canUseConvex ? {} : "skip");
   const syncHistoryMutation = useMutation(api.mt5Bridge.syncReadOnlyTradeHistoryFromLocalService);
 
   const [historyDays, setHistoryDays] = useState("30");
@@ -163,6 +164,47 @@ export default function ReportsPage() {
 
       <Card className={institutionalCardClass("p-0")}>
         <CardHeader className="space-y-2 border-b border-amber-500/10 px-4 py-4 md:px-6">
+          <CardTitle className="card-title-inst">الصفقات النشطة من MT5 — قراءة فقط</CardTitle>
+        </CardHeader>
+        <CardContent className="overflow-x-auto px-2 pb-4 md:px-4">
+          {convexEmptyOrLoading(activePositions) ??
+            (activePositions && (
+              <Table>
+                <TableHeader>
+                  <TableRow className="border-amber-500/10 hover:bg-transparent">
+                    <TableHead className="text-foreground">الرمز</TableHead>
+                    <TableHead className="text-foreground">النوع</TableHead>
+                    <TableHead className="text-foreground">الحجم</TableHead>
+                    <TableHead className="text-foreground">سعر الفتح</TableHead>
+                    <TableHead className="text-foreground">السعر الحالي</TableHead>
+                    <TableHead className="text-foreground">وقف الخسارة</TableHead>
+                    <TableHead className="text-foreground">جني الربح</TableHead>
+                    <TableHead className="text-foreground">الربح</TableHead>
+                    <TableHead className="text-foreground">التذكرة</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {activePositions.map((row) => (
+                    <TableRow key={row._id} className="border-border/60">
+                      <TableCell className="font-medium text-amber-100/90 tabular-nums">{row.symbol}</TableCell>
+                      <TableCell className="text-muted-foreground text-sm">{row.type}</TableCell>
+                      <TableCell className="tabular-nums">{row.volume}</TableCell>
+                      <TableCell className="tabular-nums">{row.openPrice}</TableCell>
+                      <TableCell className="tabular-nums">{row.currentPrice}</TableCell>
+                      <TableCell className="tabular-nums">{fmtNum(row.stopLoss)}</TableCell>
+                      <TableCell className="tabular-nums">{fmtNum(row.takeProfit)}</TableCell>
+                      <TableCell className="tabular-nums">{fmtNum(row.profit)}</TableCell>
+                      <TableCell className="tabular-nums text-muted-foreground text-xs">{row.ticket ?? "—"}</TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            ))}
+        </CardContent>
+      </Card>
+
+      <Card className={institutionalCardClass("p-0")}>
+        <CardHeader className="space-y-2 border-b border-amber-500/10 px-4 py-4 md:px-6">
           <CardTitle className="card-title-inst">سجل صفقات MT5 — قراءة فقط</CardTitle>
           <p className="text-muted-foreground text-xs leading-relaxed">
             هذا سجل قراءة فقط من MT5 ولا توجد أي أوامر تداول.
@@ -203,6 +245,7 @@ export default function ReportsPage() {
                     <TableHead className="text-foreground">الوقت</TableHead>
                     <TableHead className="text-foreground">الرمز</TableHead>
                     <TableHead className="text-foreground">النوع</TableHead>
+                    <TableHead className="text-foreground">الدخول</TableHead>
                     <TableHead className="text-foreground">الحجم</TableHead>
                     <TableHead className="text-foreground">السعر</TableHead>
                     <TableHead className="text-foreground">الربح</TableHead>
@@ -219,6 +262,7 @@ export default function ReportsPage() {
                       </TableCell>
                       <TableCell className="font-medium text-amber-100/90 tabular-nums">{row.symbol}</TableCell>
                       <TableCell className="text-muted-foreground text-sm">{row.type ?? "—"}</TableCell>
+                      <TableCell className="text-muted-foreground text-sm">{row.entry ?? "—"}</TableCell>
                       <TableCell className="tabular-nums">{row.volume}</TableCell>
                       <TableCell className="tabular-nums">{row.price}</TableCell>
                       <TableCell className="tabular-nums">{fmtNum(row.profit)}</TableCell>

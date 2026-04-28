@@ -3,6 +3,7 @@ import type { Doc } from "./_generated/dataModel";
 
 export const SOURCE_MT5_LOCAL = "mt5-local-readonly" as const;
 export const SOURCE_MT5_LOCAL_CATALOG = "mt5-local-catalog" as const;
+export const SOURCE_MT5_MARKET_WATCH_VISIBLE = "mt5-market-watch-visible" as const;
 
 async function requireUserId(ctx: { auth: { getUserIdentity: () => Promise<unknown> } }) {
   const identity = await ctx.auth.getUserIdentity();
@@ -277,11 +278,21 @@ export const getMyMt5SymbolsWithSettings = query({
     const userId = await requireUserId(ctx);
     if (!userId) return [];
 
-    const catalogRows = await ctx.db
-      .query("mt5Symbols")
-      .withIndex("by_source_capturedAt", (q) => q.eq("source", SOURCE_MT5_LOCAL_CATALOG))
-      .order("desc")
-      .take(25_000);
+    const [visibleRows, legacyRows] = await Promise.all([
+      ctx.db
+        .query("mt5Symbols")
+        .withIndex("by_source_capturedAt", (q) => q.eq("source", SOURCE_MT5_MARKET_WATCH_VISIBLE))
+        .order("desc")
+        .take(25_000),
+      ctx.db
+        .query("mt5Symbols")
+        .withIndex("by_source_capturedAt", (q) => q.eq("source", SOURCE_MT5_LOCAL_CATALOG))
+        .order("desc")
+        .take(25_000),
+    ]);
+    const catalogRows = [...visibleRows, ...legacyRows].filter(
+      (row) => row.selectedInMarketWatch === true || row.source === SOURCE_MT5_MARKET_WATCH_VISIBLE,
+    );
 
     const latestByName = new Map<string, Doc<"mt5Symbols">>();
     for (const row of catalogRows) {
@@ -320,10 +331,42 @@ export const getMyEnabledLabSymbols = query({
       .query("userSymbolSettings")
       .withIndex("by_userId", (q) => q.eq("userId", userId))
       .collect();
+    const [visibleRows, legacyRows] = await Promise.all([
+      ctx.db
+        .query("mt5Symbols")
+        .withIndex("by_source_capturedAt", (q) => q.eq("source", SOURCE_MT5_MARKET_WATCH_VISIBLE))
+        .order("desc")
+        .take(25_000),
+      ctx.db
+        .query("mt5Symbols")
+        .withIndex("by_source_capturedAt", (q) => q.eq("source", SOURCE_MT5_LOCAL_CATALOG))
+        .order("desc")
+        .take(25_000),
+    ]);
+    const visibleNames = new Set(
+      [...visibleRows, ...legacyRows]
+        .filter((r) => r.selectedInMarketWatch === true || r.source === SOURCE_MT5_MARKET_WATCH_VISIBLE)
+        .map((r) => r.name),
+    );
     return rows
-      .filter((r) => r.enabled && r.showInLab)
+      .filter((r) => r.enabled && r.showInLab && visibleNames.has(r.symbol))
       .map((r) => r.symbol)
       .sort((a, b) => a.localeCompare(b));
+  },
+});
+
+/** المراكز النشطة من MT5 المحلي للقراءة فقط — أحدث دفعة فقط. */
+export const getMyActiveMt5Positions = query({
+  args: {},
+  handler: async (ctx) => {
+    const userId = await requireUserId(ctx);
+    if (!userId) return [];
+    const rows = await ctx.db
+      .query("mt5OpenPositions")
+      .withIndex("by_userId", (q) => q.eq("userId", userId))
+      .collect();
+    const locals = rows.filter((r) => r.source === SOURCE_MT5_LOCAL);
+    return resolveLocalOpenPositions(locals);
   },
 });
 
@@ -333,10 +376,11 @@ export const getMyTradeHistoryDeals = query({
   handler: async (ctx) => {
     const userId = await requireUserId(ctx);
     if (!userId) return [];
-    return await ctx.db
+    const rows = await ctx.db
       .query("mt5TradeHistoryDeals")
       .withIndex("by_userId_time", (q) => q.eq("userId", userId))
       .order("desc")
-      .take(100);
+      .take(250);
+    return rows.filter((r) => r.source === SOURCE_MT5_LOCAL).slice(0, 100);
   },
 });

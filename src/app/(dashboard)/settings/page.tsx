@@ -71,7 +71,7 @@ export default function SettingsPage() {
     setSyncProgress(null);
     setSyncBusy(true);
     try {
-      const res = await fetch("/api/mt5-readonly/symbols", { cache: "no-store" });
+      const res = await fetch("/api/mt5-readonly/symbols?visibleOnly=true", { cache: "no-store" });
       const payload = (await res.json()) as Record<string, unknown>;
       if (!res.ok || payload.connected === false) {
         setSyncMessage(
@@ -118,7 +118,7 @@ export default function SettingsPage() {
         acc += chunk.length;
         setSyncProgress(`جاري مزامنة الأزواج: ${acc} / ${total}`);
       }
-      setSyncMessage("تمت مزامنة الأزواج من MT5 (قراءة فقط).");
+      setSyncMessage("تمت مزامنة الرموز الظاهرة في MT5 (قراءة فقط).");
     } catch {
       setSyncMessage("فشل الاتصال بالخدمة المحلية أو الخادم.");
     } finally {
@@ -144,7 +144,7 @@ export default function SettingsPage() {
     <div className="mx-auto flex max-w-7xl flex-col gap-6">
       <div>
         <h2 className="page-title">الإعدادات</h2>
-        <p className="label-secondary mt-1">حقول معطّلة — قيم تجريبية للعرض فقط.</p>
+        <p className="label-secondary mt-1">حقول معطّلة — إعدادات عرض فقط.</p>
         <p className="mt-2 rounded-xl border border-amber-500/20 bg-amber-500/5 px-4 py-2 text-amber-100/90 text-sm">
           إعدادات عرض فقط في هذه النسخة الأولية.
         </p>
@@ -161,7 +161,7 @@ export default function SettingsPage() {
             disabled={!canUseConvex || syncBusy}
             onClick={() => void syncPairsFromMt5()}
           >
-            {syncBusy ? "جاري المزامنة…" : "مزامنة الأزواج من MT5"}
+            {syncBusy ? "جاري المزامنة…" : "مزامنة الرموز الظاهرة في MT5"}
           </Button>
           {syncProgress ? (
             <span className="text-muted-foreground text-xs leading-snug tabular-nums">{syncProgress}</span>
@@ -170,6 +170,9 @@ export default function SettingsPage() {
             <span className="text-muted-foreground text-xs leading-snug">{syncMessage}</span>
           ) : null}
         </div>
+        <p className="text-muted-foreground text-xs leading-relaxed">
+          تظهر هنا فقط الرموز المعروضة في Market Watch داخل MT5. لإضافة رمز جديد، أظهره أولًا في MT5 ثم أعد المزامنة.
+        </p>
 
         <div className="max-w-md space-y-2">
           <label className="text-sm font-medium leading-none" htmlFor="mt5-symbol-search">

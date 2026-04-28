@@ -174,6 +174,8 @@ export default defineSchema({
     tradeMode: v.optional(v.number()),
     point: v.optional(v.number()),
     spread: v.optional(v.number()),
+    visibleOnly: v.optional(v.boolean()),
+    selectedInMarketWatch: v.optional(v.boolean()),
     source: v.string(),
     syncRunId: v.optional(v.string()),
     capturedAt: v.number(),

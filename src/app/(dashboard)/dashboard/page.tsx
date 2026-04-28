@@ -53,6 +53,7 @@ export default function DashboardPage() {
             مصدر البيانات الحالي: MT5 المحلي للقراءة فقط — تُستبعد لقطات الوهم التجريبية من العرض الرئيسي عند توفر بيانات محلية.
           </p>
         ) : null}
+        <p className="text-muted-foreground text-xs">MT5 هو مصدر البيانات الحالي — قراءة فقط.</p>
       </section>
 
       <LiveMarketTicker />

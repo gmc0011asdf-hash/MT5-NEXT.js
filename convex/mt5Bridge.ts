@@ -21,8 +21,8 @@ import { mutation, query } from "./_generated/server";
 const AUTH_MSG = "يجب تسجيل الدخول لاستخدام هذه الوظائف";
 const SOURCE = "mt5-bridge-read-only-stub" as const;
 const SOURCE_LOCAL = "mt5-local-readonly" as const;
-const SOURCE_LOCAL_SYMBOL_CATALOG = "mt5-local-catalog" as const;
-const SOURCE_LOCAL_HISTORY = "mt5-local-trade-history" as const;
+const SOURCE_LOCAL_SYMBOL_CATALOG = "mt5-market-watch-visible" as const;
+const SOURCE_LOCAL_HISTORY = "mt5-local-readonly" as const;
 
 const MAX_SYMBOLS_PER_MUTATION = 200;
 const MAX_DEALS_PER_MUTATION = 200;
@@ -485,7 +485,7 @@ export const syncReadOnlySymbolsFromLocalService = mutation({
     const identity = await ctx.auth.getUserIdentity();
     const userId = requireIdentifiedUser(identity);
     const now = Date.now();
-    const runId = args.syncRunId ?? `mt5-cat-${now}`;
+    const runId = args.syncRunId ?? `mt5-mw-visible-${now}`;
 
     if (args.symbols.length > MAX_SYMBOLS_PER_MUTATION) {
       throw new ConvexError("عدد الرموز كبير جدًا، يجب إرسالها على دفعات");
@@ -524,6 +524,8 @@ export const syncReadOnlySymbolsFromLocalService = mutation({
         .withIndex("by_name", (q) => q.eq("name", name))
         .first();
 
+      const selectedInMarketWatch = rec.selectedInMarketWatch === true || rec.visible === true;
+      if (!selectedInMarketWatch) continue;
       const doc = {
         name,
         path: readOptionalStringField(rec, "path", "path"),
@@ -536,6 +538,8 @@ export const syncReadOnlySymbolsFromLocalService = mutation({
         tradeMode: tradeMode !== undefined ? Math.floor(tradeMode) : undefined,
         point,
         spread: spread !== undefined ? Math.floor(spread) : undefined,
+        visibleOnly: true,
+        selectedInMarketWatch,
         source: SOURCE_LOCAL_SYMBOL_CATALOG,
         syncRunId: runId,
         capturedAt: now,

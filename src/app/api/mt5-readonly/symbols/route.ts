@@ -13,6 +13,7 @@ const FETCH_TIMEOUT_MS = 5000;
 export async function GET(request: NextRequest) {
   const u = new URL(LOCAL_BASE);
   const sp = request.nextUrl.searchParams;
+  u.searchParams.set("visibleOnly", sp.get("visibleOnly") ?? "true");
   for (const key of ["visibleOnly", "limit", "search"] as const) {
     const v = sp.get(key);
     if (v !== null && v !== "") u.searchParams.set(key, v);
@@ -40,7 +41,12 @@ export async function GET(request: NextRequest) {
     }
 
     const body = (await res.json()) as Record<string, unknown>;
-    return NextResponse.json(body);
+    return NextResponse.json({
+      ...body,
+      source: body.source ?? "mt5-market-watch-visible",
+      visible_only: body.visible_only ?? true,
+      note: "Visible MT5 Market Watch symbols only (read-only).",
+    });
   } catch {
     clearTimeout(timeoutId);
     return NextResponse.json(

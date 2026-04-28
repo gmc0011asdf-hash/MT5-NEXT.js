@@ -294,11 +294,11 @@ def _serialize_symbol_meta(si: Any) -> dict[str, Any]:
 
 @app.get("/readonly/symbols")
 def readonly_symbols(
-    visible_only: bool = Query(default=False, alias="visibleOnly"),
+    visible_only: bool = Query(default=True, alias="visibleOnly"),
     limit: int | None = Query(default=None, ge=1, le=10_000),
     search: str | None = Query(default=None, max_length=128),
 ) -> JSONResponse:
-    """Catalog via symbols_get — read-only. Optional visibleOnly / limit / search reduce payload."""
+    """Catalog via symbols_get — read-only. Defaults to Market Watch visible symbols only."""
     _enforce_read_only_policy()
     ok, err = _safe_mt5_init()
     if not ok:
@@ -307,6 +307,9 @@ def readonly_symbols(
             content={
                 "connected": False,
                 "read_only_mode": READ_ONLY_MODE,
+                "source": "mt5-market-watch-visible",
+                "visible_only": bool(visible_only),
+                "count": 0,
                 "symbols": [],
                 "error": err or "MT5 unavailable",
             },
@@ -332,6 +335,9 @@ def readonly_symbols(
             content={
                 "connected": True,
                 "read_only_mode": READ_ONLY_MODE,
+                "source": "mt5-market-watch-visible" if visible_only else "mt5-symbols-get-all-debug",
+                "visible_only": bool(visible_only),
+                "count": len(symbols_out),
                 "symbols": symbols_out,
             },
         )
