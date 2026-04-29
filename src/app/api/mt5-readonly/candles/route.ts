@@ -34,6 +34,23 @@ const CONVEX_CHUNK_SIZE = 1000; // matches MAX_CANDLES_PER_MUTATION in mt5Bridge
 
 type CandleRow = Record<string, unknown>;
 
+type FreshnessSummary = {
+  serverNowMs: number;
+  latestCandleTime: Record<string, number>;
+  newestCandleAgeMs: number;
+  stalePairs: string[];
+  brokerClockSkewDetected: boolean;
+  brokerClockSkewMs: number;
+};
+
+type DataQuality = {
+  totalReceived: number;
+  totalValid: number;
+  skippedInvalid: number;
+  clockSkewAccepted: number;
+  invalidReasonsSample: string[];
+};
+
 type PersistResult = {
   persisted: boolean;
   inserted: number;
@@ -42,6 +59,9 @@ type PersistResult = {
   skippedInvalid: number;
   syncRunId: string | null;
   chunks: number;
+  dataQuality: DataQuality;
+  freshness: FreshnessSummary;
+  stalePairs: string[];
   persistError?: string;
   persistErrorCode?: string;
 };
@@ -56,6 +76,8 @@ type ConvexMutationResult = {
     skippedInvalid: number;
     syncRunId: string;
   };
+  dataQuality?: DataQuality;
+  freshness?: FreshnessSummary;
 };
 
 /** JWT claims decoded from the base64 payload — no secret required, no verification. */
@@ -159,6 +181,15 @@ function buildAuthDiagnostics(
 // Convex persistence helper
 // ---------------------------------------------------------------------------
 
+const EMPTY_FRESHNESS: FreshnessSummary = {
+  serverNowMs: 0,
+  latestCandleTime: {},
+  newestCandleAgeMs: -1,
+  stalePairs: [],
+  brokerClockSkewDetected: false,
+  brokerClockSkewMs: 0,
+};
+
 const EMPTY_PERSIST: PersistResult = {
   persisted: false,
   inserted: 0,
@@ -167,6 +198,9 @@ const EMPTY_PERSIST: PersistResult = {
   skippedInvalid: 0,
   syncRunId: null,
   chunks: 0,
+  dataQuality: { totalReceived: 0, totalValid: 0, skippedInvalid: 0, clockSkewAccepted: 0, invalidReasonsSample: [] },
+  freshness: EMPTY_FRESHNESS,
+  stalePairs: [],
 };
 
 async function persistCandlesToConvex(
@@ -213,6 +247,18 @@ async function persistCandlesToConvex(
     skippedInvalid: 0,
     chunks: 0,
     lastSyncRunId: syncRunId,
+    // dataQuality accumulators
+    totalReceived: 0,
+    totalValid: 0,
+    clockSkewAccepted: 0,
+    invalidReasonsSample: [] as string[],
+    // freshness accumulators — keep max per pair, union stalePairs, max skew
+    latestCandleTime: {} as Record<string, number>,
+    serverNowMs: 0,
+    newestCandleAgeMs: -1,
+    stalePairs: new Set<string>(),
+    brokerClockSkewDetected: false,
+    brokerClockSkewMs: 0,
   };
 
   for (let i = 0; i < totalChunks; i++) {
@@ -251,7 +297,46 @@ async function persistCandlesToConvex(
         totals.lastSyncRunId = result.inserted.syncRunId;
       }
     }
+
+    // Accumulate dataQuality
+    if (result?.dataQuality) {
+      totals.totalReceived += result.dataQuality.totalReceived;
+      totals.totalValid += result.dataQuality.totalValid;
+      totals.clockSkewAccepted += result.dataQuality.clockSkewAccepted;
+      if (totals.invalidReasonsSample.length < 5 && result.dataQuality.invalidReasonsSample.length > 0) {
+        for (const r of result.dataQuality.invalidReasonsSample) {
+          if (totals.invalidReasonsSample.length < 5) totals.invalidReasonsSample.push(r);
+        }
+      }
+    }
+
+    // Merge freshness — keep latest time per pair, union stalePairs, max skew
+    if (result?.freshness) {
+      if (result.freshness.serverNowMs > totals.serverNowMs) {
+        totals.serverNowMs = result.freshness.serverNowMs;
+      }
+      for (const [pair, t] of Object.entries(result.freshness.latestCandleTime)) {
+        if ((totals.latestCandleTime[pair] ?? 0) < t) {
+          totals.latestCandleTime[pair] = t;
+        }
+      }
+      if (result.freshness.newestCandleAgeMs >= 0 &&
+        (totals.newestCandleAgeMs < 0 || result.freshness.newestCandleAgeMs < totals.newestCandleAgeMs)) {
+        totals.newestCandleAgeMs = result.freshness.newestCandleAgeMs;
+      }
+      for (const p of result.freshness.stalePairs) {
+        totals.stalePairs.add(p);
+      }
+      if (result.freshness.brokerClockSkewDetected) {
+        totals.brokerClockSkewDetected = true;
+      }
+      if (result.freshness.brokerClockSkewMs > totals.brokerClockSkewMs) {
+        totals.brokerClockSkewMs = result.freshness.brokerClockSkewMs;
+      }
+    }
   }
+
+  const stalePairsArr = Array.from(totals.stalePairs);
 
   return {
     result: {
@@ -262,6 +347,22 @@ async function persistCandlesToConvex(
       skippedInvalid: totals.skippedInvalid,
       syncRunId: totals.lastSyncRunId,
       chunks: totals.chunks,
+      dataQuality: {
+        totalReceived: totals.totalReceived,
+        totalValid: totals.totalValid,
+        skippedInvalid: totals.skippedInvalid,
+        clockSkewAccepted: totals.clockSkewAccepted,
+        invalidReasonsSample: totals.invalidReasonsSample,
+      },
+      freshness: {
+        serverNowMs: totals.serverNowMs,
+        latestCandleTime: totals.latestCandleTime,
+        newestCandleAgeMs: totals.newestCandleAgeMs,
+        stalePairs: stalePairsArr,
+        brokerClockSkewDetected: totals.brokerClockSkewDetected,
+        brokerClockSkewMs: totals.brokerClockSkewMs,
+      },
+      stalePairs: stalePairsArr,
     },
     token,
     persistErrorCode: "",
@@ -348,6 +449,7 @@ export async function GET(request: NextRequest) {
   const response: Record<string, unknown> = {
     ...pythonBody,
     source: pythonBody.source ?? "mt5-local-readonly-candles",
+    // --- Persistence counters (backward-compatible) ---
     persisted: persistResult.persisted,
     inserted: persistResult.inserted,
     skippedIdentical: persistResult.skippedIdentical,
@@ -355,6 +457,10 @@ export async function GET(request: NextRequest) {
     skippedInvalid: persistResult.skippedInvalid,
     syncRunId: persistResult.syncRunId,
     persistChunks: persistResult.chunks,
+    // --- Stage 4B: data quality + freshness ---
+    dataQuality: persistResult.dataQuality,
+    freshness: persistResult.freshness,
+    stalePairs: persistResult.stalePairs,
     ...(persistResult.persistError !== undefined
       ? { persistError: persistResult.persistError }
       : {}),

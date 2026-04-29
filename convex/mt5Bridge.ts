@@ -815,6 +815,74 @@ export const updateMySymbolSetting = mutation({
   },
 });
 
+// ---------------------------------------------------------------------------
+// Candle freshness thresholds — عتبات حداثة الشموع
+// الشمعة التي لا تزال تتشكّل قد تُعدَّل (patch)؛ أما الشموع المغلقة فيجب أن تكون متطابقة عادةً.
+// ---------------------------------------------------------------------------
+const STALE_THRESHOLD_MS: Record<string, number> = {
+  M1:  3 * 60 * 1000,        // 3 minutes
+  M5:  10 * 60 * 1000,       // 10 minutes
+  M15: 30 * 60 * 1000,       // 30 minutes
+  M30: 60 * 60 * 1000,       // 60 minutes
+  H1:  2 * 60 * 60 * 1000,   // 2 hours
+  H4:  8 * 60 * 60 * 1000,   // 8 hours
+  D1:  36 * 60 * 60 * 1000,  // 36 hours
+};
+
+// Broker clock skew tolerance thresholds — عتبات فارق توقيت الوسيط
+// MT5 broker servers often run ahead of UTC by seconds or even minutes.
+// 2 min  → accept silently (normal NTP drift)
+// 12 h   → accept with brokerClockSkewDetected flag (server/timezone offset)
+// > 12 h → reject as obviously impossible future candle
+const SKEW_SILENT_MS  = 2  * 60 * 1000;        // 2 minutes  — accept, no flag
+const SKEW_WARN_MS    = 12 * 60 * 60 * 1000;   // 12 hours   — accept + flag
+// anything beyond SKEW_WARN_MS is rejected as invalid
+
+type CandelFreshnessSummary = {
+  /** Server wall-clock at the time of this sync (ms) */
+  serverNowMs: number;
+  /** Latest candle time (ms) per "SYMBOL/TIMEFRAME" pair seen in this batch */
+  latestCandleTime: Record<string, number>;
+  /** Age of the newest candle across all pairs (ms) — negative if none seen */
+  newestCandleAgeMs: number;
+  /** Pairs whose latest candle exceeds the expected freshness threshold */
+  stalePairs: string[];
+  /** True if any accepted candle had a timestamp ahead of server time by > 2 min */
+  brokerClockSkewDetected: boolean;
+  /** Maximum observed skew in ms across all skew-flagged candles (0 if none) */
+  brokerClockSkewMs: number;
+};
+
+/** Compute freshness summary from a map of latest candle times — no DB access needed. */
+function computeFreshness(
+  latestByPair: Record<string, number>,
+  now: number,
+  brokerClockSkewMs: number,
+): CandelFreshnessSummary {
+  const stalePairs: string[] = [];
+  let newestTime = 0;
+
+  for (const [pair, t] of Object.entries(latestByPair)) {
+    // Use server time as reference for "newest" even when candle is ahead
+    const effectiveTime = Math.min(t, now);
+    if (effectiveTime > newestTime) newestTime = effectiveTime;
+    const timeframe = pair.split("/")[1] ?? "";
+    const threshold = STALE_THRESHOLD_MS[timeframe];
+    if (threshold !== undefined && now - effectiveTime > threshold) {
+      stalePairs.push(pair);
+    }
+  }
+
+  return {
+    serverNowMs: now,
+    latestCandleTime: latestByPair,
+    newestCandleAgeMs: newestTime > 0 ? now - newestTime : -1,
+    stalePairs,
+    brokerClockSkewDetected: brokerClockSkewMs > SKEW_SILENT_MS,
+    brokerClockSkewMs,
+  };
+}
+
 /**
  * T3-02: مزامنة شموع OHLCV من الخدمة المحلية لـ MT5 — دفعة بحد أقصى 1000 شمعة.
  *
@@ -822,9 +890,16 @@ export const updateMySymbolSetting = mutation({
  *   - For each candle keyed by (userId, symbol, timeframe, time):
  *     a) If no existing row → insert.
  *     b) If existing row with identical OHLC → skip (no write).
+ *        الشموع المغلقة يجب أن تكون متطابقة عادةً — لا داعي للكتابة.
  *     c) If existing row with different OHLC → patch (MT5 history revision) + log to auditEvents.
+ *        الشمعة الأخيرة (غير المغلقة) قد تُعدَّل بشكل طبيعي حتى تُغلق.
  *
  * Uses the by_userId_symbol_timeframe_time compound index — no collect() on large tables.
+ *
+ * Stage 4B additions:
+ *   - Extended OHLC validation (price > 0, high >= low, OHLC within high/low, time not future)
+ *   - Freshness summary (latestCandleTime, newestCandleAgeMs, stalePairs) in return value
+ *   - Single auditEvent summary for invalid candles (not one per candle)
  */
 export const syncReadOnlyCandlesFromLocalService = mutation({
   args: {
@@ -881,10 +956,21 @@ export const syncReadOnlyCandlesFromLocalService = mutation({
     let skippedIdentical = 0;
     let patchedRevisions = 0;
     let skippedInvalid = 0;
+    let clockSkewAccepted = 0;   // candles accepted despite being ahead of server time
+
+    // Track latest candle time per "SYMBOL/TIMEFRAME" for freshness summary
+    const latestByPair: Record<string, number> = {};
+
+    // Collect reasons for truly invalid candles (one summary audit, not one per candle)
+    const invalidReasons: string[] = [];
+
+    // Maximum observed skew for flagged-but-accepted candles
+    let maxSkewMs = 0;
 
     for (const row of args.candles) {
       if (!row || typeof row !== "object") {
         skippedInvalid += 1;
+        invalidReasons.push("candle is not an object");
         continue;
       }
       const c = row as Record<string, unknown>;
@@ -899,6 +985,7 @@ export const syncReadOnlyCandlesFromLocalService = mutation({
       // time arrives as epoch-ms from Python service (ts * 1000)
       const timeRaw = readNumeric(c.time);
 
+      // Reject if required fields are missing
       if (
         !symbol ||
         !timeframe ||
@@ -910,11 +997,58 @@ export const syncReadOnlyCandlesFromLocalService = mutation({
         !Number.isFinite(timeRaw)
       ) {
         skippedInvalid += 1;
+        invalidReasons.push(`missing fields: sym=${symbol || "?"} tf=${timeframe || "?"}`);
         continue;
       }
 
       // Normalise to ms — Python sends ts*1000, but guard against bare seconds
       const timeMs = timeRaw > 10_000_000_000 ? Math.floor(timeRaw) : Math.floor(timeRaw * 1000);
+
+      // --- Broker clock skew handling —————————————————————————————————————
+      // MT5 broker servers may run ahead of UTC due to timezone offsets or NTP drift.
+      // We apply a 3-tier policy:
+      //   ≤ 2 min ahead  → accept silently (normal NTP drift)
+      //   2 min – 12 h   → accept + flag as brokerClockSkewDetected (server timezone offset)
+      //   > 12 h ahead   → reject as obviously impossible future candle
+      const skewMs = timeMs - now;
+      if (skewMs > SKEW_WARN_MS) {
+        skippedInvalid += 1;
+        invalidReasons.push(`impossible future candle (>${Math.round(SKEW_WARN_MS / 3600000)}h): ${symbol}/${timeframe}@${timeMs}`);
+        continue;
+      }
+      if (skewMs > SKEW_SILENT_MS) {
+        // Broker time is ahead by 2 min–12 h — accept but track the skew
+        clockSkewAccepted += 1;
+        if (skewMs > maxSkewMs) maxSkewMs = skewMs;
+      }
+      // ————————————————————————————————————————————————————————————————————
+
+      // Reject if any price <= 0
+      if (open <= 0 || high <= 0 || low <= 0 || close <= 0) {
+        skippedInvalid += 1;
+        invalidReasons.push(`price <= 0: ${symbol}/${timeframe}@${timeMs}`);
+        continue;
+      }
+
+      // Reject if high < low (impossible candle body)
+      if (high < low) {
+        skippedInvalid += 1;
+        invalidReasons.push(`high < low: ${symbol}/${timeframe}@${timeMs}`);
+        continue;
+      }
+
+      // Reject if open or close fall outside [low, high]
+      if (open < low || open > high || close < low || close > high) {
+        skippedInvalid += 1;
+        invalidReasons.push(`open/close outside high/low: ${symbol}/${timeframe}@${timeMs}`);
+        continue;
+      }
+
+      // Track latest valid candle time per pair for freshness
+      const pairKey = `${symbol}/${timeframe}`;
+      if ((latestByPair[pairKey] ?? 0) < timeMs) {
+        latestByPair[pairKey] = timeMs;
+      }
 
       const tickVolume = readNumeric(c.tick_volume !== undefined ? c.tick_volume : c.tickVolume);
       const spreadVal = readNumeric(c.spread);
@@ -933,7 +1067,7 @@ export const syncReadOnlyCandlesFromLocalService = mutation({
         .first();
 
       if (existing) {
-        // Case (b): identical OHLC — skip without any write
+        // Case (b): identical OHLC — الشموع المغلقة يجب أن تكون متطابقة، لا كتابة
         if (
           existing.open === open &&
           existing.high === high &&
@@ -944,7 +1078,7 @@ export const syncReadOnlyCandlesFromLocalService = mutation({
           continue;
         }
 
-        // Case (c): OHLC differs — MT5 history revision; patch and log
+        // Case (c): OHLC differs — الشمعة الأخيرة قد تُعدَّل حتى تُغلق (MT5 history revision)
         await ctx.db.patch(existing._id, {
           open,
           high,
@@ -992,18 +1126,48 @@ export const syncReadOnlyCandlesFromLocalService = mutation({
 
     if (isFinalChunk(args.chunkIndex, args.totalChunks)) {
       await enforceGovernanceReadOnly(ctx, userId, now);
-      await ctx.db.insert("auditEvents", {
-        userId,
-        action: "mt5_local_readonly_candles_sync",
-        entity: "mt5LocalService",
-        message:
+
+      // One summary audit event only if there is something worth logging
+      if (skippedInvalid > 0 || clockSkewAccepted > 0) {
+        const skewNote = clockSkewAccepted > 0
+          ? ` | توقيت الوسيط متقدم: قُبل ${clockSkewAccepted} شمعة مع فارق توقيت بحد أقصى ${Math.round(maxSkewMs / 1000)}ث`
+          : "";
+        const rejectNote = invalidReasons.length > 0
+          ? ` | أسباب الرفض (${invalidReasons.length}): ${invalidReasons.slice(0, 5).join("; ")}` +
+            (invalidReasons.length > 5 ? ` … +${invalidReasons.length - 5} more` : "")
+          : "";
+        const auditMsg =
           `شموع OHLCV — جديد: ${inserted}، مكرر متجاهل: ${skippedIdentical}، ` +
-          `مراجعة: ${patchedRevisions}، غير صالح: ${skippedInvalid}. قراءة فقط.`,
-        createdAt: now,
-        source: SOURCE_LOCAL,
-        syncRunId: runId,
-      });
+          `مراجعة: ${patchedRevisions}، غير صالح: ${skippedInvalid}.` +
+          skewNote + rejectNote + " قراءة فقط.";
+
+        await ctx.db.insert("auditEvents", {
+          userId,
+          action: "mt5_local_readonly_candles_sync",
+          entity: "mt5LocalService",
+          message: auditMsg,
+          createdAt: now,
+          source: SOURCE_LOCAL,
+          syncRunId: runId,
+        });
+      } else {
+        // Normal path: insert a compact audit event without rejection details
+        await ctx.db.insert("auditEvents", {
+          userId,
+          action: "mt5_local_readonly_candles_sync",
+          entity: "mt5LocalService",
+          message:
+            `شموع OHLCV — جديد: ${inserted}، مكرر متجاهل: ${skippedIdentical}، ` +
+            `مراجعة: ${patchedRevisions}. قراءة فقط.`,
+          createdAt: now,
+          source: SOURCE_LOCAL,
+          syncRunId: runId,
+        });
+      }
     }
+
+    // Compute freshness summary for the pairs seen in this batch
+    const freshness = computeFreshness(latestByPair, now, maxSkewMs);
 
     return {
       ok: true as const,
@@ -1015,6 +1179,59 @@ export const syncReadOnlyCandlesFromLocalService = mutation({
         skippedInvalid,
         syncRunId: runId,
       },
+      dataQuality: {
+        totalReceived: args.candles.length,
+        totalValid: args.candles.length - skippedInvalid,
+        skippedInvalid,
+        clockSkewAccepted,
+        invalidReasonsSample: invalidReasons.slice(0, 5),
+      },
+      freshness,
+    };
+  },
+});
+
+/**
+ * Stage 4B: استعلام حداثة الشموع — يعيد آخر وقت شمعة لكل زوج (symbol/timeframe).
+ * يستخدم فهرس by_userId_symbol_timeframe بدون collect() على الجدول كله.
+ * Freshness query — returns latest candle time per (symbol, timeframe) pair using indexes.
+ */
+export const getLatestCandleFreshness = query({
+  args: {
+    symbols: v.array(v.string()),
+    timeframes: v.array(v.string()),
+  },
+  handler: async (ctx, args) => {
+    const identity = await ctx.auth.getUserIdentity();
+    const userId = requireIdentifiedUser(identity);
+    const now = Date.now();
+
+    const latestByPair: Record<string, number> = {};
+
+    for (const symbol of args.symbols) {
+      for (const timeframe of args.timeframes) {
+        // Use index to get only the latest candle for this (userId, symbol, timeframe) — no full scan
+        const latest = await ctx.db
+          .query("mt5Candles")
+          .withIndex("by_userId_symbol_timeframe", (q) =>
+            q.eq("userId", userId).eq("symbol", symbol).eq("timeframe", timeframe),
+          )
+          .order("desc")
+          .first();
+
+        if (latest) {
+          latestByPair[`${symbol}/${timeframe}`] = latest.time;
+        }
+      }
+    }
+
+    // Reuse shared freshness computation — no skew context from a query, pass 0
+    const freshness = computeFreshness(latestByPair, now, 0);
+
+    return {
+      ok: true as const,
+      checkedAt: now,
+      ...freshness,
     };
   },
 });
