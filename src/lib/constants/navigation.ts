@@ -49,7 +49,7 @@ export const NAV_GROUPS: NavGroup[] = [
     title: "التحليل والمختبر",
     icon: FlaskConical,
     items: [
-      { label: "المختبر", href: "/lab", icon: FlaskConical },
+      { label: "المختبر", href: "/lab/mt5", icon: FlaskConical },
     ],
   },
   {
@@ -75,7 +75,7 @@ export const NAV_GROUPS: NavGroup[] = [
 // Legacy flat list kept for any existing consumers
 export const NAV_ITEMS: NavItem[] = [
   { label: "لوحة التحكم", href: "/dashboard", icon: LayoutDashboard },
-  { label: "المختبر", href: "/lab", icon: FlaskConical },
+  { label: "المختبر", href: "/lab/mt5", icon: FlaskConical },
   { label: "التقارير", href: "/reports", icon: FileText },
   { label: "المراقبة", href: "/monitoring", icon: Activity },
   { label: "إعادة التشغيل", href: "/replay", icon: Play },
@@ -94,7 +94,7 @@ export const NAV_SECTIONS: NavSection[] = [
   },
   {
     title: "التداول والتحليل",
-    items: [{ label: "المختبر", href: "/lab", icon: FlaskConical }],
+    items: [{ label: "المختبر", href: "/lab/mt5", icon: FlaskConical }],
   },
   {
     title: "التقارير والاختبار",

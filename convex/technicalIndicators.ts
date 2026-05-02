@@ -303,6 +303,83 @@ export const getIndicatorsForSymbol = query({
   },
 });
 
+/**
+ * Stage 5A: حساب المؤشرات لزوج واحد وإطار زمني واحد — للطلب الفوري من لوحة التحليل.
+ * On-demand indicator computation for a single (symbol, timeframe) — no stored settings required.
+ * Returns computed values directly without persisting to technicalIndicatorSnapshots.
+ * Uses the by_userId_symbol_timeframe index — no collect() on large tables.
+ */
+export const computeIndicatorsForSymbol = query({
+  args: {
+    symbol: v.string(),
+    timeframe: v.string(),
+    candleCount: v.optional(v.number()),
+  },
+  handler: async (ctx, args) => {
+    const identity = await ctx.auth.getUserIdentity();
+    if (!identity) return { status: "unauthenticated" as const };
+    const userId = identity.subject;
+    const limit = Math.min(Math.max(args.candleCount ?? CANDLE_FETCH_LIMIT, 50), CANDLE_FETCH_LIMIT);
+    const now = Date.now();
+
+    const candles = await ctx.db
+      .query("mt5Candles")
+      .withIndex("by_userId_symbol_timeframe", (q) =>
+        q.eq("userId", userId).eq("symbol", args.symbol).eq("timeframe", args.timeframe),
+      )
+      .order("desc")
+      .take(limit);
+
+    if (candles.length === 0) {
+      return { status: "insufficient_data" as const, candleCount: 0, symbol: args.symbol, timeframe: args.timeframe };
+    }
+
+    const ordered = [...candles].sort((a, b) => a.time - b.time);
+    const closes = ordered.map((c) => c.close);
+    const recent = ordered.slice(-HIGH_LOW_WINDOW);
+
+    const ema20v = ema(closes, 20);
+    const ema50v = ema(closes, 50);
+    const ema200v = ema(closes, 200);
+    const rsi14v = rsi(closes, 14);
+    const atr14v = atr(ordered, 14);
+    const macdValues = macd(closes);
+    const vol = volatility(closes);
+    const recentHigh = recent.length > 0 ? Math.max(...recent.map((c) => c.high)) : undefined;
+    const recentLow  = recent.length > 0 ? Math.min(...recent.map((c) => c.low)) : undefined;
+    const lastClose  = closes[closes.length - 1];
+    const trendBias  = trendBiasFromEma(ema20v, ema50v, ema200v);
+    const momentumB  = momentumBiasFromSignals(rsi14v, macdValues.macdHistogram);
+
+    // Freshness: latest candle time vs now
+    const latestCandleTime = ordered[ordered.length - 1]!.time;
+    const candleAgeMs = now - latestCandleTime;
+
+    return {
+      status: "ok" as const,
+      symbol: args.symbol,
+      timeframe: args.timeframe,
+      candleCount: ordered.length,
+      ema20: ema20v,
+      ema50: ema50v,
+      ema200: ema200v,
+      rsi14: rsi14v,
+      atr14: atr14v,
+      macd: macdValues.macd,
+      macdSignal: macdValues.macdSignal,
+      macdHistogram: macdValues.macdHistogram,
+      volatility: vol,
+      recentHigh,
+      recentLow,
+      lastClose,
+      trendBias,
+      momentumBias: momentumB,
+      latestCandleTime,
+      candleAgeMs,
+    };
+  },
+});
+
 export const getIndicatorReadiness = query({
   args: {},
   handler: async (ctx) => {

@@ -581,19 +581,51 @@ def readonly_snapshot() -> JSONResponse:
 
 
 def _serialize_symbol_meta(si: Any) -> dict[str, Any]:
-    """Read-only SymbolInfo subset — no trading."""
+    """
+    Read-only SymbolInfo subset — no trading.
+    Stage 5A: includes lot/tick/stops properties needed for client-side lot calculation.
+    All fields are read from MT5 SymbolInfo; no order_send or trading calls.
+    """
+    def _f(attr: str, fallback: float = 0.0) -> float:
+        return float(getattr(si, attr, fallback) or fallback)
+
+    def _i(attr: str, fallback: int = 0) -> int:
+        return int(getattr(si, attr, fallback) or fallback)
+
+    def _fn(attr: str) -> float | None:
+        v = getattr(si, attr, None)
+        return float(v) if v is not None else None
+
     return {
+        # ── identity ─────────────────────────────────────────────────────────
         "name": getattr(si, "name", "") or "",
         "path": getattr(si, "path", "") or "",
         "description": getattr(si, "description", "") or "",
         "currency_base": getattr(si, "currency_base", "") or "",
         "currency_profit": getattr(si, "currency_profit", "") or "",
         "currency_margin": getattr(si, "currency_margin", "") or "",
-        "digits": int(getattr(si, "digits", 0) or 0),
+        # ── price precision ──────────────────────────────────────────────────
+        "digits": _i("digits"),
+        "point": _f("point"),
+        "spread": _i("spread"),
+        # ── tick value / size — used in lot calculation ──────────────────────
+        # pointValuePerLot = trade_tick_value * (point / trade_tick_size)
+        # riskPerLot       = stopPoints * pointValuePerLot
+        # estimatedLot     = riskUsd / riskPerLot
+        "trade_tick_value": _f("trade_tick_value"),
+        "trade_tick_size": _f("trade_tick_size"),
+        # ── contract ─────────────────────────────────────────────────────────
+        "contract_size": _fn("trade_contract_size"),
+        # ── volume limits — for lot normalisation ───────────────────────────
+        "volume_min": _f("volume_min"),
+        "volume_max": _f("volume_max"),
+        "volume_step": _f("volume_step"),
+        # ── order distance safety — stops_level * point = minimum stop distance
+        "stops_level": _i("trade_stops_level"),
+        "freeze_level": _i("trade_freeze_level"),
+        # ── visibility / trade mode ──────────────────────────────────────────
         "visible": bool(getattr(si, "visible", False)),
-        "trade_mode": int(getattr(si, "trade_mode", 0) or 0),
-        "point": float(getattr(si, "point", 0.0) or 0.0),
-        "spread": int(getattr(si, "spread", 0) or 0),
+        "trade_mode": _i("trade_mode"),
     }
 
 
