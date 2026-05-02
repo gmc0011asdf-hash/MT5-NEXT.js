@@ -1,12 +1,14 @@
 import type { LucideIcon } from "lucide-react";
 import {
   Activity,
+  AlertOctagon,
   BarChart2,
   BookOpen,
   Database,
   FileText,
   FlaskConical,
   Globe,
+  HeartPulse,
   LayoutDashboard,
   Play,
   Server,
@@ -60,6 +62,8 @@ export const NAV_GROUPS: NavGroup[] = [
     items: [
       { label: "سجل القرارات", href: "/decision-journal", icon: BookOpen },
       { label: "التقارير", href: "/reports", icon: FileText },
+      { label: "صحة النظام", href: "/system-health", icon: HeartPulse },
+      { label: "مركز الأخطاء", href: "/error-center", icon: AlertOctagon },
     ],
   },
   {
@@ -80,6 +84,8 @@ export const NAV_ITEMS: NavItem[] = [
   { label: "المختبر", href: "/lab/mt5", icon: FlaskConical },
   { label: "سجل القرارات", href: "/decision-journal", icon: BookOpen },
   { label: "التقارير", href: "/reports", icon: FileText },
+  { label: "صحة النظام", href: "/system-health", icon: HeartPulse },
+  { label: "مركز الأخطاء", href: "/error-center", icon: AlertOctagon },
   { label: "المراقبة", href: "/monitoring", icon: Activity },
   { label: "إعادة التشغيل", href: "/replay", icon: Play },
   { label: "الإعدادات", href: "/settings", icon: Settings },
@@ -104,6 +110,8 @@ export const NAV_SECTIONS: NavSection[] = [
     items: [
       { label: "سجل القرارات", href: "/decision-journal", icon: BookOpen },
       { label: "التقارير", href: "/reports", icon: FileText },
+      { label: "صحة النظام", href: "/system-health", icon: HeartPulse },
+      { label: "مركز الأخطاء", href: "/error-center", icon: AlertOctagon },
       { label: "إعادة التشغيل", href: "/replay", icon: Play },
       { label: "اختبار Convex", href: "/convex-test", icon: Database },
       { label: "قاعدة Convex", href: "/convex-core", icon: Server },
