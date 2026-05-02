@@ -327,14 +327,14 @@ export default function SettingsPage() {
     <div className="mx-auto flex max-w-7xl flex-col gap-6">
       <div>
         <h2 className="page-title">الإعدادات</h2>
-        <p className="label-secondary mt-1">حقول معطّلة — إعدادات عرض فقط.</p>
+        <p className="label-secondary mt-1">تكوين وتخصيص إعدادات المنصة.</p>
         <p className="mt-2 rounded-xl border border-amber-500/20 bg-amber-500/5 px-4 py-2 text-amber-100/90 text-sm">
-          إعدادات عرض فقط في هذه النسخة الأولية.
+          تأسيس أولي للإعدادات — بعض الأقسام تعمل كـ Placeholders للعرض فقط.
         </p>
       </div>
 
-      <Section title="اتصال منصة MT5 الحقيقية">
-        <p className="rounded-xl border border-amber-500/20 bg-amber-500/5 px-3 py-2 text-amber-100/90 text-xs leading-relaxed">
+      <Section title="إعدادات MT5">
+        <p className="rounded-xl border border-amber-500/20 bg-amber-500/5 px-3 py-2 text-amber-100/90 text-xs leading-relaxed mb-4">
           اتصال قراءة فقط. لا يتم تنفيذ أي أوامر تداول.
         </p>
         <div className="grid gap-4 md:grid-cols-2">
@@ -392,7 +392,7 @@ export default function SettingsPage() {
             />
           </div>
         </div>
-        <div className="flex flex-wrap items-center gap-3">
+        <div className="flex flex-wrap items-center gap-3 mt-4">
           <Button
             type="button"
             variant="outline"
@@ -404,7 +404,7 @@ export default function SettingsPage() {
           {connectMessage ? <span className="text-muted-foreground text-xs">{connectMessage}</span> : null}
         </div>
         {connectionStatus?.connected ? (
-          <div className="grid gap-2 rounded-xl border border-emerald-500/20 bg-emerald-500/5 p-3 text-sm md:grid-cols-2">
+          <div className="grid gap-2 mt-4 rounded-xl border border-emerald-500/20 bg-emerald-500/5 p-3 text-sm md:grid-cols-2">
             <div>رقم الحساب: <span className="tabular-nums">{connectionStatus.account_login ?? "—"}</span></div>
             <div>الاسم: {connectionStatus.name ?? "—"}</div>
             <div>الشركة: {connectionStatus.company ?? "—"}</div>
@@ -419,11 +419,28 @@ export default function SettingsPage() {
         ) : null}
       </Section>
 
-      <Section title="أزواج وأدوات MT5 الظاهرة">
-        <p className="rounded-xl border border-amber-500/20 bg-amber-500/5 px-3 py-2 text-amber-100/90 text-xs leading-relaxed">
-          هذه إعدادات عرض فقط ولا تنفذ أي صفقة.
+      <Section title="إعدادات OKX — قراءة فقط (Placeholder)">
+        <p className="rounded-xl border border-amber-500/20 bg-amber-500/5 px-3 py-2 text-amber-100/90 text-xs leading-relaxed mb-4">
+          هذا القسم مجرد عنصر نائب (Placeholder). سيتم تفعيل الاتصال بواجهة برمجة التطبيقات (API) الخاصة بـ OKX لاحقاً.
         </p>
-        <div className="flex flex-wrap items-center gap-3">
+        <div className="grid gap-4 md:grid-cols-2">
+          <Field label="API Key" placeholder="مخفي (عنصر نائب)" />
+          <Field label="Secret Key" placeholder="مخفي (عنصر نائب)" />
+          <Field label="Passphrase" placeholder="مخفي (عنصر نائب)" />
+          <Field label="وضع الاتصال" value="قراءة فقط (مخطط له)" />
+        </div>
+        <div className="flex flex-wrap items-center gap-3 mt-4">
+          <Button type="button" variant="outline" disabled>
+            اتصال بـ OKX (قريباً)
+          </Button>
+        </div>
+      </Section>
+
+      <Section title="إعدادات الرموز والأزواج (Symbols)">
+        <p className="rounded-xl border border-amber-500/20 bg-amber-500/5 px-3 py-2 text-amber-100/90 text-xs leading-relaxed mb-4">
+          تظهر هنا فقط الرموز المعروضة في Market Watch داخل MT5. لإضافة رمز جديد، أظهره أولًا في MT5 ثم أعد المزامنة.
+        </p>
+        <div className="flex flex-wrap items-center gap-3 mb-4">
           <Button
             type="button"
             variant="outline"
@@ -439,11 +456,8 @@ export default function SettingsPage() {
             <span className="text-muted-foreground text-xs leading-snug">{syncMessage}</span>
           ) : null}
         </div>
-        <p className="text-muted-foreground text-xs leading-relaxed">
-          تظهر هنا فقط الرموز المعروضة في Market Watch داخل MT5. لإضافة رمز جديد، أظهره أولًا في MT5 ثم أعد المزامنة.
-        </p>
 
-        <div className="max-w-md space-y-2">
+        <div className="max-w-md space-y-2 mb-4">
           <label className="text-sm font-medium leading-none" htmlFor="mt5-symbol-search">
             بحث في الأزواج
           </label>
@@ -531,9 +545,62 @@ export default function SettingsPage() {
         )}
       </Section>
 
-      <Section title="سجل التدقيق (Convex)">
-        <p className="text-muted-foreground text-xs leading-relaxed">
-          هذا سجل إداري للقراءة فقط يوضح عمليات المزامنة والإعدادات.
+      <Section title="إعدادات المخاطرة (Risk Settings)">
+        <p className="rounded-xl border border-amber-500/20 bg-amber-500/5 px-3 py-2 text-amber-100/90 text-xs leading-relaxed mb-4">
+          إعدادات المخاطرة وإدارة الحوكمة. (للعرض فقط ولن يتم تطبيقها فعلياً في هذه المرحلة).
+        </p>
+        <div className="grid gap-4 md:grid-cols-2">
+          <Field label="مخاطرة بالدولار (عنصر نائب)" value="50 USD" />
+          <Field label="حد أقصى يومي للصفقات" value="3 صفقات" />
+          <Field label="حد أقصى يومي للخسارة" value="150 USD" />
+          <Field label="حد أقصى لنفس الزوج" value="1 صفقة" />
+          
+          <div className="col-span-2 mt-2">
+            <h4 className="text-sm font-semibold text-amber-100/80 mb-3 border-b border-amber-500/10 pb-2">ضوابط الحوكمة</h4>
+          </div>
+          <Field label="Kill switch (مفتاح الطوارئ)" value="غير مفعل (عرض)" />
+          <Field label="تبريد بعد خسارة متتالية" value="60 دقيقة" />
+          <Field label="حد الخسائر المتتالية (Drawdown)" value="3 صفقات خاسرة" />
+        </div>
+      </Section>
+
+      <Section title="إعدادات التنبيهات (Notifications Settings)">
+        <p className="rounded-xl border border-amber-500/20 bg-amber-500/5 px-3 py-2 text-amber-100/90 text-xs leading-relaxed mb-4">
+          إعدادات الإشعارات (Telegram, Email, Push). (للعرض فقط).
+        </p>
+        <div className="grid gap-4 md:grid-cols-2">
+          <Field label="Telegram ID" placeholder="@username أو معرف" />
+          <div className="space-y-2">
+            <span className="text-sm font-medium leading-none">تفعيل التنبيهات الصوتية / المنبثقة</span>
+            <div className="flex items-center gap-3 rounded-xl border border-border/60 px-3 py-2">
+              <span className="text-muted-foreground text-xs">معطّل (قيد التطوير)</span>
+              <Badge variant="secondary">معطّل</Badge>
+            </div>
+          </div>
+        </div>
+      </Section>
+
+      <Section title="إعدادات الاشتراك والباقة (Subscription / Plan)">
+        <p className="rounded-xl border border-amber-500/20 bg-amber-500/5 px-3 py-2 text-amber-100/90 text-xs leading-relaxed mb-4">
+          سيتم ربط نظام Clerk والفوترة (Billing) لإدارة اشتراكك لاحقاً.
+        </p>
+        <div className="grid gap-4 md:grid-cols-2">
+          <Field label="الباقة الحالية" value="لا يوجد (نسخة تجريبية)" />
+          <Field label="حالة الاشتراك" value="غير مفعل" />
+        </div>
+        <div className="flex flex-wrap items-center gap-3 mt-4">
+          <Button type="button" variant="outline" disabled>
+            ترقية الباقة (قريباً)
+          </Button>
+          <Button type="button" variant="ghost" disabled>
+            إدارة الفواتير
+          </Button>
+        </div>
+      </Section>
+
+      <Section title="إعدادات الأمان وسجل النظام (Security)">
+        <p className="text-muted-foreground text-xs leading-relaxed mb-4">
+          سجل التدقيق (Audit Log) يوضح عمليات النظام والإعدادات لأغراض الأمان والمراقبة.
         </p>
         {!canUseConvex && !isConvexAuthLoading ? (
           <p className="text-muted-foreground text-sm">سجّل الدخول لعرض سجل التدقيق.</p>
@@ -542,7 +609,7 @@ export default function SettingsPage() {
         ) : auditEvents.length === 0 ? (
           <p className="text-muted-foreground text-sm">لا توجد أحداث تدقيق بعد.</p>
         ) : (
-          <div className="overflow-x-auto rounded-xl border border-amber-500/10">
+          <div className="overflow-x-auto rounded-xl border border-amber-500/10 mb-4">
             <Table>
               <TableHeader>
                 <TableRow className="border-amber-500/10 hover:bg-transparent">
@@ -571,10 +638,22 @@ export default function SettingsPage() {
             </Table>
           </div>
         )}
+        
+        <div className="grid gap-4 md:grid-cols-2 pt-2">
+          <div className="space-y-2">
+            <span className="text-sm font-medium leading-none">إدارة الجلسات</span>
+            <div className="flex items-center gap-3 rounded-xl border border-border/60 px-3 py-2">
+              <span className="text-muted-foreground text-xs">الجلسة الحالية آمنة</span>
+              <Badge variant="outline" className="border-emerald-500/30 text-emerald-200">
+                مشفرة
+              </Badge>
+            </div>
+          </div>
+        </div>
       </Section>
 
       <Section title="جاهزية مرحلة العقول واللجان">
-        <p className="text-muted-foreground text-xs leading-relaxed">
+        <p className="text-muted-foreground text-xs leading-relaxed mb-4">
           قائمة تحقق للقراءة فقط قبل تشغيل مرحلة العقول واللجان.
         </p>
         <div className="grid gap-2 text-sm">
@@ -587,75 +666,6 @@ export default function SettingsPage() {
           <CheckItem label="إعدادات الأزواج للمختبر" ok={(mt5Symbols?.some((s) => s.showInLab) ?? false)} />
           <CheckItem label="الحوكمة readOnly" ok={governance?.readOnly === true} />
           <CheckItem label="منع تنفيذ التداول" ok={governance?.tradingEnabled === false} />
-        </div>
-      </Section>
-
-      <Section title="إعدادات المنصة">
-        <div className="grid gap-4 md:grid-cols-2">
-          <Field
-            label="حساب MT5"
-            value={connectionStatus?.connected ? String(connectionStatus.account_login ?? "—") : "—"}
-          />
-          <Field label="الخادم" value={connectionStatus?.connected ? (connectionStatus.server ?? "—") : "—"} />
-          <Field
-            label="حالة الاتصال"
-            value={connectionStatus?.connected ? "متصل بمنصة MT5" : "غير متصل بمنصة MT5"}
-          />
-          <Field label="وضع العرض" value={connectionStatus?.read_only ? "قراءة فقط" : "—"} />
-        </div>
-      </Section>
-
-      <Section title="إعدادات المخاطرة">
-        <div className="grid gap-4 md:grid-cols-2">
-          <Field label="مخاطرة بالدولار (عرض)" value="0 USD" />
-          <Field label="حد أقصى يومي للصفقات" value="0" />
-          <Field label="حد أقصى يومي للخسارة" value="0 USD" />
-          <Field label="حد أقصى لنفس الزوج" value="0" />
-        </div>
-      </Section>
-
-      <Section title="إعدادات الأزواج (واجهة)">
-        <div className="grid gap-4 md:grid-cols-2">
-          <Field label="الأزواج المفعّلة" value="EURUSD, XAUUSD (وهمي)" />
-          <Field label="تفضيل الإطار الزمني" value="H1 / M15 (عرض)" />
-          <Field label="الرموز الافتراضية" value="XAUUSD" />
-        </div>
-      </Section>
-
-      <Section title="إعدادات الحوكمة">
-        <div className="grid gap-4 md:grid-cols-2">
-          <Field label="Kill switch" value="غير متاح — عرض" />
-          <Field label="تبريد بعد خسارة" value="— دقيقة" />
-          <Field label="حد الخسائر المتتالية" value="—" />
-        </div>
-      </Section>
-
-      <Section title="إعدادات الواجهة">
-        <div className="grid gap-4 md:grid-cols-2">
-          <div className="space-y-2">
-            <span className="text-sm font-medium leading-none">معاينة السمة</span>
-            <div className="flex items-center gap-3 rounded-xl border border-amber-500/15 bg-black/25 px-3 py-2">
-              <span className="text-muted-foreground text-xs">داكن مؤسسي</span>
-              <Badge variant="outline" className="border-amber-500/25 text-amber-100">
-                مفعّل (عرض)
-              </Badge>
-            </div>
-          </div>
-          <Field label="الكثافة" value="مريحة (افتراضي)" />
-          <Field label="الاتجاه" value="RTL / العربية" />
-        </div>
-      </Section>
-
-      <Section title="إعدادات التنبيهات">
-        <div className="grid gap-4 md:grid-cols-2">
-          <Field label="Telegram ID" placeholder="@username أو معرف" />
-          <div className="space-y-2">
-            <span className="text-sm font-medium leading-none">تفعيل التنبيهات</span>
-            <div className="flex items-center gap-3 rounded-xl border border-border/60 px-3 py-2">
-              <span className="text-muted-foreground text-xs">بريد / دفع — معطّل</span>
-              <Badge variant="secondary">معطّل</Badge>
-            </div>
-          </div>
         </div>
       </Section>
     </div>
