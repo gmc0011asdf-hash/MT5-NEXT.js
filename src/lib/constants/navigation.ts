@@ -2,6 +2,7 @@ import type { LucideIcon } from "lucide-react";
 import {
   Activity,
   BarChart2,
+  BookOpen,
   Database,
   FileText,
   FlaskConical,
@@ -57,6 +58,7 @@ export const NAV_GROUPS: NavGroup[] = [
     title: "التقارير والمراقبة",
     icon: BarChart2,
     items: [
+      { label: "سجل القرارات", href: "/decision-journal", icon: BookOpen },
       { label: "التقارير", href: "/reports", icon: FileText },
     ],
   },
@@ -76,6 +78,7 @@ export const NAV_GROUPS: NavGroup[] = [
 export const NAV_ITEMS: NavItem[] = [
   { label: "لوحة التحكم", href: "/dashboard", icon: LayoutDashboard },
   { label: "المختبر", href: "/lab/mt5", icon: FlaskConical },
+  { label: "سجل القرارات", href: "/decision-journal", icon: BookOpen },
   { label: "التقارير", href: "/reports", icon: FileText },
   { label: "المراقبة", href: "/monitoring", icon: Activity },
   { label: "إعادة التشغيل", href: "/replay", icon: Play },
@@ -99,6 +102,7 @@ export const NAV_SECTIONS: NavSection[] = [
   {
     title: "التقارير والاختبار",
     items: [
+      { label: "سجل القرارات", href: "/decision-journal", icon: BookOpen },
       { label: "التقارير", href: "/reports", icon: FileText },
       { label: "إعادة التشغيل", href: "/replay", icon: Play },
       { label: "اختبار Convex", href: "/convex-test", icon: Database },
