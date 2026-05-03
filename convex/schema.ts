@@ -275,4 +275,91 @@ export default defineSchema({
     .index("by_symbol_timeframe", ["symbol", "timeframe"])
     .index("by_createdAt", ["createdAt"])
     .index("by_userId_createdAt", ["userId", "createdAt"]),
+
+  // ─── Decision Journal (A9) ────────────────────────────────────────────────
+  // Read-only analytical decision log — no trade execution.
+  // userId = identity.subject from Clerk. Timestamps are Unix ms (number).
+
+  decisionRuns: defineTable({
+    decisionId:        v.string(),
+    platform:          v.string(),
+    symbol:            v.string(),
+    timeframe:         v.string(),
+    status:            v.string(),
+    finalDecision:     v.string(),
+    grade:             v.string(),
+    probability:       v.number(),
+    entryPrice:        v.number(),
+    invalidationPrice: v.number(),
+    reason:            v.string(),
+    userId:            v.string(),
+    createdAt:         v.number(),
+    updatedAt:         v.number(),
+    readOnly:          v.boolean(),
+    source:            v.string(),
+  })
+    .index("by_userId_createdAt", ["userId", "createdAt"])
+    .index("by_userId_platform",  ["userId", "platform"])
+    .index("by_userId_symbol",    ["userId", "symbol"])
+    .index("by_userId_status",    ["userId", "status"])
+    .index("by_decisionId",       ["decisionId"]),
+
+  committeeResults: defineTable({
+    decisionId:    v.string(),
+    userId:        v.string(),
+    committeeId:   v.string(),
+    committeeName: v.string(),
+    verdict:       v.string(),
+    score:         v.number(),
+    summary:       v.string(),
+    reasons:       v.array(v.string()),
+    createdAt:     v.number(),
+  })
+    .index("by_decisionId",      ["decisionId"])
+    .index("by_userId_createdAt", ["userId", "createdAt"]),
+
+  decisionRiskSnapshots: defineTable({
+    decisionId:      v.string(),
+    userId:          v.string(),
+    riskUsd:         v.number(),
+    riskPercent:     v.number(),
+    estimatedLot:    v.number(),
+    stopLoss:        v.number(),
+    takeProfit1:     v.number(),
+    takeProfit2:     v.optional(v.number()),
+    takeProfit3:     v.optional(v.number()),
+    rewardRiskRatio: v.number(),
+    marginSafe:      v.boolean(),
+    createdAt:       v.number(),
+  })
+    .index("by_decisionId",      ["decisionId"])
+    .index("by_userId_createdAt", ["userId", "createdAt"]),
+
+  decisionReviewSchedules: defineTable({
+    decisionId:        v.string(),
+    userId:            v.string(),
+    criticalTimeframe: v.string(),
+    nextReviewAt:      v.number(),
+    expiresAt:         v.number(),
+    reviewReason:      v.string(),
+    monitoringMode:    v.string(),
+    createdAt:         v.number(),
+    updatedAt:         v.number(),
+  })
+    .index("by_userId_nextReviewAt", ["userId", "nextReviewAt"])
+    .index("by_userId_expiresAt",    ["userId", "expiresAt"])
+    .index("by_decisionId",          ["decisionId"]),
+
+  decisionAuditEvents: defineTable({
+    decisionId:  v.string(),
+    userId:      v.string(),
+    eventType:   v.string(),
+    fromStatus:  v.optional(v.string()),
+    toStatus:    v.optional(v.string()),
+    message:     v.string(),
+    triggeredBy: v.string(),
+    createdAt:   v.number(),
+  })
+    .index("by_decisionId",      ["decisionId"])
+    .index("by_userId_createdAt", ["userId", "createdAt"]),
 });
