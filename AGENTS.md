@@ -1,3 +1,10 @@
+<!-- BEGIN:project-context-rules -->
+قبل أي تنفيذ داخل هذا المشروع، يجب قراءة:
+- PROJECT_CONTEXT.md
+- AGENT_RULES.md
+- docs/README.md
+<!-- END:project-context-rules -->
+
 <!-- BEGIN:nextjs-agent-rules -->
 # This is NOT the Next.js you know
 
