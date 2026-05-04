@@ -8,10 +8,12 @@
  * Symbol selector: populated exclusively from Convex getMyEnabledLabSymbols
  * (enabled=true AND showInLab=true AND visible in MT5 Market Watch).
  * Free-text entry is intentionally removed — only Settings-authorized pairs appear.
+ *
+ * A16: adds "حفظ القرار" button — calls saveAnalysisDecision (no trade execution).
  */
 
 import { useEffect, useState } from "react";
-import { useConvexAuth, useQuery } from "convex/react";
+import { useConvexAuth, useMutation, useQuery } from "convex/react";
 import { api } from "../../../convex/_generated/api";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -133,6 +135,114 @@ function trendLabel(t?: string): string {
 }
 
 // ---------------------------------------------------------------------------
+// A16: Mapping helpers — AnalysisResult → saveAnalysisDecision args
+// لا تنفيذ تداول — للتوثيق التحليلي فقط
+// ---------------------------------------------------------------------------
+
+function mapToJournalStatus(status: AnalysisResult["status"]): string {
+  if (status === "opportunity")        return "READY_FOR_REVIEW";
+  if (status === "rejected")           return "BLOCKED";
+  if (status === "wait")               return "HOLD";
+  return "WATCHING";
+}
+
+function mapToFinalDecision(r: AnalysisResult): string {
+  if (r.status === "opportunity" && r.direction === "bullish") return "BUY";
+  if (r.status === "opportunity" && r.direction === "bearish") return "SELL";
+  if (r.status === "rejected")                                 return "BLOCK";
+  return "HOLD";
+}
+
+function deriveProbability(status: AnalysisResult["status"]): number {
+  if (status === "opportunity")      return 65;
+  if (status === "wait")             return 35;
+  if (status === "rejected")         return 10;
+  if (status === "stale_data")       return 20;
+  return 0;
+}
+
+function deriveGrade(r: AnalysisResult): string {
+  if (r.status === "opportunity" && !r.freshness.stale) return "B";
+  if (r.status === "opportunity")                       return "C";
+  if (r.status === "wait")                              return "C";
+  return "D";
+}
+
+function buildSaveArgs(r: AnalysisResult) {
+  const timeframe    = r.selectedTimeframe ?? "UNKNOWN";
+  const probability  = deriveProbability(r.status);
+  const reasonText   = r.reasons.length > 0
+    ? r.reasons.slice(0, 5).join(" | ")
+    : "لا توجد أسباب محددة من التحليل";
+
+  const verdictMap: Record<AnalysisResult["status"], string> = {
+    opportunity:       "PASS",
+    wait:              "WARN",
+    rejected:          "BLOCK",
+    stale_data:        "WARN",
+    insufficient_data: "WARN",
+  };
+
+  // Single committee derived from the analysis engine output
+  const committees = [
+    {
+      committeeId:   "lab-analysis-auto",
+      committeeName: "تحليل المختبر الآلي",
+      verdict:       verdictMap[r.status],
+      score:         probability,
+      summary:       r.reasons.slice(0, 3).join(" | ") || "لا ملخص متاح",
+      reasons:       r.reasons.slice(0, 20),
+    },
+  ];
+
+  // Risk snapshot — only when we have the essential numbers
+  const risk =
+    r.estimatedLot !== undefined &&
+    r.stopLoss      !== undefined &&
+    r.takeProfit    !== undefined
+      ? {
+          riskUsd:         r.riskUsd,
+          riskPercent:     r.riskPercentOfEquity ?? 0,
+          estimatedLot:    r.estimatedLot,
+          stopLoss:        r.stopLoss,
+          takeProfit1:     r.takeProfit,
+          rewardRiskRatio: r.rrRatio ?? 0,
+          marginSafe:
+            !(r.lotValidation && r.lotValidation.warnings.length > 0),
+        }
+      : undefined;
+
+  return {
+    platform:          "MT5",          // ثابت — لا OKX real API
+    symbol:            r.symbol,
+    timeframe,
+    status:            mapToJournalStatus(r.status),
+    finalDecision:     mapToFinalDecision(r),
+    grade:             deriveGrade(r),
+    probability,
+    entryPrice:        r.entry    ?? 0, // canSave يضمن أن entry موجود
+    invalidationPrice: r.stopLoss ?? 0, // canSave يضمن أن stopLoss موجود
+    reason:            reasonText,
+    source:            "mt5-lab-analysis",
+    committees,
+    risk,
+    // userId: مُستخرَج من ctx.auth server-side — لا يُمرَّر من الواجهة
+    // readOnly: true مُجبَر server-side في saveAnalysisDecision
+  };
+}
+
+// canSave: true فقط عند توفر الحقول الأساسية
+function getMissingFields(r: AnalysisResult | null): string[] {
+  if (!r) return [];
+  const missing: string[] = [];
+  if (r.error)                         missing.push("خطأ في التحليل");
+  if (r.selectedTimeframe === null)    missing.push("الفريم الزمني");
+  if (r.entry === undefined)           missing.push("سعر الدخول");
+  if (r.stopLoss === undefined)        missing.push("وقف الخسارة");
+  return missing;
+}
+
+// ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
 
@@ -146,9 +256,11 @@ export function AnalysisControlPanel() {
     api.coreQueries.getMyEnabledLabSymbols,
     canQuery ? {} : "skip",
   );
-  // undefined = loading, [] = no symbols
   const symbolsLoading = canQuery && enabledSymbols === undefined;
   const allowedSymbols: string[] = enabledSymbols ?? [];
+
+  // ── A16: save mutation — لا تنفيذ تداول ────────────────────────────────
+  const saveDecision = useMutation(api.decisionJournal.saveAnalysisDecision);
 
   // ── form state ─────────────────────────────────────────────────────────
   const [symbol, setSymbol] = useState<string>("");
@@ -162,10 +274,15 @@ export function AnalysisControlPanel() {
   const [targetPoints, setTargetPoints] = useState(600);
   const [riskUsd, setRiskUsd] = useState(50);
 
-  // ── async state ─────────────────────────────────────────────────────────
+  // ── async state — تحليل ─────────────────────────────────────────────────
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<AnalysisResult | null>(null);
   const [fetchError, setFetchError] = useState<string | null>(null);
+
+  // ── async state — حفظ (A16) ────────────────────────────────────────────
+  const [saving, setSaving] = useState(false);
+  const [savedDecisionId, setSavedDecisionId] = useState<string | null>(null);
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   // Auto-select: when allowedSymbols loads/changes, keep selection valid
   useEffect(() => {
@@ -173,7 +290,6 @@ export function AnalysisControlPanel() {
       setSymbol("");
       return;
     }
-    // Keep current selection if still valid; else pick first
     if (!allowedSymbols.includes(symbol)) {
       setSymbol(allowedSymbols[0]!);
     }
@@ -182,11 +298,15 @@ export function AnalysisControlPanel() {
   const noAllowedSymbols = !symbolsLoading && allowedSymbols.length === 0;
   const canAnalyze = !busy && symbol !== "" && allowedSymbols.includes(symbol);
 
+  // A16: save-readiness
+  const missingFields = getMissingFields(result);
+  const canSave = result !== null && missingFields.length === 0 && !saving && !busy;
+
   function toggleCandidateTF(tf: TF) {
     setCandidateTFs((prev) => {
       const next = new Set(prev);
       if (next.has(tf)) {
-        if (next.size > 1) next.delete(tf); // keep at least one
+        if (next.size > 1) next.delete(tf);
       } else {
         next.add(tf);
       }
@@ -197,6 +317,9 @@ export function AnalysisControlPanel() {
   async function handleAnalyze() {
     setFetchError(null);
     setResult(null);
+    // ── reset save state on new analysis ──
+    setSavedDecisionId(null);
+    setSaveError(null);
     setBusy(true);
     try {
       const body = {
@@ -223,6 +346,23 @@ export function AnalysisControlPanel() {
     }
   }
 
+  // A16: حفظ القرار — لا تنفيذ تداول — توثيق تحليلي فقط
+  async function handleSaveDecision() {
+    if (!result || !canSave) return;
+    setSaving(true);
+    setSaveError(null);
+    setSavedDecisionId(null);
+    try {
+      const args = buildSaveArgs(result);
+      const res  = await saveDecision(args);
+      setSavedDecisionId(res.decisionId);
+    } catch (e) {
+      setSaveError(e instanceof Error ? e.message : "فشل الحفظ — حاول مرة أخرى");
+    } finally {
+      setSaving(false);
+    }
+  }
+
   // ---------------------------------------------------------------------------
   // Render
   // ---------------------------------------------------------------------------
@@ -240,7 +380,6 @@ export function AnalysisControlPanel() {
         </CardHeader>
         <CardContent className="px-4 py-4 md:px-6">
 
-          {/* حالة فارغة — لا أزواج مفعّلة */}
           {noAllowedSymbols && (
             <div className="mb-4 rounded-md border border-amber-500/20 bg-amber-500/5 px-4 py-3 text-sm text-amber-200/90">
               لا توجد أزواج مفعّلة للتحليل — فعّل الأزواج من الإعدادات
@@ -249,7 +388,7 @@ export function AnalysisControlPanel() {
 
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
 
-            {/* الزوج — قائمة منسدلة من الأزواج المفعّلة في الإعدادات */}
+            {/* الزوج */}
             <div className="flex flex-col gap-1">
               <label className="text-sm font-medium text-muted-foreground">الزوج</label>
               {symbolsLoading ? (
@@ -265,9 +404,7 @@ export function AnalysisControlPanel() {
                   </SelectTrigger>
                   <SelectContent>
                     {allowedSymbols.map((s) => (
-                      <SelectItem key={s} value={s}>
-                        {s}
-                      </SelectItem>
+                      <SelectItem key={s} value={s}>{s}</SelectItem>
                     ))}
                   </SelectContent>
                 </Select>
@@ -278,24 +415,8 @@ export function AnalysisControlPanel() {
             <div className="flex flex-col gap-1">
               <label className="text-sm font-medium text-muted-foreground">وضع الفريم</label>
               <div className="flex gap-2">
-                <Button
-                  type="button"
-                  size="sm"
-                  variant={timeframeMode === "manual" ? "default" : "outline"}
-                  onClick={() => setTimeframeMode("manual")}
-                  disabled={busy}
-                >
-                  يدوي
-                </Button>
-                <Button
-                  type="button"
-                  size="sm"
-                  variant={timeframeMode === "auto" ? "default" : "outline"}
-                  onClick={() => setTimeframeMode("auto")}
-                  disabled={busy}
-                >
-                  تلقائي — أفضل فريم
-                </Button>
+                <Button type="button" size="sm" variant={timeframeMode === "manual" ? "default" : "outline"} onClick={() => setTimeframeMode("manual")} disabled={busy}>يدوي</Button>
+                <Button type="button" size="sm" variant={timeframeMode === "auto" ? "default" : "outline"} onClick={() => setTimeframeMode("auto")} disabled={busy}>تلقائي — أفضل فريم</Button>
               </div>
             </div>
 
@@ -305,39 +426,19 @@ export function AnalysisControlPanel() {
                 <label className="text-sm font-medium text-muted-foreground">الفريم اليدوي</label>
                 <div className="flex flex-wrap gap-1">
                   {CANDIDATE_TIMEFRAMES.map((tf) => (
-                    <Button
-                      key={tf}
-                      type="button"
-                      size="sm"
-                      variant={manualTF === tf ? "default" : "outline"}
-                      onClick={() => setManualTF(tf)}
-                      disabled={busy}
-                      className="min-w-[3rem]"
-                    >
-                      {tf}
-                    </Button>
+                    <Button key={tf} type="button" size="sm" variant={manualTF === tf ? "default" : "outline"} onClick={() => setManualTF(tf)} disabled={busy} className="min-w-[3rem]">{tf}</Button>
                   ))}
                 </div>
               </div>
             )}
 
-            {/* الفريمات المرشحة للتلقائي */}
+            {/* الفريمات المرشحة */}
             {timeframeMode === "auto" && (
               <div className="flex flex-col gap-1 sm:col-span-2">
                 <label className="text-sm font-medium text-muted-foreground">الفريمات المرشحة</label>
                 <div className="flex flex-wrap gap-1">
                   {CANDIDATE_TIMEFRAMES.map((tf) => (
-                    <Button
-                      key={tf}
-                      type="button"
-                      size="sm"
-                      variant={candidateTFs.has(tf) ? "default" : "outline"}
-                      onClick={() => toggleCandidateTF(tf)}
-                      disabled={busy}
-                      className="min-w-[3rem]"
-                    >
-                      {tf}
-                    </Button>
+                    <Button key={tf} type="button" size="sm" variant={candidateTFs.has(tf) ? "default" : "outline"} onClick={() => toggleCandidateTF(tf)} disabled={busy} className="min-w-[3rem]">{tf}</Button>
                   ))}
                 </div>
               </div>
@@ -346,106 +447,46 @@ export function AnalysisControlPanel() {
             {/* عدد الشموع */}
             <div className="flex flex-col gap-1">
               <label className="text-sm font-medium text-muted-foreground">عدد الشموع</label>
-              <Input
-                type="number"
-                value={candleCount}
-                onChange={(e) => setCandleCount(Number(e.target.value))}
-                min={50}
-                max={350}
-                disabled={busy}
-              />
+              <Input type="number" value={candleCount} onChange={(e) => setCandleCount(Number(e.target.value))} min={50} max={350} disabled={busy} />
             </div>
 
             {/* نقاط وقف الخسارة */}
             <div className="flex flex-col gap-1">
               <label className="text-sm font-medium text-muted-foreground">نقاط وقف الخسارة (Stop Points)</label>
-              <Input
-                type="number"
-                value={stopPoints}
-                onChange={(e) => setStopPoints(Number(e.target.value))}
-                min={1}
-                disabled={busy}
-              />
+              <Input type="number" value={stopPoints} onChange={(e) => setStopPoints(Number(e.target.value))} min={1} disabled={busy} />
             </div>
 
-            {/* الهدف: RR أو نقاط */}
+            {/* الهدف */}
             <div className="flex flex-col gap-1">
               <label className="text-sm font-medium text-muted-foreground">الهدف</label>
               <div className="flex gap-2">
-                <Button
-                  type="button"
-                  size="sm"
-                  variant={useRR ? "default" : "outline"}
-                  onClick={() => setUseRR(true)}
-                  disabled={busy}
-                >
-                  نسبة RR
-                </Button>
-                <Button
-                  type="button"
-                  size="sm"
-                  variant={!useRR ? "default" : "outline"}
-                  onClick={() => setUseRR(false)}
-                  disabled={busy}
-                >
-                  نقاط الهدف
-                </Button>
+                <Button type="button" size="sm" variant={useRR ? "default" : "outline"} onClick={() => setUseRR(true)} disabled={busy}>نسبة RR</Button>
+                <Button type="button" size="sm" variant={!useRR ? "default" : "outline"} onClick={() => setUseRR(false)} disabled={busy}>نقاط الهدف</Button>
               </div>
               {useRR ? (
-                <Input
-                  type="number"
-                  value={rrRatio}
-                  onChange={(e) => setRrRatio(Number(e.target.value))}
-                  min={0.1}
-                  step={0.1}
-                  placeholder="RR مثال: 2"
-                  disabled={busy}
-                />
+                <Input type="number" value={rrRatio} onChange={(e) => setRrRatio(Number(e.target.value))} min={0.1} step={0.1} placeholder="RR مثال: 2" disabled={busy} />
               ) : (
-                <Input
-                  type="number"
-                  value={targetPoints}
-                  onChange={(e) => setTargetPoints(Number(e.target.value))}
-                  min={1}
-                  placeholder="نقاط الهدف"
-                  disabled={busy}
-                />
+                <Input type="number" value={targetPoints} onChange={(e) => setTargetPoints(Number(e.target.value))} min={1} placeholder="نقاط الهدف" disabled={busy} />
               )}
             </div>
 
-            {/* قيمة المخاطرة بالدولار */}
+            {/* قيمة المخاطرة */}
             <div className="flex flex-col gap-1">
               <label className="text-sm font-medium text-muted-foreground">قيمة المخاطرة (USD)</label>
-              <Input
-                type="number"
-                value={riskUsd}
-                onChange={(e) => setRiskUsd(Number(e.target.value))}
-                min={1}
-                step={1}
-                disabled={busy}
-              />
+              <Input type="number" value={riskUsd} onChange={(e) => setRiskUsd(Number(e.target.value))} min={1} step={1} disabled={busy} />
             </div>
 
           </div>
 
           {/* زر التحليل */}
           <div className="mt-6 flex items-center gap-4">
-            <Button
-              type="button"
-              onClick={() => void handleAnalyze()}
-              disabled={!canAnalyze}
-              className="min-w-[140px]"
-            >
+            <Button type="button" onClick={() => void handleAnalyze()} disabled={!canAnalyze} className="min-w-[140px]">
               {busy ? "جاري التحليل…" : "تحليل الفرصة"}
             </Button>
-            <span className="text-muted-foreground text-xs">
-              قراءة فقط — لا يتم تنفيذ أي صفقة
-            </span>
+            <span className="text-muted-foreground text-xs">قراءة فقط — لا يتم تنفيذ أي صفقة</span>
           </div>
 
-          {fetchError && (
-            <p className="mt-3 text-sm text-red-400">{fetchError}</p>
-          )}
+          {fetchError && <p className="mt-3 text-sm text-red-400">{fetchError}</p>}
         </CardContent>
       </Card>
 
@@ -469,9 +510,7 @@ export function AnalysisControlPanel() {
                 {/* حالة الفرصة */}
                 <div className="flex flex-wrap gap-4">
                   <Stat label="الزوج" value={result.symbol} />
-                  <Stat label="حالة الفرصة"
-                    value={<span className={statusColor(result.status)}>{statusLabel(result.status)}</span>}
-                  />
+                  <Stat label="حالة الفرصة" value={<span className={statusColor(result.status)}>{statusLabel(result.status)}</span>} />
                   <Stat label="الفريم المختار" value={result.selectedTimeframe ?? "—"} />
                   <Stat label="الاتجاه" value={directionLabel(result.direction)} />
                 </div>
@@ -526,17 +565,13 @@ export function AnalysisControlPanel() {
                   <Stat label="حداثة البيانات" value={result.freshness.stale ? "قديمة ⚠" : "حديثة ✓"} />
                 </div>
 
-                {/* الإطارات التي تم تقييمها */}
+                {/* الإطارات المقيّمة */}
                 {result.evaluatedTimeframes.length > 0 && (
                   <div>
                     <p className="mb-1 text-xs text-muted-foreground">الإطارات المقيّمة:</p>
                     <div className="flex flex-wrap gap-1">
                       {result.evaluatedTimeframes.map((tf) => (
-                        <Badge
-                          key={tf}
-                          variant={tf === result.selectedTimeframe ? "default" : "outline"}
-                          className="text-xs"
-                        >
+                        <Badge key={tf} variant={tf === result.selectedTimeframe ? "default" : "outline"} className="text-xs">
                           {tf}
                         </Badge>
                       ))}
@@ -558,6 +593,58 @@ export function AnalysisControlPanel() {
 
                 {/* تحذيرات */}
                 {result.warnings.length > 0 && <WarnList items={result.warnings} />}
+
+                {/* ── A16: حفظ القرار في سجل القرارات ──────────────────────────── */}
+                {/* لا تنفيذ تداول — للتوثيق التحليلي فقط */}
+                {/* userId يُستخرَج من ctx.auth server-side — لا يُمرَّر من الواجهة */}
+                <div className="rounded-lg border border-amber-500/15 bg-amber-500/[0.03] p-4">
+                  <p className="mb-3 text-xs font-semibold text-amber-200/80">
+                    حفظ في سجل القرارات
+                  </p>
+
+                  {/* حقول ناقصة — الزر معطّل */}
+                  {missingFields.length > 0 && !savedDecisionId && (
+                    <p className="mb-2 text-xs text-amber-300/70">
+                      الحفظ غير متاح — حقول ناقصة: {missingFields.join("، ")}
+                    </p>
+                  )}
+
+                  <div className="flex flex-wrap items-center gap-3">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      disabled={!canSave}
+                      onClick={() => void handleSaveDecision()}
+                      className="border-amber-500/30 text-amber-200 hover:bg-amber-500/10 disabled:opacity-40"
+                    >
+                      {saving ? "جاري الحفظ…" : "حفظ القرار في سجل القرارات"}
+                    </Button>
+
+                    {saveError && (
+                      <p className="text-xs text-red-400">{saveError}</p>
+                    )}
+                  </div>
+
+                  {/* نجاح الحفظ */}
+                  {savedDecisionId && (
+                    <div className="mt-3 flex flex-wrap items-center justify-between gap-3 rounded-md border border-emerald-500/20 bg-emerald-500/5 px-3 py-2">
+                      <div>
+                        <p className="text-xs font-semibold text-emerald-300">✓ تم حفظ القرار بنجاح</p>
+                        <p className="font-mono text-[10px] text-muted-foreground">{savedDecisionId}</p>
+                      </div>
+                      <a
+                        href="/decision-journal"
+                        className="shrink-0 text-xs text-amber-300 underline underline-offset-2 hover:text-amber-200"
+                      >
+                        عرض سجل القرارات ←
+                      </a>
+                    </div>
+                  )}
+
+                  <p className="mt-2 text-[10px] text-muted-foreground/50">
+                    الحفظ للتوثيق والتحليل فقط — لا ينفذ أي تداول — لا يُرسل أوامر لـ MT5
+                  </p>
+                </div>
 
               </div>
             )}
