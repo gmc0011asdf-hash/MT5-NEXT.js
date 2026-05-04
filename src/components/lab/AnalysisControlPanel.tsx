@@ -100,6 +100,7 @@ function fmt(n: number | undefined, digits = 5): string {
 
 function fmtAge(ms: number | undefined): string {
   if (ms === undefined) return "—";
+  if (ms < 0) return "0ث";           // broker clock slightly ahead — treat as just synced
   if (ms < 60_000) return `${Math.round(ms / 1000)}ث`;
   if (ms < 3_600_000) return `${Math.round(ms / 60_000)}د`;
   return `${(ms / 3_600_000).toFixed(1)}س`;
@@ -585,9 +586,24 @@ export function AnalysisControlPanel() {
                 <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
                   <Stat label="خصائص الزوج" value={result.dataQuality.symbolPropsAvailable ? "متوفرة ✓" : "غير متوفرة ✗"} />
                   <Stat label="المؤشرات" value={result.dataQuality.indicatorsAvailable ? "متوفرة ✓" : "غير متوفرة ✗"} />
-                  <Stat label="عمر الشمعة" value={fmtAge(result.freshness.candleAgeMs)} />
+                  <Stat
+                    label="عمر الشمعة"
+                    value={
+                      result.freshness.candleAgeMs !== undefined &&
+                      result.freshness.candleAgeMs < 0
+                        ? <span className="text-amber-400/80">توقيت الوسيط متقدم</span>
+                        : fmtAge(result.freshness.candleAgeMs)
+                    }
+                  />
                   <Stat label="حداثة البيانات" value={result.freshness.stale ? "قديمة ⚠" : "حديثة ✓"} />
                 </div>
+                {result.freshness.candleAgeMs !== undefined && result.freshness.candleAgeMs < 0 && (
+                  <p className="text-xs text-amber-300/60">
+                    ⚠ توقيت شمعة الوسيط متقدم بـ{" "}
+                    {Math.abs(Math.round(result.freshness.candleAgeMs / 1000))}ث —
+                    الشمعة حديثة (broker clock skew طبيعي)
+                  </p>
+                )}
 
                 {/* الإطارات المقيّمة */}
                 {result.evaluatedTimeframes.length > 0 && (
