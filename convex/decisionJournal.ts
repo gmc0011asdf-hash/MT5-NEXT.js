@@ -284,8 +284,8 @@ export const saveAnalysisDecision = mutation({
     const userId = await requireUserId(ctx);
     const now    = Date.now();
 
-    // ── 2. توليد decisionId فريد داخلياً ──────────────────────────────────
-    const decisionId = `dj-${now}-${Math.random().toString(36).slice(2, 9)}`;
+    // ── 2. توليد decisionId فريد داخلياً — crypto.randomUUID لـ 122-bit entropy ─
+    const decisionId = `dj-${now}-${crypto.randomUUID().replace(/-/g, "").slice(0, 12)}`;
 
     // ── 3. حفظ decisionRun الرئيسي ─────────────────────────────────────────
     // readOnly: true دائماً — لا تنفيذ تداول — للتحليل فقط
@@ -309,6 +309,12 @@ export const saveAnalysisDecision = mutation({
     });
 
     // ── 4. حفظ نتائج اللجان ─────────────────────────────────────────────────
+    if (args.committees.length === 0) {
+      throw new ConvexError("يجب أن يحتوي القرار على لجنة واحدة على الأقل");
+    }
+    if (args.committees.length > 20) {
+      throw new ConvexError("عدد اللجان يتجاوز الحد المسموح (20 كحد أقصى)");
+    }
     for (const c of args.committees) {
       await ctx.db.insert("committeeResults", {
         decisionId,
