@@ -284,7 +284,26 @@ export const saveAnalysisDecision = mutation({
     const userId = await requireUserId(ctx);
     const now    = Date.now();
 
-    // ── 2. توليد decisionId فريد داخلياً — crypto.randomUUID لـ 122-bit entropy ─
+    // ── 2. منع التكرار — نفس symbol+timeframe+finalDecision خلال 15 دقيقة ───
+    const fifteenMinAgo = now - 15 * 60 * 1000;
+    const recentBySymbol = await ctx.db
+      .query("decisionRuns")
+      .withIndex("by_userId_symbol", (q) =>
+        q.eq("userId", userId).eq("symbol", args.symbol),
+      )
+      .order("desc")
+      .take(20);
+    const recentDuplicate = recentBySymbol.find(
+      (r) =>
+        r.timeframe === args.timeframe &&
+        r.finalDecision === args.finalDecision &&
+        r.createdAt >= fifteenMinAgo,
+    );
+    if (recentDuplicate) {
+      return { decisionId: recentDuplicate.decisionId, duplicate: true };
+    }
+
+    // ── 2.5. توليد decisionId فريد داخلياً — crypto.randomUUID لـ 122-bit entropy ─
     const decisionId = `dj-${now}-${crypto.randomUUID().replace(/-/g, "").slice(0, 12)}`;
 
     // ── 3. حفظ decisionRun الرئيسي ─────────────────────────────────────────
@@ -373,6 +392,6 @@ export const saveAnalysisDecision = mutation({
     });
 
     // ── 8. إرجاع decisionId للمستدعي ───────────────────────────────────────
-    return { decisionId };
+    return { decisionId, duplicate: false };
   },
 });

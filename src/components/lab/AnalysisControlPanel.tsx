@@ -93,6 +93,9 @@ type AnalysisResult = {
 const CANDIDATE_TIMEFRAMES = ["M1", "M5", "M15", "M30", "H1", "H4", "D1"] as const;
 type TF = (typeof CANDIDATE_TIMEFRAMES)[number];
 
+// Broker clock skew: فرق ≤ 5 دقائق طبيعي — أكبر منه مريب
+const BROKER_SKEW_SMALL_MS = 5 * 60 * 1000;
+
 function fmt(n: number | undefined, digits = 5): string {
   if (n === undefined) return "—";
   return n.toFixed(digits);
@@ -100,7 +103,11 @@ function fmt(n: number | undefined, digits = 5): string {
 
 function fmtAge(ms: number | undefined): string {
   if (ms === undefined) return "—";
-  if (ms < 0) return "0ث";           // broker clock slightly ahead — treat as just synced
+  if (ms < 0) {
+    // small negative = normal broker clock skew → show as 0
+    if (Math.abs(ms) < BROKER_SKEW_SMALL_MS) return "0ث";
+    return "—"; // large negative — show separately as warning
+  }
   if (ms < 60_000) return `${Math.round(ms / 1000)}ث`;
   if (ms < 3_600_000) return `${Math.round(ms / 60_000)}د`;
   return `${(ms / 3_600_000).toFixed(1)}س`;
@@ -154,25 +161,67 @@ function mapToFinalDecision(r: AnalysisResult): string {
   return "HOLD";
 }
 
-function deriveProbability(status: AnalysisResult["status"]): number {
-  if (status === "opportunity")      return 65;
-  if (status === "wait")             return 35;
-  if (status === "rejected")         return 10;
-  if (status === "stale_data")       return 20;
-  return 0;
+function deriveProbability(r: AnalysisResult): number {
+  if (r.status === "insufficient_data") return 0;
+  if (r.status === "rejected")          return 10;
+
+  let score = 0;
+
+  // Base score from opportunity type
+  if      (r.status === "opportunity") score += 50;
+  else if (r.status === "stale_data")  score += 30;
+  else if (r.status === "wait")        score += 20;
+
+  // Momentum strength bonus
+  if      (r.indicators?.momentumBias === "strong") score += 12;
+  else if (r.indicators?.momentumBias !== undefined) score +=  3;
+
+  // Risk/reward bonus
+  const rr = r.rrRatio;
+  if (rr !== undefined) {
+    if      (rr >= 3) score += 10;
+    else if (rr >= 2) score +=  6;
+    else if (rr >= 1) score +=  2;
+    else              score -= 10; // RR < 1 خطر
+  }
+
+  // Stale data penalty
+  if (r.freshness.stale) score -= 18;
+
+  // Suspicious large-negative clock skew penalty
+  if (r.freshness.candleAgeMs !== undefined && r.freshness.candleAgeMs < -BROKER_SKEW_SMALL_MS) {
+    score -= 12;
+  }
+
+  // Warning count penalty
+  score -= Math.min(r.warnings.length * 4, 20);
+
+  return Math.max(5, Math.min(90, Math.round(score)));
 }
 
-function deriveGrade(r: AnalysisResult): string {
-  if (r.status === "opportunity" && !r.freshness.stale) return "B";
-  if (r.status === "opportunity")                       return "C";
-  if (r.status === "wait")                              return "C";
+function deriveGrade(r: AnalysisResult, probability: number): string {
+  if (r.status === "insufficient_data" || r.status === "rejected") return "D";
+
+  const hasStrongMomentum = r.indicators?.momentumBias === "strong";
+  const goodRR            = r.rrRatio !== undefined && r.rrRatio >= 2;
+  const fresh             = !r.freshness.stale;
+  const noSuspiciousAge   =
+    r.freshness.candleAgeMs === undefined ||
+    r.freshness.candleAgeMs >= -BROKER_SKEW_SMALL_MS;
+  const fewWarnings       = r.warnings.length <= 1;
+
+  if (probability >= 72 && hasStrongMomentum && goodRR && fresh && noSuspiciousAge && fewWarnings) return "A";
+  if (probability >= 58 && (hasStrongMomentum || goodRR) && fresh && noSuspiciousAge) return "B";
+  if (probability >= 38 && noSuspiciousAge) return "C";
+  if (probability >= 20) return "C";
   return "D";
 }
 
 function buildSaveArgs(r: AnalysisResult) {
-  const timeframe    = r.selectedTimeframe ?? "UNKNOWN";
-  const probability  = deriveProbability(r.status);
-  const reasonText   = r.reasons.length > 0
+  const timeframe   = r.selectedTimeframe ?? "UNKNOWN";
+  const probability = deriveProbability(r);
+  const grade       = deriveGrade(r, probability);
+  const reasonText  = r.reasons.length > 0
     ? r.reasons.slice(0, 5).join(" | ")
     : "لا توجد أسباب محددة من التحليل";
 
@@ -219,7 +268,7 @@ function buildSaveArgs(r: AnalysisResult) {
     timeframe,
     status:            mapToJournalStatus(r.status),
     finalDecision:     mapToFinalDecision(r),
-    grade:             deriveGrade(r),
+    grade,
     probability,
     entryPrice:        r.entry    ?? 0, // canSave يضمن أن entry موجود
     invalidationPrice: r.stopLoss ?? 0, // canSave يضمن أن stopLoss موجود
@@ -284,6 +333,7 @@ export function AnalysisControlPanel() {
   // ── async state — حفظ (A16) ────────────────────────────────────────────
   const [saving, setSaving] = useState(false);
   const [savedDecisionId, setSavedDecisionId] = useState<string | null>(null);
+  const [savedDuplicate, setSavedDuplicate] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
 
   // Auto-select: when allowedSymbols loads/changes, keep selection valid
@@ -320,6 +370,7 @@ export function AnalysisControlPanel() {
     setFetchError(null);
     setResult(null);
     setSavedDecisionId(null);
+    setSavedDuplicate(false);
     setSaveError(null);
     setBusy(true);
 
@@ -379,6 +430,7 @@ export function AnalysisControlPanel() {
       const args = buildSaveArgs(result);
       const res  = await saveDecision(args);
       setSavedDecisionId(res.decisionId);
+      if ("duplicate" in res && res.duplicate) setSavedDuplicate(true);
     } catch (e) {
       setSaveError(e instanceof Error ? e.message : "فشل الحفظ — حاول مرة أخرى");
     } finally {
@@ -583,26 +635,42 @@ export function AnalysisControlPanel() {
                 )}
 
                 {/* data quality + freshness */}
-                <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-                  <Stat label="خصائص الزوج" value={result.dataQuality.symbolPropsAvailable ? "متوفرة ✓" : "غير متوفرة ✗"} />
-                  <Stat label="المؤشرات" value={result.dataQuality.indicatorsAvailable ? "متوفرة ✓" : "غير متوفرة ✗"} />
-                  <Stat
-                    label="عمر الشمعة"
-                    value={
-                      result.freshness.candleAgeMs !== undefined &&
-                      result.freshness.candleAgeMs < 0
-                        ? <span className="text-amber-400/80">توقيت الوسيط متقدم</span>
-                        : fmtAge(result.freshness.candleAgeMs)
-                    }
-                  />
-                  <Stat label="حداثة البيانات" value={result.freshness.stale ? "قديمة ⚠" : "حديثة ✓"} />
-                </div>
+                {(() => {
+                  const rawAge = result.freshness.candleAgeMs;
+                  const isLargeNeg = rawAge !== undefined && rawAge < -BROKER_SKEW_SMALL_MS;
+                  const isSmallNeg = rawAge !== undefined && rawAge < 0 && !isLargeNeg;
+                  const freshnessLabel = isLargeNeg
+                    ? <span className="text-orange-400">توقيت مريب ⚠⚠</span>
+                    : result.freshness.stale
+                      ? "قديمة ⚠"
+                      : "حديثة ✓";
+                  const ageLabel = isLargeNeg
+                    ? <span className="text-orange-400">—</span>
+                    : isSmallNeg
+                      ? <span className="text-amber-400/80">0ث (skew)</span>
+                      : fmtAge(rawAge);
+                  return (
+                    <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                      <Stat label="خصائص الزوج" value={result.dataQuality.symbolPropsAvailable ? "متوفرة ✓" : "غير متوفرة ✗"} />
+                      <Stat label="المؤشرات" value={result.dataQuality.indicatorsAvailable ? "متوفرة ✓" : "غير متوفرة ✗"} />
+                      <Stat label="عمر الشمعة" value={ageLabel} />
+                      <Stat label="حداثة البيانات" value={freshnessLabel} />
+                    </div>
+                  );
+                })()}
                 {result.freshness.candleAgeMs !== undefined && result.freshness.candleAgeMs < 0 && (
-                  <p className="text-xs text-amber-300/60">
-                    ⚠ توقيت شمعة الوسيط متقدم بـ{" "}
-                    {Math.abs(Math.round(result.freshness.candleAgeMs / 1000))}ث —
-                    الشمعة حديثة (broker clock skew طبيعي)
-                  </p>
+                  Math.abs(result.freshness.candleAgeMs) < BROKER_SKEW_SMALL_MS ? (
+                    <p className="text-xs text-amber-300/60">
+                      ⚠ توقيت الوسيط متقدم بـ{Math.abs(Math.round(result.freshness.candleAgeMs / 1000))}ث —
+                      broker clock skew طبيعي
+                    </p>
+                  ) : (
+                    <p className="text-xs text-red-400/90 font-medium">
+                      ⚠⚠ فرق توقيت كبير: توقيت الوسيط متقدم بـ
+                      {" "}{Math.round(Math.abs(result.freshness.candleAgeMs) / 60000)} دقيقة —
+                      تحقق من timezone في MT5 أو أعد المزامنة
+                    </p>
+                  )
                 )}
 
                 {/* الإطارات المقيّمة */}
@@ -633,6 +701,22 @@ export function AnalysisControlPanel() {
 
                 {/* تحذيرات */}
                 {result.warnings.length > 0 && <WarnList items={result.warnings} />}
+
+                {/* ── Debug: معلومات التوقيت والمصدر ─────────────────────────── */}
+                <details className="rounded border border-border/30 px-3 py-2 text-[10px] text-muted-foreground/55">
+                  <summary className="cursor-pointer select-none">تفاصيل التوقيت والمصدر</summary>
+                  <div className="mt-1.5 space-y-0.5 font-mono">
+                    <p>الفريم: {result.selectedTimeframe}</p>
+                    <p>candleAgeMs: {result.freshness.candleAgeMs ?? "—"}</p>
+                    <p>
+                      latestCandleTime:{" "}
+                      {result.indicators?.latestCandleTime
+                        ? new Date(result.indicators.latestCandleTime).toLocaleString("ar-IQ")
+                        : "—"}
+                    </p>
+                    <p>مزامنة MT5 قبل التحليل: نعم (pre-sync A16.1)</p>
+                  </div>
+                </details>
 
                 {/* ── A16: حفظ القرار في سجل القرارات ──────────────────────────── */}
                 {/* لا تنفيذ تداول — للتوثيق التحليلي فقط */}
@@ -671,11 +755,21 @@ export function AnalysisControlPanel() {
                     )}
                   </div>
 
-                  {/* نجاح الحفظ */}
+                  {/* نجاح الحفظ / مكرر */}
                   {savedDecisionId && (
-                    <div className="mt-3 flex flex-wrap items-center justify-between gap-3 rounded-md border border-emerald-500/30 bg-emerald-500/10 px-3 py-2">
+                    <div className={`mt-3 flex flex-wrap items-center justify-between gap-3 rounded-md border px-3 py-2 ${
+                      savedDuplicate
+                        ? "border-amber-500/30 bg-amber-500/10"
+                        : "border-emerald-500/30 bg-emerald-500/10"
+                    }`}>
                       <div>
-                        <p className="text-xs font-semibold text-emerald-300">✓ تم حفظ القرار بنجاح</p>
+                        {savedDuplicate ? (
+                          <p className="text-xs font-semibold text-amber-300">
+                            ⚠ قرار مشابه موجود — تم الربط بالقرار الحالي
+                          </p>
+                        ) : (
+                          <p className="text-xs font-semibold text-emerald-300">✓ تم حفظ القرار بنجاح</p>
+                        )}
                         <p className="font-mono text-[10px] text-muted-foreground">{savedDecisionId}</p>
                       </div>
                       <a
