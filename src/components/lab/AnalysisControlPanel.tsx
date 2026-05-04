@@ -143,109 +143,361 @@ function trendLabel(t?: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// A16: Mapping helpers — AnalysisResult → saveAnalysisDecision args
+// A18: Multi-Committee Scoring — AnalysisResult → saveAnalysisDecision args
 // لا تنفيذ تداول — للتوثيق التحليلي فقط
 // ---------------------------------------------------------------------------
 
-function mapToJournalStatus(status: AnalysisResult["status"]): string {
-  if (status === "opportunity")        return "READY_FOR_REVIEW";
-  if (status === "rejected")           return "BLOCKED";
-  if (status === "wait")               return "HOLD";
-  return "WATCHING";
+type CommitteeResult = {
+  committeeId:   string;
+  committeeName: string;
+  verdict:       "PASS" | "WARN" | "BLOCK";
+  score:         number;  // 0–100
+  summary:       string;
+  reasons:       string[];
+};
+
+// أوزان اللجان — مجموعها 1.0
+const COMMITTEE_WEIGHTS: Record<string, number> = {
+  "trend":         0.25,
+  "momentum":      0.20,
+  "entry-quality": 0.20,
+  "risk":          0.15,
+  "freshness":     0.15,
+  "protection":    0.05,
+};
+
+// اللجان الحرجة التي تستطيع إصدار BLOCK فعّال على القرار
+const CRITICAL_COMMITTEES = new Set(["freshness", "entry-quality"]);
+
+// ── 1. لجنة الاتجاه ──────────────────────────────────────────────────────────
+function buildTrendCommittee(r: AnalysisResult): CommitteeResult {
+  const ind = r.indicators;
+  if (!ind || ind.status !== "ok" || !r.dataQuality.indicatorsAvailable) {
+    return {
+      committeeId: "trend", committeeName: "لجنة الاتجاه",
+      verdict: "WARN", score: 20,
+      summary: "بيانات المؤشرات غير متوفرة",
+      reasons: ["لا توجد بيانات EMA لتحديد الاتجاه"],
+    };
+  }
+
+  const { ema20, ema50, ema200, trendBias } = ind;
+  const hasEMAs = ema20 !== undefined && ema50 !== undefined && ema200 !== undefined;
+  const reasons: string[] = [];
+  let score = 25;
+  let verdict: CommitteeResult["verdict"] = "WARN";
+
+  if (trendBias === "bullish") {
+    if (hasEMAs && ema20! > ema50! && ema50! > ema200!) {
+      score = 83; verdict = "PASS";
+      reasons.push(`EMA20(${ema20!.toFixed(2)}) > EMA50(${ema50!.toFixed(2)}) > EMA200(${ema200!.toFixed(2)}) — ترند صاعد قوي`);
+    } else if (hasEMAs && ema20! > ema50!) {
+      score = 57; verdict = "WARN";
+      reasons.push("ترند صاعد جزئي — EMA20 > EMA50 لكن EMA200 غير مؤكد");
+    } else {
+      score = 30; verdict = "WARN";
+      reasons.push("إشارة اتجاه صاعد ضعيفة — EMAs غير متوافقة بالكامل");
+    }
+  } else if (trendBias === "bearish") {
+    if (hasEMAs && ema20! < ema50! && ema50! < ema200!) {
+      score = 83; verdict = "PASS";
+      reasons.push(`EMA20(${ema20!.toFixed(2)}) < EMA50(${ema50!.toFixed(2)}) < EMA200(${ema200!.toFixed(2)}) — ترند هابط قوي`);
+    } else if (hasEMAs && ema20! < ema50!) {
+      score = 57; verdict = "WARN";
+      reasons.push("ترند هابط جزئي — EMA20 < EMA50 لكن EMA200 غير مؤكد");
+    } else {
+      score = 30; verdict = "WARN";
+      reasons.push("إشارة اتجاه هابط ضعيفة — EMAs غير متوافقة بالكامل");
+    }
+  } else {
+    score = 22; verdict = "WARN";
+    reasons.push("ترند محايد — لا اتجاه واضح من EMAs");
+  }
+
+  return {
+    committeeId: "trend", committeeName: "لجنة الاتجاه",
+    verdict, score,
+    summary: `ترند: ${trendBias ?? "محايد"} — EMAs: ${hasEMAs ? "متوفرة" : "ناقصة"}`,
+    reasons: reasons.slice(0, 8),
+  };
 }
 
-function mapToFinalDecision(r: AnalysisResult): string {
-  if (r.status === "opportunity" && r.direction === "bullish") return "BUY";
-  if (r.status === "opportunity" && r.direction === "bearish") return "SELL";
-  if (r.status === "rejected")                                 return "BLOCK";
-  return "HOLD";
+// ── 2. لجنة الزخم ────────────────────────────────────────────────────────────
+function buildMomentumCommittee(r: AnalysisResult): CommitteeResult {
+  const ind = r.indicators;
+  if (!ind || ind.status !== "ok") {
+    return {
+      committeeId: "momentum", committeeName: "لجنة الزخم",
+      verdict: "WARN", score: 20,
+      summary: "بيانات الزخم غير متوفرة",
+      reasons: ["RSI و MACD غير متوفرين"],
+    };
+  }
+
+  const { rsi14, macdHistogram, momentumBias } = ind;
+  const reasons: string[] = [];
+  let score = 30;
+  let verdict: CommitteeResult["verdict"] = "WARN";
+
+  if (momentumBias === "strong") {
+    score += 35;
+    reasons.push("زخم قوي — RSI و MACD متوافقان مع الاتجاه");
+  } else if (momentumBias !== undefined) {
+    score += 8;
+    reasons.push("زخم ضعيف — حركة بطيئة محتملة");
+  }
+
+  if (rsi14 !== undefined) {
+    reasons.push(`RSI14: ${rsi14.toFixed(1)}`);
+    if      (rsi14 > 78) { score -= 22; reasons.push("RSI: تشبع شرائي مفرط"); }
+    else if (rsi14 < 22) { score -= 22; reasons.push("RSI: تشبع بيعي مفرط"); }
+    else if (rsi14 >= 45 && rsi14 <= 65) { score += 8; }
+  }
+
+  if (macdHistogram !== undefined) {
+    const dir = r.direction;
+    if ((dir === "bullish" && macdHistogram > 0) || (dir === "bearish" && macdHistogram < 0)) {
+      score += 8; reasons.push(`MACD (${macdHistogram.toFixed(5)}) يتوافق مع الاتجاه`);
+    } else if (macdHistogram !== 0) {
+      score -= 5; reasons.push(`MACD (${macdHistogram.toFixed(5)}) عكس الاتجاه`);
+    }
+  }
+
+  score = Math.max(5, Math.min(90, score));
+  verdict = score >= 60 ? "PASS" : "WARN";
+
+  return {
+    committeeId: "momentum", committeeName: "لجنة الزخم",
+    verdict, score,
+    summary: `زخم: ${momentumBias ?? "غير محدد"} — RSI: ${rsi14?.toFixed(1) ?? "—"}`,
+    reasons: reasons.slice(0, 8),
+  };
 }
 
-function deriveProbability(r: AnalysisResult): number {
-  if (r.status === "insufficient_data") return 0;
-  if (r.status === "rejected")          return 10;
+// ── 3. لجنة جودة الدخول ──────────────────────────────────────────────────────
+function buildEntryQualityCommittee(r: AnalysisResult): CommitteeResult {
+  if (r.entry === undefined || r.stopLoss === undefined) {
+    return {
+      committeeId: "entry-quality", committeeName: "لجنة جودة الدخول",
+      verdict: "WARN", score: 15,
+      summary: "لا توجد نقاط دخول أو وقف محددة",
+      reasons: ["entry أو stopLoss غير متوفر"],
+    };
+  }
 
-  let score = 0;
-
-  // Base score from opportunity type
-  if      (r.status === "opportunity") score += 50;
-  else if (r.status === "stale_data")  score += 30;
-  else if (r.status === "wait")        score += 20;
-
-  // Momentum strength bonus
-  if      (r.indicators?.momentumBias === "strong") score += 12;
-  else if (r.indicators?.momentumBias !== undefined) score +=  3;
-
-  // Risk/reward bonus
   const rr = r.rrRatio;
+  const reasons: string[] = [];
+  let score = 30;
+  let verdict: CommitteeResult["verdict"] = "WARN";
+
   if (rr !== undefined) {
-    if      (rr >= 3) score += 10;
-    else if (rr >= 2) score +=  6;
-    else if (rr >= 1) score +=  2;
-    else              score -= 10; // RR < 1 خطر
+    reasons.push(`نسبة R/R: ${rr.toFixed(2)}`);
+    if      (rr >= 3)   { score = 88; verdict = "PASS";  reasons.push("R/R ممتاز ≥ 3:1"); }
+    else if (rr >= 2)   { score = 72; verdict = "PASS";  reasons.push("R/R جيد ≥ 2:1"); }
+    else if (rr >= 1.5) { score = 55; verdict = "WARN";  reasons.push("R/R مقبول ≥ 1.5:1"); }
+    else if (rr >= 1)   { score = 38; verdict = "WARN";  reasons.push("R/R ضعيف — خطر/عائد متساوي"); }
+    else                { score = 15; verdict = "BLOCK"; reasons.push(`R/R سيء ${rr.toFixed(2)}:1 — الخطر أكبر من العائد`); }
+  } else {
+    score = 25; verdict = "WARN"; reasons.push("نسبة R/R غير محسوبة");
   }
 
-  // Stale data penalty
-  if (r.freshness.stale) score -= 18;
+  if (r.indicators?.atr14 !== undefined) reasons.push(`ATR14: ${r.indicators.atr14.toFixed(5)}`);
+  reasons.push(`دخول: ${r.entry?.toFixed(5)} — وقف: ${r.stopLoss?.toFixed(5)}`);
 
-  // Suspicious large-negative clock skew penalty
-  if (r.freshness.candleAgeMs !== undefined && r.freshness.candleAgeMs < -BROKER_SKEW_SMALL_MS) {
-    score -= 12;
-  }
-
-  // Warning count penalty
-  score -= Math.min(r.warnings.length * 4, 20);
-
-  return Math.max(5, Math.min(90, Math.round(score)));
+  return {
+    committeeId: "entry-quality", committeeName: "لجنة جودة الدخول",
+    verdict, score,
+    summary: `R/R: ${rr?.toFixed(2) ?? "—"} — دخول: ${r.entry?.toFixed(5) ?? "—"}`,
+    reasons: reasons.slice(0, 8),
+  };
 }
 
-function deriveGrade(r: AnalysisResult, probability: number): string {
-  if (r.status === "insufficient_data" || r.status === "rejected") return "D";
+// ── 4. لجنة المخاطرة ─────────────────────────────────────────────────────────
+function buildRiskCommittee(r: AnalysisResult): CommitteeResult {
+  const lotWarnings = r.lotValidation?.warnings ?? [];
+  const reasons: string[] = [];
+  let score = 72;
+  let verdict: CommitteeResult["verdict"] = "PASS";
 
-  const hasStrongMomentum = r.indicators?.momentumBias === "strong";
-  const goodRR            = r.rrRatio !== undefined && r.rrRatio >= 2;
-  const fresh             = !r.freshness.stale;
-  const noSuspiciousAge   =
-    r.freshness.candleAgeMs === undefined ||
-    r.freshness.candleAgeMs >= -BROKER_SKEW_SMALL_MS;
-  const fewWarnings       = r.warnings.length <= 1;
+  if (lotWarnings.length > 0) {
+    score -= lotWarnings.length * 15;
+    verdict = "WARN";
+    for (const w of lotWarnings.slice(0, 3)) reasons.push(w);
+  }
 
-  if (probability >= 72 && hasStrongMomentum && goodRR && fresh && noSuspiciousAge && fewWarnings) return "A";
-  if (probability >= 58 && (hasStrongMomentum || goodRR) && fresh && noSuspiciousAge) return "B";
-  if (probability >= 38 && noSuspiciousAge) return "C";
+  if (r.estimatedLot !== undefined && r.estimatedLot > 0) {
+    reasons.push(`لوت محسوب: ${r.estimatedLot.toFixed(2)}`);
+  } else {
+    score -= 15; verdict = "WARN";
+    reasons.push("اللوت غير محسوب — خصائص الزوج غير متوفرة");
+  }
+
+  if (r.riskPercentOfEquity !== undefined) {
+    reasons.push(`مخاطرة: ${r.riskPercentOfEquity.toFixed(1)}%`);
+    if      (r.riskPercentOfEquity > 5) { score -= 20; verdict = "WARN"; reasons.push("مخاطرة مرتفعة > 5% من الرصيد"); }
+    else if (r.riskPercentOfEquity > 2) { score -= 5; }
+  }
+
+  reasons.push(`مخاطرة بالدولار: $${r.riskUsd}`);
+  score = Math.max(5, Math.min(90, score));
+  if (score >= 60) verdict = "PASS";
+
+  return {
+    committeeId: "risk", committeeName: "لجنة المخاطرة",
+    verdict, score,
+    summary: `لوت: ${r.estimatedLot?.toFixed(2) ?? "—"} — $${r.riskUsd}`,
+    reasons: reasons.slice(0, 8),
+  };
+}
+
+// ── 5. لجنة حداثة البيانات ───────────────────────────────────────────────────
+function buildFreshnessCommittee(r: AnalysisResult): CommitteeResult {
+  const rawAge     = r.freshness.candleAgeMs;
+  const isLargeNeg = rawAge !== undefined && rawAge < -BROKER_SKEW_SMALL_MS;
+  const isSmallNeg = rawAge !== undefined && rawAge < 0 && !isLargeNeg;
+  const reasons: string[] = [];
+  let score = 82;
+  let verdict: CommitteeResult["verdict"] = "PASS";
+
+  if (isLargeNeg) {
+    const negMin = Math.round(Math.abs(rawAge!) / 60000);
+    score = 14; verdict = "BLOCK";
+    reasons.push(`فرق توقيت كبير: الوسيط متقدم بـ ${negMin} دقيقة`);
+    reasons.push("البيانات غير موثوقة — تحقق من timezone في MT5");
+  } else if (isSmallNeg) {
+    score = 78; verdict = "PASS";
+    reasons.push(`broker clock skew بسيط: ${Math.abs(Math.round(rawAge! / 1000))}ث — مقبول`);
+  } else if (r.freshness.stale) {
+    score = 28; verdict = "WARN";
+    if (rawAge !== undefined) reasons.push(`عمر الشمعة: ${Math.round(rawAge / 60000)} دقيقة — قديمة`);
+    reasons.push("بيانات قديمة — أعد المزامنة");
+  } else {
+    if (rawAge !== undefined && rawAge >= 0) {
+      const label = rawAge < 60_000 ? `${Math.round(rawAge / 1000)}ث` : `${Math.round(rawAge / 60000)}د`;
+      reasons.push(`عمر الشمعة: ${label} — حديثة`);
+    }
+    reasons.push("بيانات حديثة ومزامنة ناجحة");
+  }
+
+  return {
+    committeeId: "freshness", committeeName: "لجنة حداثة البيانات",
+    verdict, score,
+    summary: isLargeNeg ? "توقيت مريب ⚠⚠" : r.freshness.stale ? "بيانات قديمة ⚠" : "بيانات حديثة ✓",
+    reasons: reasons.slice(0, 5),
+  };
+}
+
+// ── 6. لجنة الحماية ──────────────────────────────────────────────────────────
+function buildProtectionCommittee(r: AnalysisResult): CommitteeResult {
+  const warnCount = r.warnings.length;
+  const reasons   = r.warnings.slice(0, 5);
+  let score = 80;
+  let verdict: CommitteeResult["verdict"] = "PASS";
+
+  if      (warnCount === 0) { score = 88; verdict = "PASS"; }
+  else if (warnCount === 1) { score = 65; verdict = "WARN"; }
+  else if (warnCount === 2) { score = 48; verdict = "WARN"; }
+  else if (warnCount === 3) { score = 32; verdict = "WARN"; }
+  else                     { score = 18; verdict = "WARN"; }
+
+  if (warnCount === 0) reasons.push("لا توجد تحذيرات");
+  else reasons.push(`${warnCount} تحذير — مراجعة مطلوبة`);
+
+  return {
+    committeeId: "protection", committeeName: "لجنة الحماية",
+    verdict, score,
+    summary: `${warnCount} تحذير — ${verdict === "PASS" ? "لا مخاوف" : "مراجعة مطلوبة"}`,
+    reasons: reasons.slice(0, 8),
+  };
+}
+
+// ── حساب الاحتمالية الموزونة من اللجان ──────────────────────────────────────
+function computeWeightedProbability(committees: CommitteeResult[]): number {
+  let weightedSum = 0;
+  let totalWeight = 0;
+  for (const c of committees) {
+    const w = COMMITTEE_WEIGHTS[c.committeeId] ?? 0.1;
+    weightedSum += c.score * w;
+    totalWeight += w;
+  }
+  if (totalWeight === 0) return 0;
+  return Math.max(5, Math.min(90, Math.round(weightedSum / totalWeight)));
+}
+
+// ── حساب الدرجة من اللجان ────────────────────────────────────────────────────
+function deriveGradeFromCommittees(
+  r: AnalysisResult,
+  committees: CommitteeResult[],
+  probability: number,
+): string {
+  const hasBlock    = committees.some(c => c.verdict === "BLOCK");
+  const warnCount   = committees.filter(c => c.verdict === "WARN").length;
+  const fresh       = !r.freshness.stale &&
+    (r.freshness.candleAgeMs === undefined || r.freshness.candleAgeMs >= -BROKER_SKEW_SMALL_MS);
+
+  if (hasBlock) return "D";
+  if (probability >= 72 && warnCount <= 1 && fresh) return "A";
+  if (probability >= 58 && warnCount <= 2 && fresh) return "B";
+  if (probability >= 38) return "C";
   if (probability >= 20) return "C";
   return "D";
 }
 
+// ── buildSaveArgs — Multi-Committee ──────────────────────────────────────────
 function buildSaveArgs(r: AnalysisResult) {
-  const timeframe   = r.selectedTimeframe ?? "UNKNOWN";
-  const probability = deriveProbability(r);
-  const grade       = deriveGrade(r, probability);
-  const reasonText  = r.reasons.length > 0
-    ? r.reasons.slice(0, 5).join(" | ")
-    : "لا توجد أسباب محددة من التحليل";
+  const timeframe = r.selectedTimeframe ?? "UNKNOWN";
 
-  const verdictMap: Record<AnalysisResult["status"], string> = {
-    opportunity:       "PASS",
-    wait:              "WARN",
-    rejected:          "BLOCK",
-    stale_data:        "WARN",
-    insufficient_data: "WARN",
-  };
-
-  // Single committee derived from the analysis engine output
-  const committees = [
-    {
-      committeeId:   "lab-analysis-auto",
-      committeeName: "تحليل المختبر الآلي",
-      verdict:       verdictMap[r.status],
-      score:         probability,
-      summary:       r.reasons.slice(0, 3).join(" | ") || "لا ملخص متاح",
-      reasons:       r.reasons.slice(0, 20),
-    },
+  // بناء اللجان الست من بيانات التحليل
+  const committees: CommitteeResult[] = [
+    buildTrendCommittee(r),
+    buildMomentumCommittee(r),
+    buildEntryQualityCommittee(r),
+    buildRiskCommittee(r),
+    buildFreshnessCommittee(r),
+    buildProtectionCommittee(r),
   ];
 
-  // Risk snapshot — only when we have the essential numbers
+  const probability = computeWeightedProbability(committees);
+  const grade       = deriveGradeFromCommittees(r, committees, probability);
+
+  // فحص اللجان الحرجة التي تصدر BLOCK
+  const criticalBlocks = committees.filter(
+    c => c.verdict === "BLOCK" && CRITICAL_COMMITTEES.has(c.committeeId),
+  );
+  const anyBlock = committees.some(c => c.verdict === "BLOCK");
+
+  // تحديد القرار النهائي
+  let finalDecision: string;
+  if (r.status === "opportunity" && r.direction === "bullish") finalDecision = "BUY";
+  else if (r.status === "opportunity" && r.direction === "bearish") finalDecision = "SELL";
+  else if (r.status === "rejected") finalDecision = "BLOCK";
+  else finalDecision = "HOLD";
+
+  // تجاوز القرار إذا وجدت لجنة حرجة بـ BLOCK
+  if (criticalBlocks.length > 0) {
+    finalDecision = "BLOCK";
+  } else if (anyBlock && (finalDecision === "BUY" || finalDecision === "SELL")) {
+    finalDecision = "HOLD"; // تخفيض إلى HOLD عند BLOCK غير حرجة
+  }
+
+  // حالة سجل القرارات
+  let journalStatus: string;
+  if      (finalDecision === "BLOCK") journalStatus = "BLOCKED";
+  else if (finalDecision === "HOLD")  journalStatus = "HOLD";
+  else if (r.status === "opportunity") journalStatus = "READY_FOR_REVIEW";
+  else if (r.status === "wait")        journalStatus = "HOLD";
+  else journalStatus = "WATCHING";
+
+  // أسباب القرار من ملخصات اللجان
+  const committeeInsights = committees
+    .filter(c => c.verdict !== "PASS")
+    .map(c => `[${c.committeeName}] ${c.summary}`)
+    .slice(0, 3);
+  const reasonText = committeeInsights.length > 0
+    ? committeeInsights.join(" | ")
+    : r.reasons.slice(0, 3).join(" | ") || "لا توجد ملاحظات من اللجان";
+
+  // لقطة المخاطرة
   const risk =
     r.estimatedLot !== undefined &&
     r.stopLoss      !== undefined &&
@@ -257,27 +509,26 @@ function buildSaveArgs(r: AnalysisResult) {
           stopLoss:        r.stopLoss,
           takeProfit1:     r.takeProfit,
           rewardRiskRatio: r.rrRatio ?? 0,
-          marginSafe:
-            !(r.lotValidation && r.lotValidation.warnings.length > 0),
+          marginSafe:      !(r.lotValidation && r.lotValidation.warnings.length > 0),
         }
       : undefined;
 
   return {
-    platform:          "MT5",          // ثابت — لا OKX real API
+    platform:          "MT5",           // ثابت — لا OKX real API
     symbol:            r.symbol,
     timeframe,
-    status:            mapToJournalStatus(r.status),
-    finalDecision:     mapToFinalDecision(r),
+    status:            journalStatus,
+    finalDecision,
     grade,
     probability,
     entryPrice:        r.entry    ?? 0, // canSave يضمن أن entry موجود
     invalidationPrice: r.stopLoss ?? 0, // canSave يضمن أن stopLoss موجود
     reason:            reasonText,
     source:            "mt5-lab-analysis",
-    committees,
+    committees,        // 6 لجان حقيقية — ≤ 20 (حد saveAnalysisDecision)
     risk,
-    // userId: مُستخرَج من ctx.auth server-side — لا يُمرَّر من الواجهة
-    // readOnly: true مُجبَر server-side في saveAnalysisDecision
+    // userId: من ctx.auth server-side — لا يُمرَّر من الواجهة
+    // readOnly: true مُجبَر server-side
   };
 }
 
