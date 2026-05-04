@@ -12,7 +12,7 @@
  * ─────────────────────────────────────────────────────────────────────────────
  */
 import { ConvexError, v } from "convex/values";
-import { mutation, query } from "./_generated/server";
+import { MutationCtx, QueryCtx, mutation, query } from "./_generated/server";
 
 const AUTH_MSG = "يجب تسجيل الدخول لعرض سجل القرارات";
 const DEFAULT_LIMIT = 50;
@@ -21,15 +21,11 @@ const MAX_LIMIT = 100;
 // ─── Helper ───────────────────────────────────────────────────────────────────
 
 async function requireUserId(
-  ctx: { auth: { getUserIdentity: () => Promise<unknown> } },
+  ctx: QueryCtx | MutationCtx,
 ): Promise<string> {
   const identity = await ctx.auth.getUserIdentity();
-  if (!identity || typeof identity !== "object" || !("subject" in identity)) {
-    throw new ConvexError(AUTH_MSG);
-  }
-  const subject = (identity as { subject: string }).subject;
-  if (!subject) throw new ConvexError(AUTH_MSG);
-  return subject;
+  if (!identity || !identity.subject) throw new ConvexError(AUTH_MSG);
+  return identity.subject;
 }
 
 function clampLimit(limit: number | undefined): number {
@@ -181,11 +177,22 @@ export const listAuditEventsByDecision = query({
 export const createDecisionAuditEvent = mutation({
   args: {
     decisionId:  v.string(),
-    eventType:   v.string(),
+    eventType:   v.union(
+      v.literal("CREATED"),
+      v.literal("STATUS_CHANGED"),
+      v.literal("REVIEWED"),
+      v.literal("EXPIRED"),
+      v.literal("BLOCKED"),
+      v.literal("HELD"),
+      v.literal("NOTE_ADDED"),
+      v.literal("SYSTEM_REVIEW"),
+      v.literal("RISK_RECHECK"),
+      v.literal("DATA_REFRESHED"),
+    ),
     fromStatus:  v.optional(v.string()),
     toStatus:    v.optional(v.string()),
-    message:     v.optional(v.string()),
-    triggeredBy: v.optional(v.string()),
+    message:     v.string(),
+    triggeredBy: v.string(),
   },
   handler: async (ctx, args) => {
     // ── 1. استخراج userId من Clerk — ليس من args ──────────────────────────
@@ -207,8 +214,8 @@ export const createDecisionAuditEvent = mutation({
       eventType:   args.eventType,
       fromStatus:  args.fromStatus,
       toStatus:    args.toStatus,
-      message:     args.message ?? "",
-      triggeredBy: args.triggeredBy ?? "agent",
+      message:     args.message,
+      triggeredBy: args.triggeredBy,
       createdAt:   Date.now(),
     });
   },
