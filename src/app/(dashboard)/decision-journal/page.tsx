@@ -3,26 +3,27 @@
  * decision-journal/page.tsx
  * ─────────────────────────────────────────────────────────────────────────────
  * ⚠️ هذه الصفحة للقراءة فقط ولا تنفذ أي تداول.
- * البيانات تأتي من Convex (decisionRuns) إن وجدت.
+ * البيانات تأتي من Convex (decisionRuns + decisionAuditEvents) إن وجدت.
  * لا يوجد أي أمر تنفيذ هنا — لا useMutation — لا API routes.
  * userId يُستخرج من Clerk server-side داخل query — لا يُمرَّر من الواجهة.
  * ─────────────────────────────────────────────────────────────────────────────
  */
+import { useState } from "react";
 import { useConvexAuth, useQuery } from "convex/react";
 import { api } from "../../../../convex/_generated/api";
-import { AlertCircle, BookOpen, Download } from "lucide-react";
+import { AlertCircle, BookOpen, ClipboardList, Download, X } from "lucide-react";
 
-// ─── مساعدات العرض ────────────────────────────────────────────────────────────
+// ─── مساعدات العرض — القرارات ────────────────────────────────────────────────
 
 function statusLabel(s: string): string {
   const map: Record<string, string> = {
-    WATCHING: "مراقبة",
-    SETUP_FORMING: "تهيؤ",
+    WATCHING:          "مراقبة",
+    SETUP_FORMING:     "تهيؤ",
     WAIT_CONFIRMATION: "انتظار تأكيد",
-    READY_FOR_REVIEW: "جاهز للمراجعة",
-    BLOCKED: "محظور",
-    EXPIRED: "منتهي",
-    HOLD: "تعليق",
+    READY_FOR_REVIEW:  "جاهز للمراجعة",
+    BLOCKED:           "محظور",
+    EXPIRED:           "منتهي",
+    HOLD:              "تعليق",
   };
   return map[s] ?? s;
 }
@@ -64,17 +65,185 @@ function formatTs(ts: number): string {
   }
 }
 
+// ─── مساعدات العرض — أحداث التدقيق ──────────────────────────────────────────
+
+function eventTypeLabel(et: string): string {
+  const map: Record<string, string> = {
+    CREATED:        "تم الإنشاء",
+    STATUS_CHANGED: "تغيير الحالة",
+    REVIEWED:       "مراجعة",
+    EXPIRED:        "انتهاء الصلاحية",
+    BLOCKED:        "حظر",
+    HELD:           "تعليق",
+    NOTE_ADDED:     "ملاحظة",
+    SYSTEM_REVIEW:  "مراجعة نظام",
+    RISK_RECHECK:   "إعادة فحص المخاطرة",
+    DATA_REFRESHED: "تحديث البيانات",
+  };
+  return map[et] ?? et;
+}
+
+function eventTypeColor(et: string): string {
+  if (et === "CREATED")        return "text-emerald-300 bg-emerald-500/10 border-emerald-500/30";
+  if (et === "BLOCKED")        return "text-red-300    bg-red-500/10    border-red-500/30";
+  if (et === "EXPIRED")        return "text-zinc-400   bg-zinc-500/10   border-zinc-500/30";
+  if (et === "STATUS_CHANGED") return "text-sky-300    bg-sky-500/10    border-sky-500/30";
+  if (et === "NOTE_ADDED")     return "text-violet-300 bg-violet-500/10 border-violet-500/30";
+  if (et === "REVIEWED")       return "text-blue-300   bg-blue-500/10   border-blue-500/30";
+  return "text-amber-300 bg-amber-500/10 border-amber-500/30";
+}
+
+function triggeredByLabel(tb: string): string {
+  if (tb === "system")       return "النظام";
+  if (tb === "agent")        return "وكيل";
+  if (tb === "lab-analysis") return "محرك التحليل";
+  return tb;
+}
+
+// ─── AuditEventsPanel ─────────────────────────────────────────────────────────
+// قراءة فقط — لا useMutation — لا createDecisionAuditEvent — لا تنفيذ تداول
+
+interface AuditEventsPanelProps {
+  decisionId:      string;
+  symbol:          string;
+  isAuthenticated: boolean;
+  onClose:         () => void;
+}
+
+function AuditEventsPanel({
+  decisionId,
+  symbol,
+  isAuthenticated,
+  onClose,
+}: AuditEventsPanelProps) {
+  // لا userId في args — يُستخرج من ctx.auth server-side داخل الـ query
+  const events = useQuery(
+    api.decisionJournal.listAuditEventsByDecision,
+    isAuthenticated ? { decisionId, limit: 50 } : "skip",
+  );
+  const isLoading = events === undefined;
+
+  return (
+    <div className="rounded-xl border border-amber-500/20 bg-card shadow">
+      {/* ── Header ─────────────────────────────────────────────────────────── */}
+      <div className="flex items-center justify-between px-6 py-4 border-b border-border">
+        <div className="flex items-center gap-2 flex-wrap">
+          <ClipboardList className="h-4 w-4 text-amber-500 shrink-0" />
+          <h2 className="text-sm font-semibold text-foreground">
+            سجل التدقيق —{" "}
+            <span className="font-mono text-amber-400">{symbol}</span>
+          </h2>
+          <span className="text-xs text-muted-foreground border border-border rounded px-1.5 py-0.5">
+            قراءة فقط
+          </span>
+        </div>
+        <button
+          onClick={onClose}
+          aria-label="إغلاق سجل التدقيق"
+          className="rounded-md p-1.5 text-muted-foreground hover:text-foreground hover:bg-muted/30 transition-colors"
+        >
+          <X className="h-4 w-4" />
+        </button>
+      </div>
+
+      <div className="p-6">
+        {/* Loading */}
+        {isLoading && (
+          <div className="flex items-center justify-center py-8 text-muted-foreground text-sm">
+            <span className="animate-pulse">جارٍ تحميل سجل التدقيق...</span>
+          </div>
+        )}
+
+        {/* Empty */}
+        {!isLoading && events.length === 0 && (
+          <div className="flex flex-col items-center justify-center py-8 text-center text-muted-foreground">
+            <ClipboardList className="h-8 w-8 text-muted-foreground/25 mb-3" />
+            <p className="text-sm">لا توجد أحداث تدقيق لهذا القرار بعد.</p>
+          </div>
+        )}
+
+        {/* Events list — Append-only read */}
+        {!isLoading && events.length > 0 && (
+          <div className="space-y-3">
+            {events.map((ev) => (
+              <div
+                key={ev._id}
+                className="rounded-lg border border-border bg-muted/5 p-4 space-y-2"
+              >
+                {/* Badge + triggeredBy + timestamp */}
+                <div className="flex items-center justify-between gap-2 flex-wrap">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span
+                      className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${eventTypeColor(ev.eventType)}`}
+                    >
+                      {eventTypeLabel(ev.eventType)}
+                    </span>
+                    <span className="text-xs text-muted-foreground">
+                      {triggeredByLabel(ev.triggeredBy)}
+                    </span>
+                  </div>
+                  <span className="text-xs text-muted-foreground whitespace-nowrap">
+                    {formatTs(ev.createdAt)}
+                  </span>
+                </div>
+
+                {/* Status transition */}
+                {(ev.fromStatus ?? ev.toStatus) && (
+                  <div className="flex items-center gap-1.5 text-xs text-muted-foreground flex-wrap">
+                    {ev.fromStatus && (
+                      <>
+                        <span className="opacity-60">من:</span>
+                        <span className="rounded border border-border px-1.5 py-0.5 bg-muted/20 font-mono">
+                          {ev.fromStatus}
+                        </span>
+                      </>
+                    )}
+                    {ev.fromStatus && ev.toStatus && (
+                      <span className="opacity-50">←</span>
+                    )}
+                    {ev.toStatus && (
+                      <>
+                        <span className="opacity-60">إلى:</span>
+                        <span className="rounded border border-border px-1.5 py-0.5 bg-muted/20 font-mono">
+                          {ev.toStatus}
+                        </span>
+                      </>
+                    )}
+                  </div>
+                )}
+
+                {/* Message */}
+                {ev.message && (
+                  <p className="text-sm text-muted-foreground/90 leading-relaxed">
+                    {ev.message}
+                  </p>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ─── الصفحة ───────────────────────────────────────────────────────────────────
 
 export default function DecisionJournalPage() {
-  // ── Clerk auth check — نفس النمط المستخدم في lab/mt5/page.tsx ──
+  // ── Clerk auth check ──────────────────────────────────────────────────────
   const { isAuthenticated, isLoading: isAuthLoading } = useConvexAuth();
 
-  // ── Convex read-only query — لا userId في args — يُستخرج من ctx.auth server-side ──
+  // ── Convex read-only query — لا userId في args ────────────────────────────
   const rawEntries = useQuery(
     api.decisionJournal.listMyDecisions,
     isAuthenticated ? { limit: 50 } : "skip",
   );
+
+  // ── القرار المختار لعرض سجل التدقيق ────────────────────────────────────────
+  const [selected, setSelected] = useState<{
+    decisionId: string;
+    symbol:     string;
+  } | null>(null);
 
   const isLoading = isAuthLoading || rawEntries === undefined;
   const entries   = rawEntries ?? [];
@@ -157,68 +326,108 @@ export default function DecisionJournalPage() {
             </div>
           )}
 
-          {/* Data table */}
+          {/* Data table — Click a row to view its audit events */}
           {!isLoading && entries.length > 0 && (
-            <div className="overflow-x-auto rounded-xl border border-border">
-              <table className="w-full text-sm text-right">
-                <thead className="bg-muted/30 text-muted-foreground">
-                  <tr>
-                    <th className="px-4 py-3 font-medium whitespace-nowrap">الوقت</th>
-                    <th className="px-4 py-3 font-medium whitespace-nowrap">المنصة</th>
-                    <th className="px-4 py-3 font-medium whitespace-nowrap">الرمز</th>
-                    <th className="px-4 py-3 font-medium whitespace-nowrap">الفريم</th>
-                    <th className="px-4 py-3 font-medium whitespace-nowrap">الحالة</th>
-                    <th className="px-4 py-3 font-medium whitespace-nowrap">القرار</th>
-                    <th className="px-4 py-3 font-medium whitespace-nowrap">درجة الفرصة</th>
-                    <th className="px-4 py-3 font-medium whitespace-nowrap">الاحتمالية</th>
-                    <th className="px-4 py-3 font-medium whitespace-nowrap">سبب القرار</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-border border-t border-border">
-                  {entries.map((entry) => (
-                    <tr key={entry._id} className="hover:bg-muted/10 transition-colors">
-                      <td className="px-4 py-3 whitespace-nowrap text-muted-foreground">
-                        {formatTs(entry.createdAt)}
-                      </td>
-                      <td className="px-4 py-3 whitespace-nowrap">
-                        <span className="inline-flex items-center rounded-full border border-amber-500/20 bg-amber-500/10 px-2 py-0.5 text-xs font-medium text-amber-300">
-                          {entry.platform}
-                        </span>
-                      </td>
-                      <td className="px-4 py-3 whitespace-nowrap font-mono font-semibold">
-                        {entry.symbol}
-                      </td>
-                      <td className="px-4 py-3 whitespace-nowrap text-muted-foreground">
-                        {entry.timeframe}
-                      </td>
-                      <td className="px-4 py-3 whitespace-nowrap">
-                        <span
-                          className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${statusColor(entry.status)}`}
-                        >
-                          {statusLabel(entry.status)}
-                        </span>
-                      </td>
-                      <td className="px-4 py-3 whitespace-nowrap font-medium">
-                        {decisionLabel(entry.finalDecision)}
-                      </td>
-                      <td className={`px-4 py-3 whitespace-nowrap font-bold ${gradeColor(entry.grade)}`}>
-                        {entry.grade}
-                      </td>
-                      <td className="px-4 py-3 whitespace-nowrap text-muted-foreground">
-                        {entry.probability}%
-                      </td>
-                      <td className="px-4 py-3 text-muted-foreground max-w-xs truncate">
-                        {entry.reason}
-                      </td>
+            <>
+              {selected !== null && (
+                <p className="text-xs text-muted-foreground mb-3">
+                  اضغط على صف لعرض سجل التدقيق
+                </p>
+              )}
+              {selected === null && (
+                <p className="text-xs text-muted-foreground mb-3">
+                  اضغط على صف لعرض سجل التدقيق
+                </p>
+              )}
+              <div className="overflow-x-auto rounded-xl border border-border">
+                <table className="w-full text-sm text-right">
+                  <thead className="bg-muted/30 text-muted-foreground">
+                    <tr>
+                      <th className="px-4 py-3 font-medium whitespace-nowrap">الوقت</th>
+                      <th className="px-4 py-3 font-medium whitespace-nowrap">المنصة</th>
+                      <th className="px-4 py-3 font-medium whitespace-nowrap">الرمز</th>
+                      <th className="px-4 py-3 font-medium whitespace-nowrap">الفريم</th>
+                      <th className="px-4 py-3 font-medium whitespace-nowrap">الحالة</th>
+                      <th className="px-4 py-3 font-medium whitespace-nowrap">القرار</th>
+                      <th className="px-4 py-3 font-medium whitespace-nowrap">درجة الفرصة</th>
+                      <th className="px-4 py-3 font-medium whitespace-nowrap">الاحتمالية</th>
+                      <th className="px-4 py-3 font-medium whitespace-nowrap">سبب القرار</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+                  </thead>
+                  <tbody className="divide-y divide-border border-t border-border">
+                    {entries.map((entry) => {
+                      const isSelected = selected?.decisionId === entry.decisionId;
+                      return (
+                        <tr
+                          key={entry._id}
+                          onClick={() =>
+                            setSelected(
+                              isSelected
+                                ? null
+                                : { decisionId: entry.decisionId, symbol: entry.symbol },
+                            )
+                          }
+                          className={`cursor-pointer transition-colors ${
+                            isSelected
+                              ? "bg-amber-500/10 border-r-2 border-r-amber-500"
+                              : "hover:bg-muted/10"
+                          }`}
+                        >
+                          <td className="px-4 py-3 whitespace-nowrap text-muted-foreground">
+                            {formatTs(entry.createdAt)}
+                          </td>
+                          <td className="px-4 py-3 whitespace-nowrap">
+                            <span className="inline-flex items-center rounded-full border border-amber-500/20 bg-amber-500/10 px-2 py-0.5 text-xs font-medium text-amber-300">
+                              {entry.platform}
+                            </span>
+                          </td>
+                          <td className="px-4 py-3 whitespace-nowrap font-mono font-semibold">
+                            {entry.symbol}
+                          </td>
+                          <td className="px-4 py-3 whitespace-nowrap text-muted-foreground">
+                            {entry.timeframe}
+                          </td>
+                          <td className="px-4 py-3 whitespace-nowrap">
+                            <span
+                              className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${statusColor(entry.status)}`}
+                            >
+                              {statusLabel(entry.status)}
+                            </span>
+                          </td>
+                          <td className="px-4 py-3 whitespace-nowrap font-medium">
+                            {decisionLabel(entry.finalDecision)}
+                          </td>
+                          <td className={`px-4 py-3 whitespace-nowrap font-bold ${gradeColor(entry.grade)}`}>
+                            {entry.grade}
+                          </td>
+                          <td className="px-4 py-3 whitespace-nowrap text-muted-foreground">
+                            {entry.probability}%
+                          </td>
+                          <td className="px-4 py-3 text-muted-foreground max-w-xs truncate">
+                            {entry.reason}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </>
           )}
 
         </div>
       </div>
+
+      {/* ── سجل التدقيق — يظهر عند اختيار قرار ─────────────────────────── */}
+      {selected !== null && (
+        <AuditEventsPanel
+          decisionId={selected.decisionId}
+          symbol={selected.symbol}
+          isAuthenticated={isAuthenticated}
+          onClose={() => setSelected(null)}
+        />
+      )}
+
     </div>
   );
 }
