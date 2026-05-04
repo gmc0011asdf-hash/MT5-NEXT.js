@@ -1,18 +1,18 @@
 /**
  * convex/decisionJournal.ts
  * ─────────────────────────────────────────────────────────────────────────────
- * Decision Journal — Read-only Queries (A10)
+ * Decision Journal — Queries (A10) + Append-only Mutation (A13)
  *
  * ⚠️ قواعد هذا الملف:
- *  • queries فقط — لا mutations، لا insert، لا update، لا delete.
  *  • userId يُستخرج دائماً من ctx.auth — لا يُمرَّر من الواجهة أبداً.
  *  • كل query مقيّدة بـ userId للمستخدم الحالي فقط (Multi-Tenant).
- *  • لا تنفيذ تداول — ملف قراءة بحتة.
+ *  • mutation الوحيدة: createDecisionAuditEvent — Append-only فقط.
+ *  • ممنوع delete — ممنوع update — ممنوع تنفيذ تداول.
  *  • لا أسرار، لا مفاتيح API.
  * ─────────────────────────────────────────────────────────────────────────────
  */
 import { ConvexError, v } from "convex/values";
-import { query } from "./_generated/server";
+import { mutation, query } from "./_generated/server";
 
 const AUTH_MSG = "يجب تسجيل الدخول لعرض سجل القرارات";
 const DEFAULT_LIMIT = 50;
@@ -172,5 +172,44 @@ export const listAuditEventsByDecision = query({
       .order("desc")
       .collect();
     return rows.filter((r) => r.userId === userId).slice(0, limit);
+  },
+});
+
+// ─── createDecisionAuditEvent (A13) ──────────────────────────────────────────
+// Append-only — لا delete — لا update — لا تنفيذ تداول
+
+export const createDecisionAuditEvent = mutation({
+  args: {
+    decisionId:  v.string(),
+    eventType:   v.string(),
+    fromStatus:  v.optional(v.string()),
+    toStatus:    v.optional(v.string()),
+    message:     v.optional(v.string()),
+    triggeredBy: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    // ── 1. استخراج userId من Clerk — ليس من args ──────────────────────────
+    const userId = await requireUserId(ctx);
+
+    // ── 2. التحقق من وجود القرار وملكيته ──────────────────────────────────
+    const decision = await ctx.db
+      .query("decisionRuns")
+      .withIndex("by_decisionId", (q) => q.eq("decisionId", args.decisionId))
+      .first();
+    if (!decision || decision.userId !== userId) {
+      throw new ConvexError("القرار غير موجود أو لا تملك صلاحية الوصول إليه");
+    }
+
+    // ── 3. Append-only insert — لا delete — لا update — لا order_send ──────
+    await ctx.db.insert("decisionAuditEvents", {
+      decisionId:  args.decisionId,
+      userId,
+      eventType:   args.eventType,
+      fromStatus:  args.fromStatus,
+      toStatus:    args.toStatus,
+      message:     args.message ?? "",
+      triggeredBy: args.triggeredBy ?? "agent",
+      createdAt:   Date.now(),
+    });
   },
 });
