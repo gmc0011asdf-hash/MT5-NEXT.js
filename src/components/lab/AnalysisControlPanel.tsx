@@ -276,6 +276,7 @@ export function AnalysisControlPanel() {
 
   // ── async state — تحليل ─────────────────────────────────────────────────
   const [busy, setBusy] = useState(false);
+  const [syncStatus, setSyncStatus] = useState<string | null>(null);
   const [result, setResult] = useState<AnalysisResult | null>(null);
   const [fetchError, setFetchError] = useState<string | null>(null);
 
@@ -317,10 +318,30 @@ export function AnalysisControlPanel() {
   async function handleAnalyze() {
     setFetchError(null);
     setResult(null);
-    // ── reset save state on new analysis ──
     setSavedDecisionId(null);
     setSaveError(null);
     setBusy(true);
+
+    // ── Step 1: مزامنة شموع MT5 → Convex قبل التحليل ──────────────────────
+    // analyze-preview يقرأ من Convex — يجب أن تكون الشموع حديثة أولاً
+    const tfsToSync =
+      timeframeMode === "manual" ? [manualTF] : Array.from(candidateTFs);
+    setSyncStatus("مزامنة شموع MT5…");
+    try {
+      const syncParams = new URLSearchParams({
+        symbols: symbol.trim().toUpperCase(),
+        timeframes: tfsToSync.join(","),
+        count:   String(candleCount),
+      });
+      await fetch(`/api/mt5-readonly/candles?${syncParams.toString()}`, {
+        cache: "no-store",
+      });
+    } catch {
+      // best-effort — نكمل حتى لو فشلت المزامنة
+    }
+
+    // ── Step 2: تشغيل التحليل على البيانات المحدّثة ─────────────────────────
+    setSyncStatus("جاري التحليل…");
     try {
       const body = {
         symbol: symbol.trim().toUpperCase(),
@@ -342,6 +363,7 @@ export function AnalysisControlPanel() {
     } catch (e) {
       setFetchError(e instanceof Error ? e.message : "خطأ غير معروف في الطلب");
     } finally {
+      setSyncStatus(null);
       setBusy(false);
     }
   }
@@ -479,11 +501,13 @@ export function AnalysisControlPanel() {
           </div>
 
           {/* زر التحليل */}
-          <div className="mt-6 flex items-center gap-4">
-            <Button type="button" onClick={() => void handleAnalyze()} disabled={!canAnalyze} className="min-w-[140px]">
-              {busy ? "جاري التحليل…" : "تحليل الفرصة"}
+          <div className="mt-6 flex flex-wrap items-center gap-4">
+            <Button type="button" onClick={() => void handleAnalyze()} disabled={!canAnalyze} className="min-w-[160px]">
+              {syncStatus ?? "تحليل الفرصة"}
             </Button>
-            <span className="text-muted-foreground text-xs">قراءة فقط — لا يتم تنفيذ أي صفقة</span>
+            <span className="text-muted-foreground text-xs">
+              قراءة فقط — لا يتم تنفيذ أي صفقة
+            </span>
           </div>
 
           {fetchError && <p className="mt-3 text-sm text-red-400">{fetchError}</p>}
@@ -597,14 +621,21 @@ export function AnalysisControlPanel() {
                 {/* ── A16: حفظ القرار في سجل القرارات ──────────────────────────── */}
                 {/* لا تنفيذ تداول — للتوثيق التحليلي فقط */}
                 {/* userId يُستخرَج من ctx.auth server-side — لا يُمرَّر من الواجهة */}
-                <div className="rounded-lg border border-amber-500/15 bg-amber-500/[0.03] p-4">
-                  <p className="mb-3 text-xs font-semibold text-amber-200/80">
-                    حفظ في سجل القرارات
+                <div className="rounded-lg border border-amber-500/30 bg-amber-500/[0.06] p-4 mt-1">
+                  <p className="mb-2 text-sm font-bold text-amber-200/90">
+                    حفظ القرار في سجل القرارات
                   </p>
+
+                  {/* تنبيه البيانات القديمة — الحفظ لا يزال متاحاً */}
+                  {result.freshness.stale && missingFields.length === 0 && (
+                    <p className="mb-2 text-xs text-amber-300/80 rounded bg-amber-500/10 px-2 py-1">
+                      ⚠ بيانات قديمة — يمكن الحفظ مع ملاحظة أن الشموع قد لا تكون حديثة
+                    </p>
+                  )}
 
                   {/* حقول ناقصة — الزر معطّل */}
                   {missingFields.length > 0 && !savedDecisionId && (
-                    <p className="mb-2 text-xs text-amber-300/70">
+                    <p className="mb-2 text-xs text-amber-300/70 rounded bg-amber-500/10 px-2 py-1">
                       الحفظ غير متاح — حقول ناقصة: {missingFields.join("، ")}
                     </p>
                   )}
@@ -612,12 +643,11 @@ export function AnalysisControlPanel() {
                   <div className="flex flex-wrap items-center gap-3">
                     <Button
                       type="button"
-                      variant="outline"
                       disabled={!canSave}
                       onClick={() => void handleSaveDecision()}
-                      className="border-amber-500/30 text-amber-200 hover:bg-amber-500/10 disabled:opacity-40"
+                      className="bg-amber-600/80 text-white hover:bg-amber-600 disabled:opacity-40 disabled:cursor-not-allowed"
                     >
-                      {saving ? "جاري الحفظ…" : "حفظ القرار في سجل القرارات"}
+                      {saving ? "جاري الحفظ…" : "حفظ القرار"}
                     </Button>
 
                     {saveError && (
@@ -627,14 +657,14 @@ export function AnalysisControlPanel() {
 
                   {/* نجاح الحفظ */}
                   {savedDecisionId && (
-                    <div className="mt-3 flex flex-wrap items-center justify-between gap-3 rounded-md border border-emerald-500/20 bg-emerald-500/5 px-3 py-2">
+                    <div className="mt-3 flex flex-wrap items-center justify-between gap-3 rounded-md border border-emerald-500/30 bg-emerald-500/10 px-3 py-2">
                       <div>
                         <p className="text-xs font-semibold text-emerald-300">✓ تم حفظ القرار بنجاح</p>
                         <p className="font-mono text-[10px] text-muted-foreground">{savedDecisionId}</p>
                       </div>
                       <a
                         href="/decision-journal"
-                        className="shrink-0 text-xs text-amber-300 underline underline-offset-2 hover:text-amber-200"
+                        className="shrink-0 text-sm font-medium text-amber-300 underline underline-offset-2 hover:text-amber-200"
                       >
                         عرض سجل القرارات ←
                       </a>

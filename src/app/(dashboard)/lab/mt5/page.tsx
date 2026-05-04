@@ -19,8 +19,8 @@ import { useState } from "react";
 import { api } from "../../../../../convex/_generated/api";
 import { AnalysisControlPanel } from "@/components/lab/AnalysisControlPanel";
 
-const NO_CONVEX_DATA_AR =
-  "لا توجد بيانات Convex بعد — استخدم صفحة قاعدة Convex لإنشاء بيانات تجريبية.";
+const NO_REAL_SIGNALS_AR =
+  "لا توجد إشارات MT5 حقيقية بعد — زامن الشموع ثم احسب المؤشرات.";
 
 export default function LabPage() {
   const { isLoading: isConvexAuthLoading, isAuthenticated } = useConvexAuth();
@@ -32,9 +32,7 @@ export default function LabPage() {
 
   const convexSignals = useQuery(api.coreQueries.getMyLatestRealSignals, canUseConvex ? {} : "skip");
   const labSymbolsForFilter = useQuery(api.coreQueries.getMyEnabledLabSymbols, canUseConvex ? {} : "skip");
-  const protectionEvents = useQuery(api.coreQueries.getMyProtectionEvents, canUseConvex ? {} : "skip");
   const governance = useQuery(api.coreQueries.getMyGovernanceState, canUseConvex ? {} : "skip");
-  const committeeReports = useQuery(api.coreQueries.getMyCommitteeReports, canUseConvex ? {} : "skip");
   const technicalIndicators = useQuery(
     api.technicalIndicators.getMyLatestTechnicalIndicators,
     canUseConvex ? {} : "skip",
@@ -173,7 +171,7 @@ export default function LabPage() {
         </CardHeader>
         <CardContent className="overflow-x-auto px-2 pb-4 md:px-4">
           {!canUseConvex && !isConvexAuthLoading ? (
-            <p className="text-muted-foreground px-2 py-4 text-sm">{NO_CONVEX_DATA_AR}</p>
+            <p className="text-muted-foreground px-2 py-4 text-sm">{NO_REAL_SIGNALS_AR}</p>
           ) : technicalIndicators === undefined ? (
             <p className="text-muted-foreground px-2 py-4 text-sm">جاري تحميل المؤشرات...</p>
           ) : technicalIndicators.length === 0 ? (
@@ -231,7 +229,7 @@ export default function LabPage() {
         </CardHeader>
         <CardContent className="overflow-x-auto px-2 pb-4 md:px-4">
           {!canUseConvex && !isConvexAuthLoading ? (
-            <p className="text-muted-foreground px-2 py-4 text-sm">{NO_CONVEX_DATA_AR}</p>
+            <p className="text-muted-foreground px-2 py-4 text-sm">{NO_REAL_SIGNALS_AR}</p>
           ) : loadingSignalsSection ? (
             <p className="text-muted-foreground px-2 py-4 text-sm">جاري تحميل بيانات Convex...</p>
           ) : signalsBlockedByLabFilters ? (
@@ -239,7 +237,7 @@ export default function LabPage() {
               لا توجد أزواج مفعّلة للمختبر — فعّل الأزواج من الإعدادات.
             </p>
           ) : convexSignals !== undefined && convexSignals.length === 0 ? (
-            <p className="text-muted-foreground px-2 py-4 text-sm">{NO_CONVEX_DATA_AR}</p>
+            <p className="text-muted-foreground px-2 py-4 text-sm">{NO_REAL_SIGNALS_AR}</p>
           ) : (
             <Table>
               <TableHeader>
@@ -290,83 +288,14 @@ export default function LabPage() {
         </CardContent>
       </Card>
 
-      <Card className={institutionalCardClass("p-0")}>
-        <CardHeader className="border-b border-amber-500/10 px-4 py-4 md:px-6">
-          <CardTitle className="card-title-inst">أحداث الحماية (Convex)</CardTitle>
-        </CardHeader>
-        <CardContent className="overflow-x-auto px-2 pb-4 md:px-4">
-          {!canUseConvex && !isConvexAuthLoading ? (
-            <p className="text-muted-foreground px-2 py-4 text-sm">{NO_CONVEX_DATA_AR}</p>
-          ) : isConvexAuthLoading || protectionEvents === undefined ? (
-            <p className="text-muted-foreground px-2 py-4 text-sm">جاري تحميل بيانات Convex...</p>
-          ) : protectionEvents.length === 0 ? (
-            <p className="text-muted-foreground px-2 py-4 text-sm">{NO_CONVEX_DATA_AR}</p>
-          ) : (
-            <Table>
-              <TableHeader>
-                <TableRow className="border-amber-500/10 hover:bg-transparent">
-                  <TableHead className="text-foreground">الخطورة</TableHead>
-                  <TableHead className="text-foreground">الرسالة</TableHead>
-                  <TableHead className="text-foreground">محظور</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {protectionEvents.map((e) => (
-                  <TableRow key={e._id} className="border-border/60">
-                    <TableCell>{e.severity}</TableCell>
-                    <TableCell className="max-w-[320px] text-muted-foreground text-sm leading-snug">
-                      {e.message}
-                    </TableCell>
-                    <TableCell className="tabular-nums">{e.blocked ? "نعم" : "لا"}</TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          )}
-        </CardContent>
-      </Card>
-
-      <Card className={institutionalCardClass("p-0")}>
-        <CardHeader className="border-b border-amber-500/10 px-4 py-4 md:px-6">
-          <CardTitle className="card-title-inst">تقارير اللجنة (Convex)</CardTitle>
-        </CardHeader>
-        <CardContent className="overflow-x-auto px-2 pb-4 md:px-4">
-          {!canUseConvex && !isConvexAuthLoading ? (
-            <p className="text-muted-foreground px-2 py-4 text-sm">{NO_CONVEX_DATA_AR}</p>
-          ) : isConvexAuthLoading || committeeReports === undefined ? (
-            <p className="text-muted-foreground px-2 py-4 text-sm">جاري تحميل بيانات Convex...</p>
-          ) : committeeReports.length === 0 ? (
-            <p className="text-muted-foreground px-2 py-4 text-sm">{NO_CONVEX_DATA_AR}</p>
-          ) : (
-            <Table>
-              <TableHeader>
-                <TableRow className="border-amber-500/10 hover:bg-transparent">
-                  <TableHead className="text-foreground">الرمز</TableHead>
-                  <TableHead className="text-foreground">عقل السوق</TableHead>
-                  <TableHead className="text-foreground">عقل الحماية</TableHead>
-                  <TableHead className="text-foreground">عقل التنفيذ</TableHead>
-                  <TableHead className="text-foreground">القرار النهائي</TableHead>
-                  <TableHead className="text-foreground">ملخص</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {committeeReports.map((r) => (
-                  <TableRow key={r._id} className="border-border/60">
-                    <TableCell className="font-medium text-amber-100/90">{r.symbol}</TableCell>
-                    <TableCell className="tabular-nums">{r.marketMindScore}</TableCell>
-                    <TableCell className="tabular-nums">{r.protectionMindScore}</TableCell>
-                    <TableCell className="tabular-nums">{r.executionMindScore}</TableCell>
-                    <TableCell>{r.finalVerdict}</TableCell>
-                    <TableCell className="max-w-[280px] text-muted-foreground text-xs leading-snug">
-                      {r.summary}
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          )}
-        </CardContent>
-      </Card>
+      {/* ── Decision Journal notice ──────────────────────────────────────── */}
+      <div className="rounded-xl border border-amber-500/15 bg-amber-500/[0.03] px-4 py-3 text-sm text-amber-200/70">
+        القرارات المحفوظة ستظهر في{" "}
+        <a href="/decision-journal" className="text-amber-300 underline underline-offset-2 hover:text-amber-200">
+          سجل القرارات
+        </a>{" "}
+        بعد استخدام زر &quot;حفظ القرار&quot; أعلاه — لا توجد بيانات تجريبية هنا.
+      </div>
 
     </div>
   );
