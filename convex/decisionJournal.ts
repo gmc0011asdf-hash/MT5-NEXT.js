@@ -1,13 +1,13 @@
 /**
  * convex/decisionJournal.ts
  * ─────────────────────────────────────────────────────────────────────────────
- * Decision Journal — Queries (A10) + Append-only Mutation (A13)
+ * Decision Journal — Queries (A10) + Mutations (A13, A15)
  *
  * ⚠️ قواعد هذا الملف:
  *  • userId يُستخرج دائماً من ctx.auth — لا يُمرَّر من الواجهة أبداً.
  *  • كل query مقيّدة بـ userId للمستخدم الحالي فقط (Multi-Tenant).
- *  • mutation الوحيدة: createDecisionAuditEvent — Append-only فقط.
- *  • ممنوع delete — ممنوع update — ممنوع تنفيذ تداول.
+ *  • ممنوع delete — ممنوع patch حر — ممنوع تنفيذ تداول.
+ *  • لا order_send — لا order_close — لا order_modify.
  *  • لا أسرار، لا مفاتيح API.
  * ─────────────────────────────────────────────────────────────────────────────
  */
@@ -218,5 +218,155 @@ export const createDecisionAuditEvent = mutation({
       triggeredBy: args.triggeredBy,
       createdAt:   Date.now(),
     });
+  },
+});
+
+// ─── saveAnalysisDecision (A15) ───────────────────────────────────────────────
+// Pipeline كامل لحفظ قرار تحليل في 5 جداول — لا تنفيذ تداول — لا order_send
+// Backend only — لا ربط بالواجهة في A15
+
+export const saveAnalysisDecision = mutation({
+  args: {
+    // ── decisionRun الأساسي ─────────────────────────────────────────────────
+    platform:          v.string(),
+    symbol:            v.string(),
+    timeframe:         v.string(),
+    status:            v.string(),
+    finalDecision:     v.string(),
+    grade:             v.string(),
+    probability:       v.number(),
+    entryPrice:        v.number(),
+    invalidationPrice: v.number(),
+    reason:            v.string(),
+    source:            v.optional(v.string()),
+
+    // ── نتائج اللجان ────────────────────────────────────────────────────────
+    committees: v.array(
+      v.object({
+        committeeId:   v.string(),
+        committeeName: v.string(),
+        verdict:       v.string(),
+        score:         v.number(),
+        summary:       v.string(),
+        reasons:       v.array(v.string()),
+      }),
+    ),
+
+    // ── لقطة المخاطرة — اختيارية ────────────────────────────────────────────
+    risk: v.optional(
+      v.object({
+        riskUsd:         v.number(),
+        riskPercent:     v.number(),
+        estimatedLot:    v.number(),
+        stopLoss:        v.number(),
+        takeProfit1:     v.number(),
+        takeProfit2:     v.optional(v.number()),
+        takeProfit3:     v.optional(v.number()),
+        rewardRiskRatio: v.number(),
+        marginSafe:      v.boolean(),
+      }),
+    ),
+
+    // ── جدول المراجعة — اختياري ─────────────────────────────────────────────
+    review: v.optional(
+      v.object({
+        criticalTimeframe: v.string(),
+        nextReviewAt:      v.number(),
+        expiresAt:         v.number(),
+        reviewReason:      v.string(),
+        monitoringMode:    v.string(),
+      }),
+    ),
+  },
+
+  handler: async (ctx, args) => {
+    // ── 1. Auth — userId من Clerk server-side فقط ──────────────────────────
+    const userId = await requireUserId(ctx);
+    const now    = Date.now();
+
+    // ── 2. توليد decisionId فريد داخلياً ──────────────────────────────────
+    const decisionId = `dj-${now}-${Math.random().toString(36).slice(2, 9)}`;
+
+    // ── 3. حفظ decisionRun الرئيسي ─────────────────────────────────────────
+    // readOnly: true دائماً — لا تنفيذ تداول — للتحليل فقط
+    await ctx.db.insert("decisionRuns", {
+      decisionId,
+      platform:          args.platform,
+      symbol:            args.symbol,
+      timeframe:         args.timeframe,
+      status:            args.status,
+      finalDecision:     args.finalDecision,
+      grade:             args.grade,
+      probability:       args.probability,
+      entryPrice:        args.entryPrice,
+      invalidationPrice: args.invalidationPrice,
+      reason:            args.reason,
+      userId,
+      createdAt: now,
+      updatedAt: now,
+      readOnly:  true,
+      source:    args.source ?? "decision-journal-v1",
+    });
+
+    // ── 4. حفظ نتائج اللجان ─────────────────────────────────────────────────
+    for (const c of args.committees) {
+      await ctx.db.insert("committeeResults", {
+        decisionId,
+        userId,
+        committeeId:   c.committeeId,
+        committeeName: c.committeeName,
+        verdict:       c.verdict,
+        score:         c.score,
+        summary:       c.summary,
+        reasons:       c.reasons,
+        createdAt:     now,
+      });
+    }
+
+    // ── 5. حفظ لقطة المخاطرة — إن وُجدت ───────────────────────────────────
+    if (args.risk) {
+      await ctx.db.insert("decisionRiskSnapshots", {
+        decisionId,
+        userId,
+        riskUsd:         args.risk.riskUsd,
+        riskPercent:     args.risk.riskPercent,
+        estimatedLot:    args.risk.estimatedLot,
+        stopLoss:        args.risk.stopLoss,
+        takeProfit1:     args.risk.takeProfit1,
+        takeProfit2:     args.risk.takeProfit2,
+        takeProfit3:     args.risk.takeProfit3,
+        rewardRiskRatio: args.risk.rewardRiskRatio,
+        marginSafe:      args.risk.marginSafe,
+        createdAt:       now,
+      });
+    }
+
+    // ── 6. حفظ جدول المراجعة — إن وُجد ────────────────────────────────────
+    if (args.review) {
+      await ctx.db.insert("decisionReviewSchedules", {
+        decisionId,
+        userId,
+        criticalTimeframe: args.review.criticalTimeframe,
+        nextReviewAt:      args.review.nextReviewAt,
+        expiresAt:         args.review.expiresAt,
+        reviewReason:      args.review.reviewReason,
+        monitoringMode:    args.review.monitoringMode,
+        createdAt:         now,
+        updatedAt:         now,
+      });
+    }
+
+    // ── 7. Audit event تلقائي — CREATED ────────────────────────────────────
+    await ctx.db.insert("decisionAuditEvents", {
+      decisionId,
+      userId,
+      eventType:   "CREATED",
+      message:     "تم حفظ قرار التحليل في سجل القرارات",
+      triggeredBy: "system",
+      createdAt:   now,
+    });
+
+    // ── 8. إرجاع decisionId للمستدعي ───────────────────────────────────────
+    return { decisionId };
   },
 });
