@@ -2,22 +2,27 @@
 
 import { useEffect, useState } from "react";
 
-import { ActivityMicroBar, PulseDot, StatusBadge, type StatusBadgeVariant } from "@/components/common/status-indicator";
+import {
+  ActivityMicroBar,
+  PulseDot,
+  StatusBadge,
+  type StatusBadgeVariant,
+} from "@/components/common/status-indicator";
 import { AnalogMarketClock } from "@/components/dashboard/AnalogMarketClock";
-import { Card } from "@/components/ui/card";
 import { MARKET_SESSIONS, type MarketSession } from "@/lib/constants/market-sessions";
 import { formatTimeString12h, getSessionStatus } from "@/lib/market-session-time";
-import { institutionalCardClass } from "@/lib/ui-institutional";
+import { cn } from "@/lib/utils";
+
+// ─── helpers ─────────────────────────────────────────────────────────────────
 
 function toneToBadge(tone: "ok" | "warning" | "danger" | "neutral"): StatusBadgeVariant {
   return tone;
 }
 
-function toneToPulse(tone: "ok" | "warning" | "danger" | "neutral"): "ok" | "warning" | "danger" | "neutral" | "mock" {
-  if (tone === "ok") return "ok";
-  if (tone === "warning") return "warning";
-  if (tone === "danger") return "danger";
-  return "neutral";
+function toneToPulse(
+  tone: "ok" | "warning" | "danger" | "neutral",
+): "ok" | "warning" | "danger" | "neutral" | "mock" {
+  return tone;
 }
 
 function shortTz(session: MarketSession, date: Date): string {
@@ -43,17 +48,6 @@ function formatBaghdadTime(date: Date | null): string {
   }).format(date);
 }
 
-function formatSessionDate(date: Date | null, timeZone: string): string {
-  if (!date) return "—";
-  return new Intl.DateTimeFormat("ar-IQ", {
-    timeZone,
-    weekday: "long",
-    year: "numeric",
-    month: "long",
-    day: "numeric",
-  }).format(date);
-}
-
 function formatSessionTime12(date: Date | null, timeZone: string): string {
   if (!date) return TIME_PLACEHOLDER;
   return new Intl.DateTimeFormat("en-US", {
@@ -65,69 +59,123 @@ function formatSessionTime12(date: Date | null, timeZone: string): string {
   }).format(date);
 }
 
+// ─── accent strip per tone ────────────────────────────────────────────────────
+
+function stripClass(tone: "ok" | "warning" | "danger" | "neutral"): string {
+  if (tone === "ok")      return "from-emerald-500/70 via-emerald-500/20 to-transparent";
+  if (tone === "warning") return "from-amber-400/70  via-amber-400/20  to-transparent";
+  if (tone === "danger")  return "from-rose-500/70   via-rose-500/20   to-transparent";
+  return "from-amber-500/20 via-amber-500/5 to-transparent";
+}
+
+// ─── SessionCard ─────────────────────────────────────────────────────────────
+
 function SessionCard({ session, at }: { session: MarketSession; at: Date | null }) {
   const stableDate = at ?? new Date("1970-01-01T00:00:00Z");
-  const st = getSessionStatus(session, stableDate);
-  const tzShort = shortTz(session, stableDate);
-  const localTime12 = formatSessionTime12(at, session.timezone);
-  const baghdadTime = formatBaghdadTime(at);
-  const dateLabel = formatSessionDate(at, session.timezone);
+  const st        = getSessionStatus(session, stableDate);
+  const tzShort   = shortTz(session, stableDate);
+  const localTime = formatSessionTime12(at, session.timezone);
+  const baghdad   = formatBaghdadTime(at);
+
   const hoursLine =
     session.type === "market" && session.openTime && session.closeTime
-      ? `${formatTimeString12h(session.openTime)} – ${formatTimeString12h(session.closeTime)} (محلي)`
+      ? `${formatTimeString12h(session.openTime)} – ${formatTimeString12h(session.closeTime)}`
       : null;
 
   const eta =
     st.minutesToOpen != null && st.minutesToOpen > 0 && st.minutesToOpen <= 180
-      ? `يفتح بعد ${st.minutesToOpen} دقيقة`
+      ? `يفتح بعد ${st.minutesToOpen} د`
       : st.minutesToClose != null &&
           st.minutesToClose > 0 &&
           (st.labelAr === "يغلق قريبًا" || st.minutesToClose <= 120)
-        ? `يغلق بعد ${st.minutesToClose} دقيقة`
+        ? `يغلق بعد ${st.minutesToClose} د`
         : null;
 
+  const hasProgress =
+    st.progress != null && session.type === "market" && st.isOpen;
+
   return (
-    <Card
-      className={institutionalCardClass(
-        "flex flex-col gap-3 p-4 transition-shadow hover:shadow-md/10",
+    <div
+      className={cn(
+        "group relative flex flex-col overflow-hidden rounded-xl",
+        "border border-amber-500/15",
+        "bg-gradient-to-b from-card to-amber-500/[0.025]",
+        "transition-all duration-200 hover:border-amber-500/25 hover:shadow-lg hover:shadow-amber-500/[0.06]",
       )}
     >
-      <div className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-3">
-        <div className="min-w-0 space-y-1 text-end">
-          <p className="font-semibold text-base text-foreground leading-tight md:text-lg">{session.nameAr}</p>
-          <p className="truncate text-muted-foreground text-[11px] tracking-wide">{session.nameEn}</p>
-          <p className="font-mono text-amber-100/90 text-sm tabular-nums leading-tight">
-            {localTime12}
-          </p>
-          <p className="text-muted-foreground text-[10px] tabular-nums leading-tight">{tzShort}</p>
-          <p className="text-muted-foreground text-[10px] leading-tight">{dateLabel}</p>
-        </div>
-        <div className="mx-auto sm:mx-0">
+      {/* ── Status accent strip ─────────────────────────────────────────── */}
+      <div className={cn("h-[2px] w-full bg-gradient-to-r", stripClass(st.tone))} />
+
+      <div className="flex flex-1 flex-col items-center gap-0 px-3 pb-3 pt-2.5">
+
+        {/* ── City name ───────────────────────────────────────────────── */}
+        <p className="mb-2 text-center text-[11px] font-bold tracking-widest text-amber-200/75 uppercase">
+          {session.nameAr}
+        </p>
+
+        {/* ── Analog clock ────────────────────────────────────────────── */}
+        <div className="mb-2 flex items-center justify-center">
           <AnalogMarketClock session={session} at={stableDate} size={72} tone={st.tone} />
         </div>
-      </div>
-      <div className="flex flex-wrap items-center justify-between gap-2 border-t border-amber-500/10 pt-2">
-        <StatusBadge variant={toneToBadge(st.tone)} icon={<PulseDot tone={toneToPulse(st.tone)} pulse={st.isOpen} />}>
-          {st.labelAr}
-        </StatusBadge>
-        {session.type === "market" ? <ActivityMicroBar active={st.isOpen} /> : null}
-      </div>
-      {hoursLine ? (
-        <p className="text-muted-foreground text-[11px] leading-snug">ساعات الجلسة: {hoursLine}</p>
-      ) : null}
-      {st.progress != null && session.type === "market" && st.isOpen ? (
-        <div className="h-1.5 overflow-hidden rounded-full bg-muted/60">
-          <div
-            className="h-full rounded-full bg-gradient-to-l from-emerald-500/70 to-emerald-400/40 transition-[width] duration-500"
-            style={{ width: `${Math.round(Math.min(1, Math.max(0, st.progress)) * 100)}%` }}
-          />
+
+        {/* ── Digital time ────────────────────────────────────────────── */}
+        <p className="font-mono text-sm tabular-nums text-amber-100/95 leading-none">
+          {at ? localTime : TIME_PLACEHOLDER}
+        </p>
+
+        {/* ── Timezone abbr ───────────────────────────────────────────── */}
+        <p className="mt-0.5 text-[10px] tabular-nums text-muted-foreground/55">{tzShort}</p>
+
+        {/* ── Divider ─────────────────────────────────────────────────── */}
+        <div className="my-2.5 h-px w-full bg-amber-500/10" />
+
+        {/* ── Status + Activity ───────────────────────────────────────── */}
+        <div className="flex w-full items-center justify-between gap-1">
+          <StatusBadge
+            variant={toneToBadge(st.tone)}
+            icon={<PulseDot tone={toneToPulse(st.tone)} pulse={st.isOpen} />}
+          >
+            {st.labelAr}
+          </StatusBadge>
+          {session.type === "market" ? (
+            <ActivityMicroBar active={st.isOpen} />
+          ) : null}
         </div>
-      ) : null}
-      {eta ? <p className="text-amber-200/90 text-[11px]">{eta}</p> : null}
-      <p className="font-mono text-[11px] text-amber-100/90 tabular-nums">بغداد: {baghdadTime}</p>
-    </Card>
+
+        {/* ── Progress bar ────────────────────────────────────────────── */}
+        {hasProgress ? (
+          <div className="mt-2 h-1 w-full overflow-hidden rounded-full bg-muted/40">
+            <div
+              className="h-full rounded-full bg-gradient-to-r from-emerald-500/30 to-emerald-400/80 transition-[width] duration-500"
+              style={{ width: `${Math.round(Math.min(1, Math.max(0, st.progress ?? 0)) * 100)}%` }}
+            />
+          </div>
+        ) : null}
+
+        {/* ── Hours + ETA ─────────────────────────────────────────────── */}
+        {(hoursLine || eta) ? (
+          <div className="mt-2 flex w-full items-center justify-between gap-1">
+            {hoursLine ? (
+              <span className="text-[10px] text-muted-foreground/60">{hoursLine}</span>
+            ) : <span />}
+            {eta ? (
+              <span className="text-[10px] font-medium text-amber-300/80">{eta}</span>
+            ) : null}
+          </div>
+        ) : null}
+
+        {/* ── Baghdad footer ──────────────────────────────────────────── */}
+        <div className="mt-auto flex w-full items-center justify-between border-t border-amber-500/8 pt-2">
+          <span className="text-[10px] text-muted-foreground/45">بغداد</span>
+          <span className="font-mono text-[10px] tabular-nums text-amber-100/55">{baghdad}</span>
+        </div>
+
+      </div>
+    </div>
   );
 }
+
+// ─── MarketSessionsPanel ──────────────────────────────────────────────────────
 
 export function MarketSessionsPanel() {
   const [now, setNow] = useState<Date | null>(null);
@@ -139,23 +187,22 @@ export function MarketSessionsPanel() {
   }, []);
 
   return (
-    <section className="space-y-4" suppressHydrationWarning>
-      <div className="space-y-1">
+    <section className="space-y-3" suppressHydrationWarning>
+      <div className="space-y-0.5">
         <h3 className="page-title">ساعات افتتاح الأسواق</h3>
-        <p className="label-secondary">متابعة جلسات التداول العالمية حسب التوقيت المحلي لكل سوق</p>
+        <p className="label-secondary">
+          متابعة جلسات التداول العالمية حسب التوقيت المحلي لكل سوق
+        </p>
       </div>
 
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-5">
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
         {MARKET_SESSIONS.map((session) => (
           <SessionCard key={session.id} session={session} at={now} />
         ))}
       </div>
 
-      <p className="text-muted-foreground text-xs leading-relaxed">
-        الأوقات مرجعية حسب المنطقة الزمنية وقد تختلف في العطل الرسمية أو تغيّر التوقيت الصيفي.
-      </p>
-      <p className="text-muted-foreground text-[11px] leading-relaxed">
-        هذه الساعات للمتابعة فقط ولا تنفذ أي أوامر تداول.
+      <p className="text-[11px] text-muted-foreground/60 leading-relaxed">
+        الأوقات مرجعية — قد تختلف في العطل الرسمية أو تغيّر التوقيت الصيفي. هذه الساعات للمتابعة فقط ولا تنفذ أي أوامر تداول.
       </p>
     </section>
   );
