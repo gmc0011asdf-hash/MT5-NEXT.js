@@ -28,7 +28,8 @@ function resolveLocalOpenPositions(
 ): Doc<"mt5OpenPositions">[] {
   const locals = rows.filter((r) => r.source === SOURCE_MT5_LOCAL);
   if (locals.length === 0) {
-    return [...rows].sort((a, b) => b.capturedAt - a.capturedAt).slice(0, 10);
+    // لا تُرجع بيانات قديمة من مصادر أخرى — فقط البيانات المحلية الحديثة
+    return [];
   }
 
   const withRun = locals.filter((r) => r.syncRunId);

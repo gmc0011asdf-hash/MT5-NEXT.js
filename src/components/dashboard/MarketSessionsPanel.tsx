@@ -92,18 +92,18 @@ function SessionCard({ session, at }: { session: MarketSession; at: Date | null 
         "flex flex-col gap-3 p-4 transition-shadow hover:shadow-md/10",
       )}
     >
-      <div className="grid grid-cols-1 items-start gap-3 sm:grid-cols-[minmax(0,1fr)_auto]">
+      <div className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-3">
         <div className="min-w-0 space-y-1 text-end">
           <p className="font-semibold text-base text-foreground leading-tight md:text-lg">{session.nameAr}</p>
           <p className="truncate text-muted-foreground text-[11px] tracking-wide">{session.nameEn}</p>
-          <p className="whitespace-nowrap font-mono text-amber-100/90 text-sm tabular-nums leading-tight">
+          <p className="font-mono text-amber-100/90 text-sm tabular-nums leading-tight">
             {localTime12}
           </p>
-          <p className="whitespace-nowrap text-muted-foreground text-[10px] tabular-nums leading-tight">{tzShort}</p>
+          <p className="text-muted-foreground text-[10px] tabular-nums leading-tight">{tzShort}</p>
           <p className="text-muted-foreground text-[10px] leading-tight">{dateLabel}</p>
         </div>
         <div className="mx-auto sm:mx-0">
-          <AnalogMarketClock session={session} at={stableDate} size={88} tone={st.tone} />
+          <AnalogMarketClock session={session} at={stableDate} size={72} tone={st.tone} />
         </div>
       </div>
       <div className="flex flex-wrap items-center justify-between gap-2 border-t border-amber-500/10 pt-2">
@@ -145,7 +145,7 @@ export function MarketSessionsPanel() {
         <p className="label-secondary">متابعة جلسات التداول العالمية حسب التوقيت المحلي لكل سوق</p>
       </div>
 
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-5">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-5">
         {MARKET_SESSIONS.map((session) => (
           <SessionCard key={session.id} session={session} at={now} />
         ))}

@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { MarketSessionsPanel } from "@/components/dashboard/MarketSessionsPanel";
@@ -7,6 +8,15 @@ import { institutionalCardClass } from "@/lib/ui-institutional";
 import { useConvexAuth, useQuery } from "convex/react";
 
 import { api } from "../../../../convex/_generated/api";
+
+type LiveMt5Account = {
+  connected: boolean;
+  balance:   number | null;
+  equity:    number | null;
+  freeMargin: number | null;
+  currency:  string | null;
+  readOnly:  boolean;
+};
 
 const NO_REAL_MT5_DATA_AR =
   "لا توجد بيانات MT5 حقيقية بعد — شغّل خدمة MT5 المحلية واضغط مزامنة MT5 المحلي للقراءة فقط.";
@@ -24,6 +34,39 @@ export default function DashboardPage() {
   const monitoring = useQuery(api.coreQueries.getMyMonitoringStatus, canUseConvex ? {} : "skip");
   const protection = useQuery(api.coreQueries.getMyProtectionEvents, canUseConvex ? {} : "skip");
   const mt5Summary = useQuery(api.coreQueries.getMyMt5ReadOnlySummary, canUseConvex ? {} : "skip");
+
+  // ── Live MT5 account — يُجلَب مباشرة من connection-status (لا Convex) ──────
+  const [liveMt5, setLiveMt5] = useState<LiveMt5Account | null>(null);
+  const [liveMt5Loading, setLiveMt5Loading] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function fetchLive() {
+      try {
+        const res = await fetch("/api/mt5-readonly/connection-status", { cache: "no-store" });
+        const data = (await res.json()) as Record<string, unknown>;
+        if (!cancelled) {
+          setLiveMt5({
+            connected:  Boolean(data.connected),
+            balance:    typeof data.balance    === "number" ? data.balance    : null,
+            equity:     typeof data.equity     === "number" ? data.equity     : null,
+            freeMargin: typeof data.free_margin === "number" ? data.free_margin : null,
+            currency:   typeof data.currency   === "string" ? data.currency   : null,
+            readOnly:   data.read_only !== false,
+          });
+          setLiveMt5Loading(false);
+        }
+      } catch {
+        if (!cancelled) {
+          setLiveMt5({ connected: false, balance: null, equity: null, freeMargin: null, currency: null, readOnly: true });
+          setLiveMt5Loading(false);
+        }
+      }
+    }
+    void fetchLive();
+    const id = window.setInterval(() => void fetchLive(), 30_000);
+    return () => { cancelled = true; window.clearInterval(id); };
+  }, []);
 
   function convexFallbackLine() {
     return <p className="text-muted-foreground text-sm">{NO_REAL_MT5_DATA_AR}</p>;
@@ -57,35 +100,43 @@ export default function DashboardPage() {
             <CardTitle className="card-title-inst">حالة الحساب</CardTitle>
           </CardHeader>
           <CardContent className="space-y-2 p-0 text-muted-foreground text-sm">
-            {!canUseConvex && !isConvexAuthLoading ? (
-              convexFallbackLine()
-            ) : isConvexAuthLoading ? (
-              convexLoadingLine()
-            ) : account === undefined ? (
-              convexLoadingLine()
-            ) : account === null ? (
-              convexFallbackLine()
+            {liveMt5Loading ? (
+              <p className="text-muted-foreground text-sm animate-pulse">جاري جلب بيانات MT5 الحية...</p>
+            ) : !liveMt5?.connected ? (
+              <p className="text-muted-foreground text-sm">
+                MT5 غير متصل — شغّل خدمة MT5 المحلية للقراءة
+              </p>
             ) : (
               <ul className="space-y-1 text-foreground">
                 <li>
                   الرصيد:{" "}
-                  <span className="tabular-nums text-amber-100/90">{account.balance}</span>{" "}
-                  {account.currency}
+                  <span className="tabular-nums text-amber-100/90">
+                    {liveMt5.balance ?? "—"}
+                  </span>{" "}
+                  {liveMt5.currency ?? ""}
                 </li>
                 <li>
                   حقوق الملكية:{" "}
-                  <span className="tabular-nums text-amber-100/90">{account.equity}</span>
+                  <span className="tabular-nums text-amber-100/90">
+                    {liveMt5.equity ?? "—"}
+                  </span>
                 </li>
                 <li>
                   الهامش الحر:{" "}
-                  <span className="tabular-nums text-amber-100/90">{account.freeMargin}</span>
+                  <span className="tabular-nums text-amber-100/90">
+                    {liveMt5.freeMargin ?? "—"}
+                  </span>
                 </li>
-                <li className="text-muted-foreground text-xs">المصدر: {account.source}</li>
+                <li className="text-muted-foreground text-xs">
+                  قراءة فقط: {liveMt5.readOnly ? "نعم" : "لا"} — مصدر: MT5 مباشر
+                </li>
                 {mt5Summary?.hasRealMt5LocalData ? (
                   <>
                     <li className="border-t border-amber-500/10 pt-2 text-xs">
-                      مراكز مفتوحة (عرض محلي):{" "}
-                      <span className="tabular-nums text-amber-100/90">{mt5Summary.openPositionsCount}</span>
+                      مراكز مفتوحة (آخر مزامنة):{" "}
+                      <span className="tabular-nums text-amber-100/90">
+                        {mt5Summary.openPositionsCount}
+                      </span>
                     </li>
                     <li className="text-xs">
                       مجموع الربح العائم:{" "}
@@ -96,9 +147,7 @@ export default function DashboardPage() {
                     {mt5Summary.lastSyncAt != null ? (
                       <li className="text-muted-foreground text-[11px]">
                         آخر مزامنة:{" "}
-                        {new Date(mt5Summary.lastSyncAt).toLocaleString("ar-SA", {
-                          hour12: false,
-                        })}
+                        {new Date(mt5Summary.lastSyncAt).toLocaleString("ar-SA", { hour12: false })}
                       </li>
                     ) : null}
                   </>
