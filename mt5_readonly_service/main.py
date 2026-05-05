@@ -78,6 +78,20 @@ import MetaTrader5 as mt5
 _DEFAULT_SYMBOLS: tuple[str, ...] = ("EURUSD", "GBPUSD", "XAUUSD")
 _DEFAULT_CANDLE_TIMEFRAMES: tuple[str, ...] = ("M15", "H1", "H4", "D1")
 _MAX_CANDLE_COUNT: int = 1000
+
+# ── Broker clock offset ────────────────────────────────────────────────────────
+# MT5 copy_rates_from_pos returns candle timestamps in the broker's server
+# timezone, NOT in UTC.  Subtracting this offset converts broker-local seconds
+# to true UTC seconds before building time / time_iso.
+#
+# Default: 3  (UTC+3 — typical Iraqi / Gulf broker servers).
+# Override: set environment variable MT5_BROKER_TIME_OFFSET_HOURS=<n>
+#   0  → broker already reports UTC (rare)
+#   2  → UTC+2 broker (e.g. some European brokers during winter)
+#   3  → UTC+3 broker (default — Iraqi / Gulf / Exness EET)
+_BROKER_TIME_OFFSET_HOURS: int = int(os.environ.get("MT5_BROKER_TIME_OFFSET_HOURS", "3"))
+_BROKER_TIME_OFFSET_SECS: int = _BROKER_TIME_OFFSET_HOURS * 3600
+
 _TIMEFRAME_MAP: dict[str, int] = {
     "M1": mt5.TIMEFRAME_M1,
     "M5": mt5.TIMEFRAME_M5,
@@ -808,13 +822,21 @@ def readonly_candles(
                     skipped_symbols.append(f"{sym}/{tf}")
                     continue
                 for rate in rates:
-                    ts = int(rate["time"])
+                    broker_ts = int(rate["time"])
+                    # Normalise: subtract broker offset → true UTC seconds.
+                    # broker_ts is in broker server time (e.g. UTC+3).
+                    # Without this, time_iso would read "10:45+00:00" instead
+                    # of the correct "07:45+00:00", causing candleAgeMs to be
+                    # ~-3 h and the freshness committee to issue a false BLOCK.
+                    utc_ts = broker_ts - _BROKER_TIME_OFFSET_SECS
                     candles.append(
                         {
                             "symbol": sym,
                             "timeframe": tf,
-                            "time": ts * 1000,
-                            "time_iso": _iso_from_mt5_time(ts),
+                            "time": utc_ts * 1000,                    # true UTC ms
+                            "time_iso": _iso_from_mt5_time(utc_ts),   # true UTC ISO
+                            "broker_time_iso": _iso_from_mt5_time(broker_ts),  # raw broker clock (debug)
+                            "broker_time_offset_hours": _BROKER_TIME_OFFSET_HOURS,
                             "open": float(rate["open"]),
                             "high": float(rate["high"]),
                             "low": float(rate["low"]),
@@ -835,6 +857,7 @@ def readonly_candles(
             "symbols": symbols_list,
             "timeframes": valid_timeframes,
             "count": int(count),
+            "broker_time_offset_hours": _BROKER_TIME_OFFSET_HOURS,
             "candles": candles,
         }
         if skipped_symbols:
