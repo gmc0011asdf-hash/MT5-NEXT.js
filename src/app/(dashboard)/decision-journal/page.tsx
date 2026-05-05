@@ -1,17 +1,53 @@
 "use client";
 /**
- * decision-journal/page.tsx
+ * decision-journal/page.tsx — A21
  * ─────────────────────────────────────────────────────────────────────────────
- * ⚠️ هذه الصفحة للقراءة فقط ولا تنفذ أي تداول.
- * البيانات تأتي من Convex (decisionRuns + decisionAuditEvents) إن وجدت.
- * لا يوجد أي أمر تنفيذ هنا — لا useMutation — لا API routes.
- * userId يُستخرج من Clerk server-side داخل query — لا يُمرَّر من الواجهة.
+ * ⚠️ قراءة فقط — لا تنفيذ تداول — لا useMutation — لا userId من الواجهة.
+ * الفلترة والترتيب client-side فقط على البيانات المجلوبة من Convex.
+ * userId يُستخرج من Clerk server-side داخل query.
  * ─────────────────────────────────────────────────────────────────────────────
  */
 import { useState } from "react";
 import { useConvexAuth, useQuery } from "convex/react";
 import { api } from "../../../../convex/_generated/api";
-import { AlertCircle, BarChart2, BookOpen, ClipboardList, Download, X } from "lucide-react";
+import {
+  AlertCircle, ArrowUpDown, BarChart2, BookOpen,
+  ClipboardList, Download, Search, SlidersHorizontal, X,
+} from "lucide-react";
+
+// ─── خيارات الفلاتر ───────────────────────────────────────────────────────────
+
+const STATUS_OPTIONS = [
+  { value: "",                  label: "كل الحالات"       },
+  { value: "WATCHING",          label: "مراقبة"           },
+  { value: "SETUP_FORMING",     label: "تهيؤ"             },
+  { value: "WAIT_CONFIRMATION", label: "انتظار تأكيد"     },
+  { value: "READY_FOR_REVIEW",  label: "جاهز للمراجعة"   },
+  { value: "BLOCKED",           label: "محظور"            },
+  { value: "EXPIRED",           label: "منتهي"            },
+  { value: "HOLD",              label: "تعليق"            },
+];
+
+const DECISION_OPTIONS = [
+  { value: "",      label: "كل القرارات" },
+  { value: "BUY",   label: "شراء ↑"     },
+  { value: "SELL",  label: "بيع ↓"      },
+  { value: "HOLD",  label: "انتظار"      },
+  { value: "BLOCK", label: "حظر"         },
+];
+
+const TIMEFRAME_OPTIONS = [
+  { value: "",    label: "كل الفريمات" },
+  ...["M1", "M5", "M15", "M30", "H1", "H4", "D1"].map((tf) => ({
+    value: tf, label: tf,
+  })),
+];
+
+const PLATFORM_OPTIONS = [
+  { value: "",     label: "كل المنصات" },
+  { value: "MT5",  label: "MT5"        },
+  { value: "OKX",  label: "OKX"        },
+];
 
 // ─── مساعدات العرض — القرارات ────────────────────────────────────────────────
 
@@ -38,12 +74,19 @@ function statusColor(s: string): string {
 
 function decisionLabel(d: string): string {
   const map: Record<string, string> = {
-    BUY:   "شراء",
-    SELL:  "بيع",
+    BUY:   "شراء ↑",
+    SELL:  "بيع ↓",
     HOLD:  "انتظار",
     BLOCK: "حظر",
   };
   return map[d] ?? d;
+}
+
+function decisionColor(d: string): string {
+  if (d === "BUY")   return "text-emerald-300";
+  if (d === "SELL")  return "text-red-300";
+  if (d === "BLOCK") return "text-red-400";
+  return "text-muted-foreground";
 }
 
 function gradeColor(g: string): string {
@@ -123,6 +166,32 @@ function verdictBarColor(v: string): string {
   return "bg-muted";
 }
 
+// ─── FilterSelect — select مُصمَّم بالنمط الداكن الذهبي ──────────────────────
+
+function FilterSelect({
+  value,
+  onChange,
+  options,
+}: {
+  value:    string;
+  onChange: (v: string) => void;
+  options:  { value: string; label: string }[];
+}) {
+  return (
+    <select
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      className="rounded-md border border-border bg-background px-2 py-1.5 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-amber-500/50 cursor-pointer min-w-[100px]"
+    >
+      {options.map((o) => (
+        <option key={o.value} value={o.value}>
+          {o.label}
+        </option>
+      ))}
+    </select>
+  );
+}
+
 // ─── AuditEventsPanel ─────────────────────────────────────────────────────────
 // قراءة فقط — لا useMutation — لا createDecisionAuditEvent — لا تنفيذ تداول
 
@@ -139,7 +208,6 @@ function AuditEventsPanel({
   isAuthenticated,
   onClose,
 }: AuditEventsPanelProps) {
-  // لا userId في args — يُستخرج من ctx.auth server-side داخل الـ query
   const events = useQuery(
     api.decisionJournal.listAuditEventsByDecision,
     isAuthenticated ? { decisionId, limit: 50 } : "skip",
@@ -147,9 +215,9 @@ function AuditEventsPanel({
   const isLoading = events === undefined;
 
   return (
-    <div className="rounded-xl border border-amber-500/20 bg-card shadow">
-      {/* ── Header ─────────────────────────────────────────────────────────── */}
-      <div className="flex items-center justify-between px-6 py-4 border-b border-border">
+    <div className="rounded-xl border border-amber-500/20 bg-card shadow flex flex-col">
+      {/* Header */}
+      <div className="flex items-center justify-between px-5 py-3.5 border-b border-border shrink-0">
         <div className="flex items-center gap-2 flex-wrap">
           <ClipboardList className="h-4 w-4 text-amber-500 shrink-0" />
           <h2 className="text-sm font-semibold text-foreground">
@@ -169,15 +237,13 @@ function AuditEventsPanel({
         </button>
       </div>
 
-      <div className="p-6">
-        {/* Loading */}
+      <div className="p-5 overflow-y-auto max-h-[420px]">
         {isLoading && (
           <div className="flex items-center justify-center py-8 text-muted-foreground text-sm">
             <span className="animate-pulse">جارٍ تحميل سجل التدقيق...</span>
           </div>
         )}
 
-        {/* Empty */}
         {!isLoading && events.length === 0 && (
           <div className="flex flex-col items-center justify-center py-8 text-center text-muted-foreground">
             <ClipboardList className="h-8 w-8 text-muted-foreground/25 mb-3" />
@@ -185,20 +251,16 @@ function AuditEventsPanel({
           </div>
         )}
 
-        {/* Events list — Append-only read */}
         {!isLoading && events.length > 0 && (
-          <div className="space-y-3">
+          <div className="space-y-2.5">
             {events.map((ev) => (
               <div
                 key={ev._id}
-                className="rounded-lg border border-border bg-muted/5 p-4 space-y-2"
+                className="rounded-lg border border-border bg-muted/5 p-3.5 space-y-1.5"
               >
-                {/* Badge + triggeredBy + timestamp */}
                 <div className="flex items-center justify-between gap-2 flex-wrap">
                   <div className="flex items-center gap-2 flex-wrap">
-                    <span
-                      className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${eventTypeColor(ev.eventType)}`}
-                    >
+                    <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${eventTypeColor(ev.eventType)}`}>
                       {eventTypeLabel(ev.eventType)}
                     </span>
                     <span className="text-xs text-muted-foreground">
@@ -210,7 +272,6 @@ function AuditEventsPanel({
                   </span>
                 </div>
 
-                {/* Status transition */}
                 {(ev.fromStatus ?? ev.toStatus) && (
                   <div className="flex items-center gap-1.5 text-xs text-muted-foreground flex-wrap">
                     {ev.fromStatus && (
@@ -221,9 +282,7 @@ function AuditEventsPanel({
                         </span>
                       </>
                     )}
-                    {ev.fromStatus && ev.toStatus && (
-                      <span className="opacity-50">←</span>
-                    )}
+                    {ev.fromStatus && ev.toStatus && <span className="opacity-50">←</span>}
                     {ev.toStatus && (
                       <>
                         <span className="opacity-60">إلى:</span>
@@ -235,7 +294,6 @@ function AuditEventsPanel({
                   </div>
                 )}
 
-                {/* Message */}
                 {ev.message && (
                   <p className="text-sm text-muted-foreground/90 leading-relaxed">
                     {ev.message}
@@ -267,7 +325,6 @@ function CommitteeBreakdownPanel({
   isAuthenticated,
   onClose,
 }: CommitteeBreakdownPanelProps) {
-  // لا userId في args — يُستخرج من ctx.auth server-side
   const committees = useQuery(
     api.decisionJournal.listCommitteesByDecision,
     isAuthenticated ? { decisionId } : "skip",
@@ -275,9 +332,9 @@ function CommitteeBreakdownPanel({
   const isLoading = committees === undefined;
 
   return (
-    <div className="rounded-xl border border-border bg-card shadow">
-      {/* ── Header ─────────────────────────────────────────────────────────── */}
-      <div className="flex items-center justify-between px-6 py-4 border-b border-border">
+    <div className="rounded-xl border border-border bg-card shadow flex flex-col">
+      {/* Header */}
+      <div className="flex items-center justify-between px-5 py-3.5 border-b border-border shrink-0">
         <div className="flex items-center gap-2 flex-wrap">
           <BarChart2 className="h-4 w-4 text-amber-500 shrink-0" />
           <h2 className="text-sm font-semibold text-foreground">
@@ -297,15 +354,13 @@ function CommitteeBreakdownPanel({
         </button>
       </div>
 
-      <div className="p-6">
-        {/* Loading */}
+      <div className="p-5 overflow-y-auto max-h-[420px]">
         {isLoading && (
           <div className="flex items-center justify-center py-8 text-muted-foreground text-sm">
             <span className="animate-pulse">جارٍ تحميل نتائج اللجان...</span>
           </div>
         )}
 
-        {/* Empty */}
         {!isLoading && committees.length === 0 && (
           <div className="flex flex-col items-center justify-center py-8 text-center text-muted-foreground">
             <BarChart2 className="h-8 w-8 text-muted-foreground/25 mb-3" />
@@ -313,22 +368,19 @@ function CommitteeBreakdownPanel({
           </div>
         )}
 
-        {/* Committee cards grid */}
         {!isLoading && committees.length > 0 && (
-          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+          <div className="grid gap-3 sm:grid-cols-2">
             {committees.map((c) => (
               <div
                 key={c._id}
-                className="rounded-lg border border-border bg-muted/5 p-4 space-y-3"
+                className="rounded-lg border border-border bg-muted/5 p-3.5 space-y-2.5"
               >
                 {/* Name + verdict badge */}
                 <div className="flex items-start justify-between gap-2">
                   <p className="text-sm font-semibold text-foreground leading-tight">
                     {c.committeeName}
                   </p>
-                  <span
-                    className={`inline-flex shrink-0 items-center rounded-full border px-2 py-0.5 text-xs font-medium ${verdictColor(c.verdict)}`}
-                  >
+                  <span className={`inline-flex shrink-0 items-center rounded-full border px-2 py-0.5 text-xs font-medium ${verdictColor(c.verdict)}`}>
                     {verdictLabel(c.verdict)}
                   </span>
                 </div>
@@ -374,7 +426,7 @@ function CommitteeBreakdownPanel({
 // ─── الصفحة ───────────────────────────────────────────────────────────────────
 
 export default function DecisionJournalPage() {
-  // ── Clerk auth check ──────────────────────────────────────────────────────
+  // ── Auth ──────────────────────────────────────────────────────────────────
   const { isAuthenticated, isLoading: isAuthLoading } = useConvexAuth();
 
   // ── Convex read-only query — لا userId في args ────────────────────────────
@@ -383,14 +435,45 @@ export default function DecisionJournalPage() {
     isAuthenticated ? { limit: 50 } : "skip",
   );
 
-  // ── القرار المختار لعرض سجل التدقيق ────────────────────────────────────────
+  // ── القرار المختار ────────────────────────────────────────────────────────
   const [selected, setSelected] = useState<{
     decisionId: string;
     symbol:     string;
   } | null>(null);
 
+  // ── حالة الفلاتر — client-side فقط ───────────────────────────────────────
+  const [searchText,      setSearchText]      = useState("");
+  const [filterStatus,    setFilterStatus]    = useState("");
+  const [filterDecision,  setFilterDecision]  = useState("");
+  const [filterTimeframe, setFilterTimeframe] = useState("");
+  const [filterPlatform,  setFilterPlatform]  = useState("");
+  const [sortAsc,         setSortAsc]         = useState(false); // false = الأحدث أولاً
+
   const isLoading = isAuthLoading || rawEntries === undefined;
   const entries   = rawEntries ?? [];
+
+  // ── فلترة وترتيب client-side ──────────────────────────────────────────────
+  const q = searchText.trim().toLowerCase();
+  const filteredEntries = entries
+    .filter((e) => {
+      if (q && !e.symbol.toLowerCase().includes(q) && !e.reason.toLowerCase().includes(q)) return false;
+      if (filterStatus    && e.status        !== filterStatus)    return false;
+      if (filterDecision  && e.finalDecision !== filterDecision)  return false;
+      if (filterTimeframe && e.timeframe     !== filterTimeframe) return false;
+      if (filterPlatform  && e.platform      !== filterPlatform)  return false;
+      return true;
+    })
+    .sort((a, b) => sortAsc ? a.createdAt - b.createdAt : b.createdAt - a.createdAt);
+
+  const hasActiveFilters = !!(q || filterStatus || filterDecision || filterTimeframe || filterPlatform);
+
+  function clearFilters() {
+    setSearchText("");
+    setFilterStatus("");
+    setFilterDecision("");
+    setFilterTimeframe("");
+    setFilterPlatform("");
+  }
 
   const countByStatus = (s: string) => entries.filter((e) => e.status === s).length;
 
@@ -403,7 +486,7 @@ export default function DecisionJournalPage() {
           <h1 className="text-2xl font-bold tracking-tight text-amber-500">
             سجل قرارات التحليل
           </h1>
-          <p className="text-muted-foreground">
+          <p className="text-muted-foreground text-sm">
             جميع قرارات اللجان والتحليل — قراءة مباشرة من Convex
           </p>
         </div>
@@ -428,18 +511,15 @@ export default function DecisionJournalPage() {
         </div>
       </div>
 
-      {/* ── Stats row ────────────────────────────────────────────────────── */}
+      {/* ── Stats row — مجموع كامل بدون تأثير الفلاتر ──────────────────── */}
       <div className="grid gap-4 sm:grid-cols-4">
         {[
-          { label: "إجمالي القرارات",  value: isLoading ? "—" : entries.length,                    color: "text-foreground"  },
-          { label: "جاهز للمراجعة",   value: isLoading ? "—" : countByStatus("READY_FOR_REVIEW"), color: "text-emerald-400" },
-          { label: "محظور",            value: isLoading ? "—" : countByStatus("BLOCKED"),          color: "text-red-400"     },
-          { label: "منتهي الصلاحية",  value: isLoading ? "—" : countByStatus("EXPIRED"),          color: "text-zinc-400"    },
+          { label: "إجمالي القرارات", value: isLoading ? "—" : entries.length,                    color: "text-foreground"  },
+          { label: "جاهز للمراجعة",  value: isLoading ? "—" : countByStatus("READY_FOR_REVIEW"), color: "text-emerald-400" },
+          { label: "محظور",           value: isLoading ? "—" : countByStatus("BLOCKED"),          color: "text-red-400"     },
+          { label: "منتهي الصلاحية", value: isLoading ? "—" : countByStatus("EXPIRED"),          color: "text-zinc-400"    },
         ].map((stat) => (
-          <div
-            key={stat.label}
-            className="rounded-xl border border-border bg-card p-4 shadow"
-          >
+          <div key={stat.label} className="rounded-xl border border-border bg-card p-4 shadow">
             <p className="text-xs text-muted-foreground mb-1">{stat.label}</p>
             <p className={`text-2xl font-bold ${stat.color}`}>{stat.value}</p>
           </div>
@@ -448,16 +528,87 @@ export default function DecisionJournalPage() {
 
       {/* ── Table card ───────────────────────────────────────────────────── */}
       <div className="rounded-xl border border-border bg-card shadow">
-        <div className="p-6">
 
-          {/* Loading state */}
+        {/* ── Filter bar ─────────────────────────────────────────────────── */}
+        {!isLoading && entries.length > 0 && (
+          <div className="px-5 py-4 border-b border-border space-y-3">
+            {/* Row 1: filters label + controls */}
+            <div className="flex flex-wrap items-center gap-2">
+              <div className="flex items-center gap-1.5 text-xs text-muted-foreground shrink-0 ml-1">
+                <SlidersHorizontal className="h-3.5 w-3.5" />
+                <span>فلتر:</span>
+              </div>
+
+              {/* Search input */}
+              <div className="relative flex-1 min-w-[140px] max-w-[200px]">
+                <Search className="absolute right-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground pointer-events-none" />
+                <input
+                  type="text"
+                  placeholder="رمز أو سبب…"
+                  value={searchText}
+                  onChange={(e) => setSearchText(e.target.value)}
+                  className="w-full rounded-md border border-border bg-background pr-7 pl-2.5 py-1.5 text-xs text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-amber-500/50"
+                />
+              </div>
+
+              <FilterSelect value={filterStatus}    onChange={setFilterStatus}    options={STATUS_OPTIONS}    />
+              <FilterSelect value={filterDecision}  onChange={setFilterDecision}  options={DECISION_OPTIONS}  />
+              <FilterSelect value={filterTimeframe} onChange={setFilterTimeframe} options={TIMEFRAME_OPTIONS} />
+              <FilterSelect value={filterPlatform}  onChange={setFilterPlatform}  options={PLATFORM_OPTIONS}  />
+
+              {/* Sort toggle */}
+              <button
+                onClick={() => setSortAsc((v) => !v)}
+                title={sortAsc ? "عرض الأحدث أولاً" : "عرض الأقدم أولاً"}
+                className="inline-flex items-center gap-1 rounded-md border border-border bg-background px-2 py-1.5 text-xs text-muted-foreground hover:text-foreground hover:border-amber-500/40 transition-colors"
+              >
+                <ArrowUpDown className="h-3.5 w-3.5" />
+                {sortAsc ? "الأقدم أولاً" : "الأحدث أولاً"}
+              </button>
+
+              {/* Clear filters */}
+              {hasActiveFilters && (
+                <button
+                  onClick={clearFilters}
+                  className="inline-flex items-center gap-1 rounded-md border border-red-500/20 bg-red-500/5 px-2 py-1.5 text-xs text-red-400 hover:bg-red-500/10 transition-colors"
+                >
+                  <X className="h-3.5 w-3.5" />
+                  مسح الفلاتر
+                </button>
+              )}
+            </div>
+
+            {/* Count */}
+            <p className="text-xs text-muted-foreground">
+              {hasActiveFilters ? (
+                <>
+                  يعرض{" "}
+                  <span className="font-semibold text-amber-400">{filteredEntries.length}</span>
+                  {" "}من{" "}
+                  <span className="font-semibold">{entries.length}</span>
+                  {" "}قرار
+                </>
+              ) : (
+                <>
+                  إجمالي{" "}
+                  <span className="font-semibold text-foreground">{entries.length}</span>
+                  {" "}قرار
+                </>
+              )}
+            </p>
+          </div>
+        )}
+
+        <div className="p-5">
+
+          {/* Loading */}
           {isLoading && (
             <div className="flex items-center justify-center py-12 text-muted-foreground text-sm">
               <span className="animate-pulse">جارٍ تحميل القرارات...</span>
             </div>
           )}
 
-          {/* Empty state */}
+          {/* Empty — لا بيانات نهائياً */}
           {!isLoading && entries.length === 0 && (
             <div className="flex flex-col items-center justify-center py-12 text-center text-muted-foreground">
               <BookOpen className="h-12 w-12 text-muted-foreground/30 mb-4" />
@@ -470,19 +621,28 @@ export default function DecisionJournalPage() {
             </div>
           )}
 
-          {/* Data table — Click a row to view its audit events */}
-          {!isLoading && entries.length > 0 && (
+          {/* No results after filter */}
+          {!isLoading && entries.length > 0 && filteredEntries.length === 0 && (
+            <div className="flex flex-col items-center justify-center py-10 text-center text-muted-foreground">
+              <Search className="h-10 w-10 text-muted-foreground/25 mb-3" />
+              <p className="text-sm font-medium text-foreground mb-1">
+                لا توجد نتائج تطابق الفلاتر الحالية
+              </p>
+              <button
+                onClick={clearFilters}
+                className="mt-2 text-xs text-amber-400 hover:text-amber-300 underline underline-offset-2"
+              >
+                مسح الفلاتر
+              </button>
+            </div>
+          )}
+
+          {/* Data table */}
+          {!isLoading && filteredEntries.length > 0 && (
             <>
-              {selected !== null && (
-                <p className="text-xs text-muted-foreground mb-3">
-                  اضغط على صف لعرض سجل التدقيق
-                </p>
-              )}
-              {selected === null && (
-                <p className="text-xs text-muted-foreground mb-3">
-                  اضغط على صف لعرض سجل التدقيق
-                </p>
-              )}
+              <p className="text-xs text-muted-foreground mb-3">
+                اضغط على صف لعرض تقرير اللجان وسجل التدقيق
+              </p>
               <div className="overflow-x-auto rounded-xl border border-border">
                 <table className="w-full text-sm text-right">
                   <thead className="bg-muted/30 text-muted-foreground">
@@ -493,13 +653,13 @@ export default function DecisionJournalPage() {
                       <th className="px-4 py-3 font-medium whitespace-nowrap">الفريم</th>
                       <th className="px-4 py-3 font-medium whitespace-nowrap">الحالة</th>
                       <th className="px-4 py-3 font-medium whitespace-nowrap">القرار</th>
-                      <th className="px-4 py-3 font-medium whitespace-nowrap">درجة الفرصة</th>
-                      <th className="px-4 py-3 font-medium whitespace-nowrap">الاحتمالية</th>
-                      <th className="px-4 py-3 font-medium whitespace-nowrap">سبب القرار</th>
+                      <th className="px-4 py-3 font-medium whitespace-nowrap">الدرجة</th>
+                      <th className="px-4 py-3 font-medium whitespace-nowrap">%</th>
+                      <th className="px-4 py-3 font-medium whitespace-nowrap">السبب</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-border border-t border-border">
-                    {entries.map((entry) => {
+                    {filteredEntries.map((entry) => {
                       const isSelected = selected?.decisionId === entry.decisionId;
                       return (
                         <tr
@@ -517,7 +677,7 @@ export default function DecisionJournalPage() {
                               : "hover:bg-muted/10"
                           }`}
                         >
-                          <td className="px-4 py-3 whitespace-nowrap text-muted-foreground">
+                          <td className="px-4 py-3 whitespace-nowrap text-muted-foreground text-xs">
                             {formatTs(entry.createdAt)}
                           </td>
                           <td className="px-4 py-3 whitespace-nowrap">
@@ -525,29 +685,27 @@ export default function DecisionJournalPage() {
                               {entry.platform}
                             </span>
                           </td>
-                          <td className="px-4 py-3 whitespace-nowrap font-mono font-semibold">
+                          <td className="px-4 py-3 whitespace-nowrap font-mono font-semibold text-sm">
                             {entry.symbol}
                           </td>
-                          <td className="px-4 py-3 whitespace-nowrap text-muted-foreground">
+                          <td className="px-4 py-3 whitespace-nowrap text-xs text-muted-foreground">
                             {entry.timeframe}
                           </td>
                           <td className="px-4 py-3 whitespace-nowrap">
-                            <span
-                              className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${statusColor(entry.status)}`}
-                            >
+                            <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${statusColor(entry.status)}`}>
                               {statusLabel(entry.status)}
                             </span>
                           </td>
-                          <td className="px-4 py-3 whitespace-nowrap font-medium">
+                          <td className={`px-4 py-3 whitespace-nowrap font-semibold text-sm ${decisionColor(entry.finalDecision)}`}>
                             {decisionLabel(entry.finalDecision)}
                           </td>
                           <td className={`px-4 py-3 whitespace-nowrap font-bold ${gradeColor(entry.grade)}`}>
                             {entry.grade}
                           </td>
-                          <td className="px-4 py-3 whitespace-nowrap text-muted-foreground">
+                          <td className="px-4 py-3 whitespace-nowrap text-xs text-muted-foreground">
                             {entry.probability}%
                           </td>
-                          <td className="px-4 py-3 text-muted-foreground max-w-xs truncate">
+                          <td className="px-4 py-3 text-xs text-muted-foreground max-w-[200px] truncate">
                             {entry.reason}
                           </td>
                         </tr>
@@ -562,24 +720,47 @@ export default function DecisionJournalPage() {
         </div>
       </div>
 
-      {/* ── تقرير اللجان — يظهر عند اختيار قرار ────────────────────────── */}
+      {/* ── قسم التفاصيل — يظهر عند اختيار صف ──────────────────────────── */}
       {selected !== null && (
-        <CommitteeBreakdownPanel
-          decisionId={selected.decisionId}
-          symbol={selected.symbol}
-          isAuthenticated={isAuthenticated}
-          onClose={() => setSelected(null)}
-        />
-      )}
+        <div className="space-y-4">
 
-      {/* ── سجل التدقيق — يظهر عند اختيار قرار ─────────────────────────── */}
-      {selected !== null && (
-        <AuditEventsPanel
-          decisionId={selected.decisionId}
-          symbol={selected.symbol}
-          isAuthenticated={isAuthenticated}
-          onClose={() => setSelected(null)}
-        />
+          {/* شريط المعلومات + زر الإغلاق الرئيسي */}
+          <div className="flex items-center justify-between rounded-xl border border-amber-500/30 bg-amber-500/5 px-4 py-3">
+            <div className="flex items-center gap-3 flex-wrap">
+              <span className="font-mono font-bold text-amber-400 text-sm">
+                {selected.symbol}
+              </span>
+              <span className="text-muted-foreground text-xs">— عرض التفاصيل</span>
+              <span className="text-xs text-muted-foreground border border-border rounded px-1.5 py-0.5">
+                قراءة فقط
+              </span>
+            </div>
+            <button
+              onClick={() => setSelected(null)}
+              className="inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs text-muted-foreground hover:text-foreground hover:bg-muted/30 border border-border transition-colors"
+            >
+              <X className="h-3.5 w-3.5" />
+              إغلاق التفاصيل
+            </button>
+          </div>
+
+          {/* اللجان + التدقيق في grid ─────────────────────────────────────── */}
+          <div className="grid gap-5 lg:grid-cols-2">
+            <CommitteeBreakdownPanel
+              decisionId={selected.decisionId}
+              symbol={selected.symbol}
+              isAuthenticated={isAuthenticated}
+              onClose={() => setSelected(null)}
+            />
+            <AuditEventsPanel
+              decisionId={selected.decisionId}
+              symbol={selected.symbol}
+              isAuthenticated={isAuthenticated}
+              onClose={() => setSelected(null)}
+            />
+          </div>
+
+        </div>
       )}
 
     </div>
