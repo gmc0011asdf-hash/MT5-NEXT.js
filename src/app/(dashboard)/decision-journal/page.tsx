@@ -11,7 +11,7 @@
 import { useState } from "react";
 import { useConvexAuth, useQuery } from "convex/react";
 import { api } from "../../../../convex/_generated/api";
-import { AlertCircle, BookOpen, ClipboardList, Download, X } from "lucide-react";
+import { AlertCircle, BarChart2, BookOpen, ClipboardList, Download, X } from "lucide-react";
 
 // ─── مساعدات العرض — القرارات ────────────────────────────────────────────────
 
@@ -98,6 +98,29 @@ function triggeredByLabel(tb: string): string {
   if (tb === "agent")        return "وكيل";
   if (tb === "lab-analysis") return "محرك التحليل";
   return tb;
+}
+
+// ─── مساعدات عرض اللجان ───────────────────────────────────────────────────────
+
+function verdictColor(v: string): string {
+  if (v === "PASS")  return "text-emerald-300 bg-emerald-500/10 border-emerald-500/30";
+  if (v === "WARN")  return "text-amber-300  bg-amber-500/10  border-amber-500/30";
+  if (v === "BLOCK") return "text-red-300    bg-red-500/10    border-red-500/30";
+  return "text-muted-foreground bg-muted/10 border-border";
+}
+
+function verdictLabel(v: string): string {
+  if (v === "PASS")  return "ناجح ✓";
+  if (v === "WARN")  return "تحذير ⚠";
+  if (v === "BLOCK") return "محظور ✗";
+  return v;
+}
+
+function verdictBarColor(v: string): string {
+  if (v === "PASS")  return "bg-emerald-500/70";
+  if (v === "WARN")  return "bg-amber-500/70";
+  if (v === "BLOCK") return "bg-red-500/70";
+  return "bg-muted";
 }
 
 // ─── AuditEventsPanel ─────────────────────────────────────────────────────────
@@ -217,6 +240,127 @@ function AuditEventsPanel({
                   <p className="text-sm text-muted-foreground/90 leading-relaxed">
                     {ev.message}
                   </p>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─── CommitteeBreakdownPanel ──────────────────────────────────────────────────
+// قراءة فقط — لا useMutation — لا تنفيذ تداول
+// userId يُستخرَج من ctx.auth server-side داخل listCommitteesByDecision
+
+interface CommitteeBreakdownPanelProps {
+  decisionId:      string;
+  symbol:          string;
+  isAuthenticated: boolean;
+  onClose:         () => void;
+}
+
+function CommitteeBreakdownPanel({
+  decisionId,
+  symbol,
+  isAuthenticated,
+  onClose,
+}: CommitteeBreakdownPanelProps) {
+  // لا userId في args — يُستخرج من ctx.auth server-side
+  const committees = useQuery(
+    api.decisionJournal.listCommitteesByDecision,
+    isAuthenticated ? { decisionId } : "skip",
+  );
+  const isLoading = committees === undefined;
+
+  return (
+    <div className="rounded-xl border border-border bg-card shadow">
+      {/* ── Header ─────────────────────────────────────────────────────────── */}
+      <div className="flex items-center justify-between px-6 py-4 border-b border-border">
+        <div className="flex items-center gap-2 flex-wrap">
+          <BarChart2 className="h-4 w-4 text-amber-500 shrink-0" />
+          <h2 className="text-sm font-semibold text-foreground">
+            تقرير اللجان —{" "}
+            <span className="font-mono text-amber-400">{symbol}</span>
+          </h2>
+          <span className="text-xs text-muted-foreground border border-border rounded px-1.5 py-0.5">
+            قراءة فقط
+          </span>
+        </div>
+        <button
+          onClick={onClose}
+          aria-label="إغلاق تقرير اللجان"
+          className="rounded-md p-1.5 text-muted-foreground hover:text-foreground hover:bg-muted/30 transition-colors"
+        >
+          <X className="h-4 w-4" />
+        </button>
+      </div>
+
+      <div className="p-6">
+        {/* Loading */}
+        {isLoading && (
+          <div className="flex items-center justify-center py-8 text-muted-foreground text-sm">
+            <span className="animate-pulse">جارٍ تحميل نتائج اللجان...</span>
+          </div>
+        )}
+
+        {/* Empty */}
+        {!isLoading && committees.length === 0 && (
+          <div className="flex flex-col items-center justify-center py-8 text-center text-muted-foreground">
+            <BarChart2 className="h-8 w-8 text-muted-foreground/25 mb-3" />
+            <p className="text-sm">لا توجد نتائج لجان لهذا القرار بعد.</p>
+          </div>
+        )}
+
+        {/* Committee cards grid */}
+        {!isLoading && committees.length > 0 && (
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+            {committees.map((c) => (
+              <div
+                key={c._id}
+                className="rounded-lg border border-border bg-muted/5 p-4 space-y-3"
+              >
+                {/* Name + verdict badge */}
+                <div className="flex items-start justify-between gap-2">
+                  <p className="text-sm font-semibold text-foreground leading-tight">
+                    {c.committeeName}
+                  </p>
+                  <span
+                    className={`inline-flex shrink-0 items-center rounded-full border px-2 py-0.5 text-xs font-medium ${verdictColor(c.verdict)}`}
+                  >
+                    {verdictLabel(c.verdict)}
+                  </span>
+                </div>
+
+                {/* Score bar */}
+                <div className="space-y-1">
+                  <div className="flex items-center justify-between text-xs text-muted-foreground">
+                    <span>النتيجة</span>
+                    <span className="font-mono font-bold tabular-nums">{c.score}</span>
+                  </div>
+                  <div className="h-1.5 overflow-hidden rounded-full bg-muted/40">
+                    <div
+                      className={`h-full rounded-full transition-[width] duration-500 ${verdictBarColor(c.verdict)}`}
+                      style={{ width: `${Math.min(100, Math.max(0, c.score))}%` }}
+                    />
+                  </div>
+                </div>
+
+                {/* Summary */}
+                <p className="text-xs text-muted-foreground/80 leading-relaxed">
+                  {c.summary}
+                </p>
+
+                {/* Reasons */}
+                {c.reasons.length > 0 && (
+                  <ul className="space-y-0.5">
+                    {c.reasons.slice(0, 4).map((reason, i) => (
+                      <li key={i} className="text-xs text-muted-foreground/60 leading-snug">
+                        • {reason}
+                      </li>
+                    ))}
+                  </ul>
                 )}
               </div>
             ))}
@@ -417,6 +561,16 @@ export default function DecisionJournalPage() {
 
         </div>
       </div>
+
+      {/* ── تقرير اللجان — يظهر عند اختيار قرار ────────────────────────── */}
+      {selected !== null && (
+        <CommitteeBreakdownPanel
+          decisionId={selected.decisionId}
+          symbol={selected.symbol}
+          isAuthenticated={isAuthenticated}
+          onClose={() => setSelected(null)}
+        />
+      )}
 
       {/* ── سجل التدقيق — يظهر عند اختيار قرار ─────────────────────────── */}
       {selected !== null && (
