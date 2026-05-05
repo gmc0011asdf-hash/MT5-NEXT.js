@@ -1015,6 +1015,7 @@ class DemoOrderRequest(BaseModel):
     requiresManualConfirmation: bool = False   # must be True from contract
     executionEnabled:           bool = False   # contract value — remains False
     manualConfirmation:         bool = False   # must be True from explicit user action
+    manualLot:                  float | None = None  # A26.5: user override for estimatedLot
 
 
 def _validate_demo_order(req: DemoOrderRequest) -> str | None:
@@ -1029,8 +1030,10 @@ def _validate_demo_order(req: DemoOrderRequest) -> str | None:
     # ── Field presence ────────────────────────────────────────────────────────
     if not req.symbol or not req.symbol.strip():
         return "symbol مطلوب"
-    if req.estimatedLot is None or req.estimatedLot <= 0:
-        return "estimatedLot يجب أن يكون > 0"
+    # A26.5: manualLot overrides estimatedLot if valid
+    exec_lot_check = req.manualLot if (req.manualLot is not None and req.manualLot > 0) else req.estimatedLot
+    if exec_lot_check is None or exec_lot_check <= 0:
+        return "estimatedLot (أو manualLot) يجب أن يكون > 0"
     if req.stopLoss is None or req.stopLoss <= 0:
         return "stopLoss مطلوب ويجب > 0"
     if req.takeProfit is None or req.takeProfit <= 0:
@@ -1059,6 +1062,41 @@ def _validate_demo_order(req: DemoOrderRequest) -> str | None:
     if req.spreadPoints is not None and req.spreadPoints > 100:
         return f"السبريد {req.spreadPoints} نقطة يتجاوز الحد الأقصى المسموح (100)"
     return None
+
+
+def _get_account_float(info: Any, *names: str, default: float = 0.0) -> float:
+    """Try multiple attribute names on account_info; return first non-None float."""
+    for name in names:
+        v = getattr(info, name, None)
+        if v is not None:
+            try:
+                return float(v)
+            except (TypeError, ValueError):
+                continue
+    return default
+
+
+def _normalize_lot(raw_lot: float, sym_info: Any | None) -> tuple[float | None, str]:
+    """
+    Apply symbol volume constraints to raw_lot.
+    Returns (normalized_lot_or_None, reason).
+    """
+    if sym_info is None:
+        rounded = round(max(0.0, raw_lot), 2)
+        if rounded <= 0:
+            return None, "الهامش لا يكفي حتى لأقل لوت مسموح"
+        return rounded, "لوت مقترح حسب الهامش المتاح مع هامش أمان 10%"
+
+    v_min  = float(getattr(sym_info, "volume_min",  0.01) or 0.01)
+    v_max  = float(getattr(sym_info, "volume_max",  1000) or 1000)
+    v_step = float(getattr(sym_info, "volume_step", 0.01) or 0.01)
+
+    steps   = int(raw_lot / v_step)
+    clamped = round(max(0.0, min(steps * v_step, v_max)), 4)
+
+    if clamped < v_min:
+        return None, f"الهامش لا يكفي حتى لأقل لوت مسموح ({v_min})"
+    return clamped, "لوت مقترح حسب الهامش المتاح مع هامش أمان 10%"
 
 
 def _demo_mt5_init() -> tuple[bool, str | None]:
@@ -1159,17 +1197,78 @@ def demo_order_send(payload: DemoOrderRequest) -> JSONResponse:
             # Pending orders: use entryPrice from request
             exec_price = float(payload.entryPrice)  # type: ignore[arg-type]
 
+        # ── A26.5: resolve execution lot (manualLot overrides estimatedLot) ──────
+        exec_lot: float = (
+            float(payload.manualLot)
+            if (payload.manualLot is not None and float(payload.manualLot) > 0)
+            else float(payload.estimatedLot)  # type: ignore[arg-type]
+        )
+
         # ── A26.3: read symbol_info for filling mode detection ────────────────
         sym_info = mt5.symbol_info(sym)
         symbol_filling_mask = int(getattr(sym_info, "filling_mode", 0) or 0) if sym_info else 0
         filling_modes = _resolve_filling_modes(sym_info, action_val)
 
+        # ── A26.4/A26.5: Pre-trade margin precheck — rejects BEFORE order_send ─
+        # A26.5 fix: use correct MT5 attribute "margin_free" (not "free_margin")
+        free_margin_before  = _get_account_float(info, "margin_free", "free_margin")
+        account_balance     = _get_account_float(info, "balance")
+        account_equity      = _get_account_float(info, "equity")
+        account_margin_used = _get_account_float(info, "margin")
+        account_leverage    = int(getattr(info, "leverage", 0) or 0)
+
+        margin_required:         float | None = None
+        margin_precheck_ok:      bool  | None = None
+        margin_precheck_unavail  = False
+        suggested_max_lot:       float | None = None
+        suggested_lot_reason:    str   | None = None
+
+        try:
+            mc = mt5.order_calc_margin(order_type_val, sym, exec_lot, exec_price)
+            if mc is not None and float(mc) > 0.0:
+                margin_required = float(mc)
+        except Exception:
+            margin_precheck_unavail = True
+
+        if margin_required is not None:
+            margin_precheck_ok = margin_required <= free_margin_before
+            if not margin_precheck_ok:
+                # Insufficient margin — do NOT call order_send
+                shortfall = margin_required - free_margin_before
+                try:
+                    raw_suggested = exec_lot * (free_margin_before / margin_required) * 0.90
+                    suggested_max_lot, suggested_lot_reason = _normalize_lot(raw_suggested, sym_info)
+                except Exception:
+                    suggested_max_lot    = None
+                    suggested_lot_reason = "تعذّر حساب اللوت المقترح"
+
+                return Utf8JsonResponse(
+                    status_code=400,
+                    content={
+                        "ok":               False,
+                        "accepted":         False,
+                        "retcodeText":      "NO_MONEY_PRECHECK",
+                        "error":            "الهامش غير كافٍ — لم يتم إرسال الأمر إلى MT5",
+                        "marginRequired":   round(margin_required, 2),
+                        "freeMarginBefore": round(free_margin_before, 2),
+                        "marginShortfall":  round(shortfall, 2),
+                        "suggestedMaxLot":  suggested_max_lot,
+                        "suggestedLotReason": suggested_lot_reason,
+                        "balance":          round(account_balance, 2),
+                        "equity":           round(account_equity, 2),
+                        "marginUsed":       round(account_margin_used, 2),
+                        "leverage":         account_leverage,
+                        "execLotRequested": exec_lot,
+                        "demoOnly":         True,
+                    },
+                )
+
         # ── Build base request (no type_filling yet) ──────────────────────────
-        # order_send: ONLY authorised use in this entire service — A26.2/A26.3 Demo
+        # order_send: ONLY authorised use in this entire service — A26.2/A26.3/A26.5 Demo
         base_req: dict[str, Any] = {
             "action":    action_val,
             "symbol":    sym,
-            "volume":    float(payload.estimatedLot),  # type: ignore[arg-type]
+            "volume":    exec_lot,  # A26.5: uses exec_lot (manualLot or estimatedLot)
             "type":      order_type_val,
             "price":     exec_price,
             "sl":        float(payload.stopLoss),       # type: ignore[arg-type]
@@ -1230,13 +1329,22 @@ def demo_order_send(payload: DemoOrderRequest) -> JSONResponse:
                 "fillingModeUsed":    _filling_mode_name(filling_mode_used),
                 "fillingModesTried":  [_filling_mode_name(m) for m in filling_modes_tried],
                 "symbolFillingMode":  symbol_filling_mask,
+                # A26.4/A26.5 margin fields
+                "marginRequired":     round(margin_required, 2) if margin_required is not None else None,
+                "freeMarginBefore":   round(free_margin_before, 2),
+                "marginOk":           margin_precheck_ok,
+                "marginPrecheckUnavailable": margin_precheck_unavail or None,
+                "balance":            round(account_balance, 2),
+                "equity":             round(account_equity, 2),
+                "leverage":           account_leverage,
                 "requestSummary": {
                     "symbol":    sym,
                     "orderType": payload.orderType,
-                    "lot":       float(payload.estimatedLot),  # type: ignore[arg-type]
+                    "lot":       exec_lot,
                     "price":     exec_price,
                     "sl":        float(payload.stopLoss),       # type: ignore[arg-type]
                     "tp":        float(payload.takeProfit),     # type: ignore[arg-type]
+                    "lotSource": "manualLot" if (payload.manualLot is not None and float(payload.manualLot) > 0) else "estimatedLot",
                 },
                 "accountLogin": int(getattr(info, "login", 0) or 0),
                 "server":       getattr(info, "server", None),

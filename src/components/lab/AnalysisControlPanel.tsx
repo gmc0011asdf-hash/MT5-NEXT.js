@@ -845,22 +845,35 @@ const ORDER_TYPE_LABEL: Record<OrderTypePreview, string> = {
   NONE:                "لا يوجد أمر",
 };
 
-// ── A26.2/A26.3: نوع نتيجة الأمر من /api/mt5-demo/order-send ─────────────────
+// ── A26.2/A26.3/A26.4: نوع نتيجة الأمر من /api/mt5-demo/order-send ──────────
 type DemoOrderResult = {
-  ok:                  boolean;
-  accepted:            boolean;
-  ticket?:             number;
-  retcode?:            number;
-  retcodeText?:        string;
-  message?:            string;
-  fillingModeUsed?:    string;    // A26.3: FOK | IOC | RETURN
-  fillingModesTried?:  string[];  // A26.3: modes tried in order
-  symbolFillingMode?:  number;    // A26.3: raw bitmask from symbol_info
-  requestSummary?:     { symbol: string; orderType: string; lot: number; price: number; sl: number; tp: number };
-  accountLogin?:       number;
-  server?:             string;
-  demoOnly:            boolean;
-  error?:              string;
+  ok:                          boolean;
+  accepted:                    boolean;
+  ticket?:                     number;
+  retcode?:                    number;
+  retcodeText?:                string;
+  message?:                    string;
+  fillingModeUsed?:            string;
+  fillingModesTried?:          string[];
+  symbolFillingMode?:          number;
+  // A26.4/A26.5 — margin precheck fields
+  marginRequired?:             number | null;
+  freeMarginBefore?:           number;
+  marginOk?:                   boolean | null;
+  marginShortfall?:            number;
+  suggestedMaxLot?:            number | null;
+  suggestedLotReason?:         string | null;
+  execLotRequested?:           number;
+  balance?:                    number;
+  equity?:                     number;
+  marginUsed?:                 number;
+  leverage?:                   number;
+  marginPrecheckUnavailable?:  boolean | null;
+  requestSummary?:             { symbol: string; orderType: string; lot: number; price: number; sl: number; tp: number };
+  accountLogin?:               number;
+  server?:                     string;
+  demoOnly:                    boolean;
+  error?:                      string;
 };
 
 // ── TradePreviewPanel — A23/A24/A25/A26.1/A26.2 ──────────────────────────────
@@ -879,6 +892,11 @@ function TradePreviewPanel({ result }: { result: AnalysisResult }) {
 
   const summary = buildDecisionSummary(result);
   const preview = buildTradeOrderPreview(result, summary);
+
+  // A26.5: manual lot override — يُهيَّأ من estimatedLot ويتيح التعديل اليدوي
+  const [manualLot, setManualLot] = useState<number>(
+    preview.estimatedLot ?? 0.01,
+  );
   const eligibility = buildExecutionEligibility(
     preview,
     settings,
@@ -904,8 +922,14 @@ function TradePreviewPanel({ result }: { result: AnalysisResult }) {
     setOrderError(null);
     try {
       const execReq = buildExecutionRequestPreview(result, preview, eligibility);
-      // إضافة manualConfirmation: true من هنا — لا يُمرَّر userId
-      const body = { ...execReq, manualConfirmation: true as const };
+      // A26.5: استخدام manualLot إذا غيّره المستخدم — لا يُمرَّر userId
+      const body = {
+        ...execReq,
+        manualConfirmation: true as const,
+        manualLot: (manualLot > 0 && manualLot !== execReq.estimatedLot)
+          ? manualLot
+          : undefined,
+      };
       const res = await fetch("/api/mt5-demo/order-send", {
         method:  "POST",
         headers: { "Content-Type": "application/json" },
@@ -916,6 +940,9 @@ function TradePreviewPanel({ result }: { result: AnalysisResult }) {
       if (data.ok || data.accepted) {
         setOrderResult(data);
         setUserConfirmed(false); // إعادة تعيين التأكيد بعد الإرسال
+      } else if (data.retcodeText === "NO_MONEY_PRECHECK") {
+        // عرض تفاصيل الهامش — لم يصل الطلب إلى order_send
+        setOrderResult(data);
       } else {
         setOrderError(data.error ?? "فشل إرسال الأمر إلى MT5");
       }
@@ -1170,6 +1197,51 @@ function TradePreviewPanel({ result }: { result: AnalysisResult }) {
                     </div>
                   </div>
 
+                  {/* A26.5: input اللوت اليدوي */}
+                  <div className="rounded-md border border-border bg-muted/5 px-4 py-3 space-y-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="text-xs font-semibold text-foreground/80">اللوت اليدوي للتنفيذ</p>
+                      <button
+                        type="button"
+                        onClick={() => setManualLot(preview.estimatedLot ?? 0.01)}
+                        className="text-[10px] text-amber-300/70 hover:text-amber-300 underline underline-offset-2"
+                      >
+                        إعادة للمحسوب ({(preview.estimatedLot ?? 0.01).toFixed(2)})
+                      </button>
+                    </div>
+                    <input
+                      type="number"
+                      value={manualLot}
+                      onChange={(e) => {
+                        const v = parseFloat(e.target.value);
+                        if (!isNaN(v) && v > 0) setManualLot(v);
+                      }}
+                      min={0.01}
+                      step={0.01}
+                      className="w-full rounded border border-border bg-muted/10 px-3 py-1.5 text-sm font-mono text-foreground focus:outline-none focus:ring-1 focus:ring-amber-500/40"
+                    />
+                    {manualLot !== (preview.estimatedLot ?? 0.01) && (
+                      <p className="text-[10px] text-amber-300/70">
+                        ⚠ اللوت معدّل يدوياً — لا يغيّر قرار اللجان، للتنفيذ فقط.
+                      </p>
+                    )}
+                    {/* A26.5: زر استخدام اللوت المقترح بعد NO_MONEY_PRECHECK */}
+                    {orderResult?.retcodeText === "NO_MONEY_PRECHECK" && orderResult.suggestedMaxLot != null && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setManualLot(orderResult.suggestedMaxLot!);
+                          setOrderResult(null);
+                          setOrderError(null);
+                          setUserConfirmed(false);
+                        }}
+                        className="inline-flex items-center gap-1 rounded border border-amber-500/30 bg-amber-500/10 px-3 py-1 text-xs text-amber-300 hover:bg-amber-500/20 transition-colors"
+                      >
+                        استخدام اللوت المقترح: {orderResult.suggestedMaxLot}
+                      </button>
+                    )}
+                  </div>
+
                   {/* Checkbox تأكيد Demo */}
                   <label className="flex items-start gap-3 cursor-pointer rounded-md border border-border bg-muted/5 px-4 py-3">
                     <input
@@ -1215,8 +1287,40 @@ function TradePreviewPanel({ result }: { result: AnalysisResult }) {
                     </button>
                   </div>
 
-                  {/* A26.2/A26.3: نتيجة الإرسال — نجاح */}
-                  {orderResult && (
+                  {/* A26.4/A26.5: رفض precheck الهامش */}
+                  {orderResult && orderResult.retcodeText === "NO_MONEY_PRECHECK" && (
+                    <div className="rounded-md border border-orange-500/40 bg-orange-500/10 px-4 py-3 text-xs text-orange-200 space-y-2">
+                      <p className="font-semibold text-sm text-orange-300">✗ الهامش غير كافٍ — لم يُرسل الأمر</p>
+                      <div className="grid grid-cols-2 gap-x-4 gap-y-1">
+                        <p>الهامش المطلوب: <span className="font-mono font-bold">{orderResult.marginRequired?.toFixed(2) ?? "—"}</span></p>
+                        <p>الهامش المتاح:  <span className="font-mono font-bold text-emerald-300">{orderResult.freeMarginBefore?.toFixed(2) ?? "—"}</span></p>
+                        <p>النقص:          <span className="font-mono text-red-300">{orderResult.marginShortfall?.toFixed(2) ?? "—"}</span></p>
+                        <p>اللوت المرسل:  <span className="font-mono">{orderResult.execLotRequested?.toFixed(2) ?? "—"}</span></p>
+                        {orderResult.balance != null && (
+                          <p>الرصيد: <span className="font-mono">{orderResult.balance.toFixed(2)}</span></p>
+                        )}
+                        {orderResult.equity != null && (
+                          <p>حقوق الملكية: <span className="font-mono">{orderResult.equity.toFixed(2)}</span></p>
+                        )}
+                      </div>
+                      {orderResult.suggestedMaxLot != null ? (
+                        <p className="text-amber-300">
+                          اللوت المقترح: <span className="font-mono font-bold">{orderResult.suggestedMaxLot}</span>
+                          {orderResult.suggestedLotReason && (
+                            <span className="text-orange-200/60 ms-1">({orderResult.suggestedLotReason})</span>
+                          )}
+                        </p>
+                      ) : orderResult.suggestedLotReason && (
+                        <p className="text-orange-200/70">{orderResult.suggestedLotReason}</p>
+                      )}
+                      <p className="text-orange-200/60 text-[10px]">
+                        استخدم زر "استخدام اللوت المقترح" أعلاه، أو عدّل اللوت يدوياً ثم أعد المحاولة.
+                      </p>
+                    </div>
+                  )}
+
+                  {/* A26.2/A26.3/A26.4: نتيجة الإرسال — نجاح */}
+                  {orderResult && orderResult.retcodeText !== "NO_MONEY_PRECHECK" && (
                     <div className="rounded-md border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-xs text-emerald-300 space-y-1">
                       <p className="font-semibold text-sm">✓ تم إرسال أمر Demo إلى MT5</p>
                       {orderResult.ticket != null && (
@@ -1230,6 +1334,14 @@ function TradePreviewPanel({ result }: { result: AnalysisResult }) {
                         <p className="text-emerald-300/60">
                           محاولات Filling: {orderResult.fillingModesTried.join(" → ")}
                         </p>
+                      )}
+                      {orderResult.marginRequired != null && (
+                        <p className="text-emerald-300/60">
+                          هامش مستخدم: {orderResult.marginRequired?.toFixed(2)} — متاح قبل: {orderResult.freeMarginBefore?.toFixed(2)}
+                        </p>
+                      )}
+                      {orderResult.marginPrecheckUnavailable && (
+                        <p className="text-amber-400/60">⚠ فحص الهامش المسبق غير متاح</p>
                       )}
                       <p className="text-muted-foreground">
                         الحساب: {orderResult.accountLogin ?? "—"} — {orderResult.server ?? "—"}
