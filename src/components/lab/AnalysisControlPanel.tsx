@@ -78,6 +78,39 @@ type IndicatorSnapshot = {
   candleAgeMs?: number;
 };
 
+// ── B1: Market Structure types (mirror market-structure.ts) ─────────────────
+type MarketSwing = {
+  index:    number;
+  time:     number;
+  price:    number;
+  type:     "HIGH" | "LOW";
+  strength: number;
+};
+
+type StructurePoint = {
+  type:       "HH" | "HL" | "LH" | "LL";
+  price:      number;
+  time:       number;
+  swingIndex: number;
+};
+
+type MarketStructureAnalysis = {
+  trendState:      "BULLISH" | "BEARISH" | "RANGE" | "TRANSITION";
+  bias:            "BUY" | "SELL" | "NEUTRAL";
+  swings:          MarketSwing[];
+  structurePoints: StructurePoint[];
+  lastSwingHigh:   MarketSwing | null;
+  lastSwingLow:    MarketSwing | null;
+  bosDirection:    "UP" | "DOWN" | null;
+  chochDirection:  "UP" | "DOWN" | null;
+  rangeDetected:   boolean;
+  rangeHigh:       number | null;
+  rangeLow:        number | null;
+  confidence:      number;
+  reasons:         string[];
+  warnings:        string[];
+};
+
 type AnalysisResult = {
   ok: boolean;
   readOnly: true;
@@ -99,6 +132,7 @@ type AnalysisResult = {
   dataQuality: { symbolPropsAvailable: boolean; indicatorsAvailable: boolean };
   freshness: { candleAgeMs?: number; stale: boolean };
   indicators?: IndicatorSnapshot;
+  marketStructure?: MarketStructureAnalysis;  // B1
   reasons: string[];
   warnings: string[];
   error?: string;
@@ -233,14 +267,15 @@ type CommitteeResult = {
   reasons:       string[];
 };
 
-// أوزان اللجان — مجموعها 1.0
+// أوزان اللجان — مجموعها 1.0 — B1: أضيفت لجنة هيكل السوق
 const COMMITTEE_WEIGHTS: Record<string, number> = {
-  "trend":         0.25,
-  "momentum":      0.20,
-  "entry-quality": 0.20,
-  "risk":          0.15,
-  "freshness":     0.15,
-  "protection":    0.05,
+  "trend":            0.15,   // مخفَّض — market-structure تأخذ جزءاً من دوره
+  "momentum":         0.15,
+  "entry-quality":    0.18,
+  "risk":             0.10,
+  "freshness":        0.12,
+  "protection":       0.05,
+  "market-structure": 0.25,   // B1 — أعلى وزن — price action حقيقي
 };
 
 // اللجان الحرجة التي تستطيع إصدار BLOCK فعّال على القرار
@@ -488,6 +523,74 @@ function buildProtectionCommittee(r: AnalysisResult): CommitteeResult {
   };
 }
 
+// ── 7. لجنة هيكل السوق — B1 ──────────────────────────────────────────────────
+function buildMarketStructureCommittee(r: AnalysisResult): CommitteeResult {
+  const ms = r.marketStructure;
+
+  if (!ms || ms.confidence === 0) {
+    return {
+      committeeId: "market-structure", committeeName: "لجنة هيكل السوق",
+      verdict: "WARN", score: 25,
+      summary: "هيكل السوق غير متوفر — بيانات ناقصة",
+      reasons: ["لم يُحسب هيكل السوق — تحقق من مزامنة الشموع"],
+    };
+  }
+
+  const reasons: string[] = [...ms.reasons.slice(0, 4)];
+  let score = 35;
+  let verdict: CommitteeResult["verdict"] = "WARN";
+
+  // ── تطابق الاتجاه ──────────────────────────────────────────────────────────
+  const trendMatchesBuy  = ms.trendState === "BULLISH" && r.direction === "bullish";
+  const trendMatchesSell = ms.trendState === "BEARISH" && r.direction === "bearish";
+  const trendConflict    =
+    (ms.trendState === "BULLISH" && r.direction === "bearish") ||
+    (ms.trendState === "BEARISH" && r.direction === "bullish");
+
+  if (trendMatchesBuy || trendMatchesSell) {
+    score += 25;
+    reasons.push(`هيكل السوق يدعم القرار (${ms.trendState}) ✓`);
+  } else if (trendConflict) {
+    score -= 25;
+    verdict = "BLOCK";
+    reasons.push(`⚠ تعارض: الهيكل ${ms.trendState} والقرار ${r.direction} — اتجاهان عكسيان`);
+  } else if (ms.trendState === "RANGE") {
+    score -= 10; verdict = "WARN";
+    reasons.push("السوق في نطاق — خطر في كلا الاتجاهين");
+  } else if (ms.trendState === "TRANSITION") {
+    score -= 5; verdict = "WARN";
+    reasons.push("السوق في مرحلة تحوّل — ترقب اتجاه الكسر");
+  }
+
+  // ── BOS ───────────────────────────────────────────────────────────────────
+  if (ms.bosDirection === "UP"   && r.direction === "bullish") { score += 12; reasons.push("BOS UP يؤكد الصعود ✓"); }
+  if (ms.bosDirection === "DOWN" && r.direction === "bearish") { score += 12; reasons.push("BOS DOWN يؤكد الهبوط ✓"); }
+  if (ms.bosDirection === "UP"   && r.direction === "bearish") { score -= 8;  reasons.push("BOS UP عكس القرار"); }
+  if (ms.bosDirection === "DOWN" && r.direction === "bullish") { score -= 8;  reasons.push("BOS DOWN عكس القرار"); }
+
+  // ── CHoCH ─────────────────────────────────────────────────────────────────
+  if (ms.chochDirection === "UP"   && r.direction === "bullish") { score += 10; reasons.push("CHoCH UP يدعم الشراء ✓"); }
+  if (ms.chochDirection === "DOWN" && r.direction === "bearish") { score += 10; reasons.push("CHoCH DOWN يدعم البيع ✓"); }
+  if (ms.chochDirection === "UP"   && r.direction === "bearish") { score -= 10; verdict = "WARN"; reasons.push("CHoCH UP ضد القرار — تحوّل صاعد محتمل"); }
+  if (ms.chochDirection === "DOWN" && r.direction === "bullish") { score -= 10; verdict = "WARN"; reasons.push("CHoCH DOWN ضد القرار — تحوّل هابط محتمل"); }
+
+  // ── نطاق ──────────────────────────────────────────────────────────────────
+  if (ms.rangeDetected) { score -= 12; if (verdict !== "BLOCK") verdict = "WARN"; }
+
+  // ── معامل الثقة ───────────────────────────────────────────────────────────
+  score = Math.round(score * (0.5 + ms.confidence / 200));
+
+  score = Math.max(5, Math.min(92, score));
+  if (verdict !== "BLOCK") verdict = score >= 60 ? "PASS" : "WARN";
+
+  return {
+    committeeId: "market-structure", committeeName: "لجنة هيكل السوق",
+    verdict, score,
+    summary: `${ms.trendState} | bias: ${ms.bias} | ثقة: ${ms.confidence}%`,
+    reasons: reasons.slice(0, 8),
+  };
+}
+
 // ── حساب الاحتمالية الموزونة من اللجان ──────────────────────────────────────
 function computeWeightedProbability(committees: CommitteeResult[]): number {
   let weightedSum = 0;
@@ -542,6 +645,7 @@ function buildDecisionSummary(r: AnalysisResult): DecisionSummary {
     buildRiskCommittee(r),
     buildFreshnessCommittee(r),
     buildProtectionCommittee(r),
+    buildMarketStructureCommittee(r),  // B1
   ];
 
   const probability = computeWeightedProbability(committees);
@@ -619,6 +723,135 @@ function buildSaveArgs(r: AnalysisResult) {
     // userId: من ctx.auth server-side — لا يُمرَّر من الواجهة
     // readOnly: true مُجبَر server-side
   };
+}
+
+// ── MarketStructureSection — B1 ───────────────────────────────────────────────
+// يعرض هيكل السوق — قراءة فقط — لا تنفيذ تداول
+function MarketStructureSection({ ms }: { ms: MarketStructureAnalysis }) {
+  const trendColor = (s: string) => {
+    if (s === "BULLISH")    return "text-emerald-400";
+    if (s === "BEARISH")    return "text-red-400";
+    if (s === "TRANSITION") return "text-amber-400";
+    return "text-sky-400";
+  };
+  const biasColor = (b: string) => {
+    if (b === "BUY")  return "text-emerald-300";
+    if (b === "SELL") return "text-red-300";
+    return "text-muted-foreground";
+  };
+  const trendLabel = (s: string) => {
+    if (s === "BULLISH")    return "صاعد ↑";
+    if (s === "BEARISH")    return "هابط ↓";
+    if (s === "RANGE")      return "نطاق ↔";
+    if (s === "TRANSITION") return "تحوّل ⚡";
+    return s;
+  };
+  const bosLabel  = ms.bosDirection   ? `BOS ${ms.bosDirection}` : null;
+  const chochLabel= ms.chochDirection ? `CHoCH ${ms.chochDirection}` : null;
+
+  return (
+    <div className="rounded-lg border border-sky-500/20 bg-sky-500/[0.04] p-4 space-y-3">
+      <div className="flex items-center justify-between gap-2">
+        <p className="text-sm font-bold text-sky-200/90">هيكل السوق — B1</p>
+        <span className="text-[10px] text-muted-foreground/60 font-mono">
+          ثقة: {ms.confidence}% | pivots: {ms.swings.length}
+        </span>
+      </div>
+
+      {/* Key metrics grid */}
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+        <div className="flex flex-col gap-0.5">
+          <span className="text-[10px] text-muted-foreground">حالة السوق</span>
+          <span className={`text-sm font-bold ${trendColor(ms.trendState)}`}>
+            {trendLabel(ms.trendState)}
+          </span>
+        </div>
+        <div className="flex flex-col gap-0.5">
+          <span className="text-[10px] text-muted-foreground">الانحياز</span>
+          <span className={`text-sm font-semibold ${biasColor(ms.bias)}`}>{ms.bias}</span>
+        </div>
+        <div className="flex flex-col gap-0.5">
+          <span className="text-[10px] text-muted-foreground">آخر قمة (SH)</span>
+          <span className="text-sm font-mono text-foreground">
+            {ms.lastSwingHigh ? ms.lastSwingHigh.price.toFixed(5) : "—"}
+          </span>
+        </div>
+        <div className="flex flex-col gap-0.5">
+          <span className="text-[10px] text-muted-foreground">آخر قاع (SL)</span>
+          <span className="text-sm font-mono text-foreground">
+            {ms.lastSwingLow ? ms.lastSwingLow.price.toFixed(5) : "—"}
+          </span>
+        </div>
+      </div>
+
+      {/* BOS / CHoCH badges */}
+      {(bosLabel || chochLabel || ms.rangeDetected) && (
+        <div className="flex flex-wrap gap-1.5">
+          {bosLabel && (
+            <span className={`inline-flex items-center rounded border px-2 py-0.5 text-[11px] font-semibold ${
+              ms.bosDirection === "UP"
+                ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-300"
+                : "border-red-500/40 bg-red-500/10 text-red-300"
+            }`}>
+              {bosLabel}
+            </span>
+          )}
+          {chochLabel && (
+            <span className={`inline-flex items-center rounded border px-2 py-0.5 text-[11px] font-semibold ${
+              ms.chochDirection === "UP"
+                ? "border-amber-500/40 bg-amber-500/10 text-amber-300"
+                : "border-orange-500/40 bg-orange-500/10 text-orange-300"
+            }`}>
+              {chochLabel}
+            </span>
+          )}
+          {ms.rangeDetected && (
+            <span className="inline-flex items-center rounded border border-sky-500/30 bg-sky-500/10 px-2 py-0.5 text-[11px] font-medium text-sky-300">
+              نطاق {ms.rangeHigh?.toFixed(5)} — {ms.rangeLow?.toFixed(5)}
+            </span>
+          )}
+        </div>
+      )}
+
+      {/* Structure points summary */}
+      {ms.structurePoints.length > 0 && (() => {
+        const recent = ms.structurePoints.slice(-6);
+        return (
+          <div className="flex flex-wrap gap-1">
+            <span className="text-[10px] text-muted-foreground/70 w-full">آخر نقاط الهيكل:</span>
+            {recent.map((p, i) => (
+              <span key={i} className={`rounded border px-1.5 py-0.5 text-[10px] font-mono font-semibold ${
+                p.type === "HH" ? "border-emerald-500/30 text-emerald-400" :
+                p.type === "HL" ? "border-emerald-500/20 text-emerald-300/70" :
+                p.type === "LH" ? "border-red-500/20 text-red-300/70" :
+                                  "border-red-500/30 text-red-400"
+              }`}>
+                {p.type}
+              </span>
+            ))}
+          </div>
+        );
+      })()}
+
+      {/* Reasons */}
+      {ms.reasons.length > 0 && (
+        <ul className="space-y-0.5">
+          {ms.reasons.slice(0, 5).map((r, i) => (
+            <li key={i} className="text-[11px] text-foreground/70">• {r}</li>
+          ))}
+        </ul>
+      )}
+
+      {/* Warnings */}
+      {ms.warnings.length > 0 && (
+        <ul className="space-y-0.5">
+          {ms.warnings.map((w, i) => (
+            <li key={i} className="text-[11px] text-amber-300/80">⚠ {w}</li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
 }
 
 // ── CommitteeSummaryPreview — A22 ────────────────────────────────────────────
@@ -2061,6 +2294,11 @@ export function AnalysisControlPanel() {
 
                 {/* تحذيرات */}
                 {result.warnings.length > 0 && <WarnList items={result.warnings} />}
+
+                {/* ── B1: هيكل السوق ───────────────────────────────────────── */}
+                {result.marketStructure && (
+                  <MarketStructureSection ms={result.marketStructure} />
+                )}
 
                 {/* ── A22: ملخص اللجان قبل الحفظ ───────────────────────────── */}
                 <CommitteeSummaryPreview result={result} />

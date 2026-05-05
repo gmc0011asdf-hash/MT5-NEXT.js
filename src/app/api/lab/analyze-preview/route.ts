@@ -20,6 +20,10 @@ import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@clerk/nextjs/server";
 import { ConvexHttpClient } from "convex/browser";
 import { api } from "../../../../../convex/_generated/api";
+import {
+  analyzeMarketStructure,
+  type MarketStructureAnalysis,
+} from "@/lib/trading/mt5/market-structure";
 
 export const dynamic = "force-dynamic";
 
@@ -111,6 +115,7 @@ type AnalysisResult = {
   dataQuality: { symbolPropsAvailable: boolean; indicatorsAvailable: boolean };
   freshness: { candleAgeMs?: number; stale: boolean };
   indicators?: IndicatorResult;
+  marketStructure?: MarketStructureAnalysis;  // B1
   reasons: string[];
   warnings: string[];
 };
@@ -386,6 +391,21 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     }
   }
 
+  // ── B1: fetch raw candles and compute market structure ───────────────────
+  let marketStructure: MarketStructureAnalysis | undefined;
+  if (selectedTimeframe) {
+    try {
+      const rawCandles = await client.query(api.mt5CandlesQuery.getCandlesForStructure, {
+        symbol,
+        timeframe: selectedTimeframe,
+        limit: candleCount,
+      });
+      marketStructure = analyzeMarketStructure(rawCandles);
+    } catch {
+      // non-blocking — market structure enriches analysis but is not required
+    }
+  }
+
   // ── build reasons and warnings ────────────────────────────────────────────
   const reasons: string[] = [];
   const warnings: string[] = [];
@@ -620,6 +640,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       latestCandleTime: ind.latestCandleTime,
       candleAgeMs: ind.candleAgeMs,
     },
+    marketStructure,  // B1 — undefined if fetch/compute failed
     reasons,
     warnings,
   };
