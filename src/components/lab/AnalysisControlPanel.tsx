@@ -693,6 +693,253 @@ function CommitteeSummaryPreview({ result }: { result: AnalysisResult }) {
   );
 }
 
+// ── TradeOrderPreview — A23 ──────────────────────────────────────────────────
+// Preview فقط — لا order_send — لا تنفيذ تداول — لا pending order حقيقي
+
+type OrderTypePreview =
+  | "BUY_MARKET_PREVIEW"
+  | "BUY_LIMIT_PREVIEW"
+  | "BUY_STOP_PREVIEW"
+  | "SELL_MARKET_PREVIEW"
+  | "SELL_LIMIT_PREVIEW"
+  | "SELL_STOP_PREVIEW"
+  | "NONE";
+
+type TradeOrderPreview = {
+  allowed:          boolean;
+  blockedReasons:   string[];
+  orderType:        OrderTypePreview;
+  symbol:           string;
+  direction:        "bullish" | "bearish" | null;
+  entry:            number | undefined;
+  stopLoss:         number | undefined;
+  takeProfit:       number | undefined;
+  estimatedLot:     number | undefined;
+  riskUsd:          number;
+  rrRatio:          number | undefined;
+  executionEnabled: false; // دائماً false في A23
+};
+
+// buildTradeOrderPreview — يستخدم DecisionSummary الجاهز لتجنب تكرار المنطق
+// لا order_send — لا تنفيذ — Preview للمراجعة فقط
+function buildTradeOrderPreview(
+  result: AnalysisResult,
+  summary: DecisionSummary,
+): TradeOrderPreview {
+  const { finalDecision, criticalBlocks, committees } = summary;
+  const blockedReasons: string[] = [];
+
+  // ── فحص شروط السماح ──────────────────────────────────────────────────────
+  if (finalDecision !== "BUY" && finalDecision !== "SELL") {
+    blockedReasons.push(`القرار "${finalDecisionLabel(finalDecision)}" لا يُولّد أمر تداول`);
+  }
+  if (criticalBlocks.length > 0) {
+    blockedReasons.push(
+      `لجنة حرجة أصدرت BLOCK: ${criticalBlocks.map(c => c.committeeName).join("، ")}`,
+    );
+  }
+  if (result.entry === undefined)   blockedReasons.push("سعر الدخول غير متوفر");
+  if (result.stopLoss === undefined) blockedReasons.push("وقف الخسارة غير متوفر");
+  if (result.takeProfit === undefined) blockedReasons.push("الهدف غير متوفر");
+  if (!result.estimatedLot || result.estimatedLot <= 0) {
+    blockedReasons.push("اللوت غير محسوب — خصائص الزوج غير متوفرة");
+  }
+  if ((result.rrRatio ?? 0) < 1.5) {
+    blockedReasons.push(
+      `نسبة R/R = ${result.rrRatio?.toFixed(2) ?? "—"} أقل من الحد الأدنى 1.5:1`,
+    );
+  }
+  if (result.freshness.stale) {
+    blockedReasons.push("بيانات قديمة — أعد المزامنة قبل أي تنفيذ");
+  }
+  const freshnessC = committees.find(c => c.committeeId === "freshness");
+  if (freshnessC?.verdict === "BLOCK") {
+    blockedReasons.push("لجنة حداثة البيانات أصدرت BLOCK");
+  }
+  const riskC = committees.find(c => c.committeeId === "risk");
+  if (riskC?.verdict === "BLOCK") {
+    blockedReasons.push("لجنة المخاطرة أصدرت BLOCK");
+  }
+
+  const allowed = blockedReasons.length === 0;
+
+  // ── تحديد نوع الأمر ───────────────────────────────────────────────────────
+  // entry = lastClose (من candle analysis) = السعر الحالي المتوفر
+  // لا يوجد tick price حقيقي في هذه المرحلة → نفترض MARKET دائماً
+  // (Buy/Sell Stop Limit مؤجلة للمرحلة التالية)
+  let orderType: OrderTypePreview = "NONE";
+
+  if (finalDecision === "BUY" || finalDecision === "SELL") {
+    const currentPrice = result.indicators?.lastClose;
+    const entry = result.entry;
+
+    // نسبة الفرق النسبي — threshold 0.05% = 5 pips على 1.0000
+    const MARKET_THRESHOLD_RATIO = 0.0005;
+    const isMarket =
+      !currentPrice || !entry ||
+      Math.abs(entry - currentPrice) / currentPrice < MARKET_THRESHOLD_RATIO;
+
+    if (finalDecision === "BUY") {
+      if (isMarket)          orderType = "BUY_MARKET_PREVIEW";
+      else if (entry < currentPrice!) orderType = "BUY_LIMIT_PREVIEW";
+      else                   orderType = "BUY_STOP_PREVIEW";
+    } else {
+      if (isMarket)          orderType = "SELL_MARKET_PREVIEW";
+      else if (entry > currentPrice!) orderType = "SELL_LIMIT_PREVIEW";
+      else                   orderType = "SELL_STOP_PREVIEW";
+    }
+  }
+
+  return {
+    allowed,
+    blockedReasons,
+    orderType,
+    symbol:          result.symbol,
+    direction:       result.direction ?? null,
+    entry:           result.entry,
+    stopLoss:        result.stopLoss,
+    takeProfit:      result.takeProfit,
+    estimatedLot:    result.estimatedLot,
+    riskUsd:         result.riskUsd,
+    rrRatio:         result.rrRatio,
+    executionEnabled: false as const, // مُثبَّت في A23
+  };
+}
+
+// ── خريطة أسماء أنواع الأوامر بالعربية ──────────────────────────────────────
+const ORDER_TYPE_LABEL: Record<OrderTypePreview, string> = {
+  BUY_MARKET_PREVIEW:  "شراء بالسوق — Market",
+  BUY_LIMIT_PREVIEW:   "شراء بحد أدنى — Buy Limit",
+  BUY_STOP_PREVIEW:    "شراء إيقاف — Buy Stop",
+  SELL_MARKET_PREVIEW: "بيع بالسوق — Market",
+  SELL_LIMIT_PREVIEW:  "بيع بحد أعلى — Sell Limit",
+  SELL_STOP_PREVIEW:   "بيع إيقاف — Sell Stop",
+  NONE:                "لا يوجد أمر",
+};
+
+// ── TradePreviewPanel — A23 ───────────────────────────────────────────────────
+// Preview فقط — زر التنفيذ disabled دائماً — لا order_send — لا تنفيذ تداول
+function TradePreviewPanel({ result }: { result: AnalysisResult }) {
+  const summary = buildDecisionSummary(result);
+  const preview = buildTradeOrderPreview(result, summary);
+
+  return (
+    <div className="rounded-lg border border-border bg-card p-4 space-y-4">
+
+      {/* Header */}
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p className="text-sm font-bold text-foreground">
+          مراجعة أمر التداول — Demo Preview
+        </p>
+        <span className="inline-flex items-center rounded-full border border-amber-500/20 bg-amber-500/10 px-2.5 py-0.5 text-xs font-medium text-amber-300">
+          Preview فقط — لا يُرسل أمر حقيقي
+        </span>
+      </div>
+
+      {/* Allowed → تفاصيل الأمر */}
+      {preview.allowed ? (
+        <>
+          <div className="rounded-md border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-300">
+            ✓ الشروط متحققة — يمكن مراجعة الأرقام أدناه قبل أي قرار مستقبلي
+          </div>
+
+          {/* بيانات الأمر */}
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+            <div className="flex flex-col gap-0.5">
+              <span className="text-xs text-muted-foreground">نوع الأمر</span>
+              <span className="text-sm font-semibold text-foreground">
+                {ORDER_TYPE_LABEL[preview.orderType]}
+              </span>
+            </div>
+            <div className="flex flex-col gap-0.5">
+              <span className="text-xs text-muted-foreground">الرمز</span>
+              <span className="text-sm font-mono font-bold text-foreground">{preview.symbol}</span>
+            </div>
+            <div className="flex flex-col gap-0.5">
+              <span className="text-xs text-muted-foreground">الاتجاه</span>
+              <span className={`text-sm font-bold ${
+                preview.direction === "bullish" ? "text-emerald-300" : "text-red-300"
+              }`}>
+                {preview.direction === "bullish" ? "شراء ↑" : "بيع ↓"}
+              </span>
+            </div>
+            <div className="flex flex-col gap-0.5">
+              <span className="text-xs text-muted-foreground">اللوت</span>
+              <span className="text-sm font-mono font-bold text-foreground">
+                {preview.estimatedLot?.toFixed(2) ?? "—"}
+              </span>
+            </div>
+            <div className="flex flex-col gap-0.5">
+              <span className="text-xs text-muted-foreground">سعر الدخول</span>
+              <span className="text-sm font-mono text-foreground">
+                {preview.entry?.toFixed(5) ?? "—"}
+              </span>
+            </div>
+            <div className="flex flex-col gap-0.5">
+              <span className="text-xs text-muted-foreground">وقف الخسارة</span>
+              <span className="text-sm font-mono text-red-300">
+                {preview.stopLoss?.toFixed(5) ?? "—"}
+              </span>
+            </div>
+            <div className="flex flex-col gap-0.5">
+              <span className="text-xs text-muted-foreground">الهدف</span>
+              <span className="text-sm font-mono text-emerald-300">
+                {preview.takeProfit?.toFixed(5) ?? "—"}
+              </span>
+            </div>
+            <div className="flex flex-col gap-0.5">
+              <span className="text-xs text-muted-foreground">RR / مخاطرة</span>
+              <span className="text-sm font-mono text-foreground">
+                {preview.rrRatio?.toFixed(2) ?? "—"} : 1 — ${preview.riskUsd}
+              </span>
+            </div>
+          </div>
+
+          {/* حالة الحساب */}
+          <div className="rounded-md border border-border bg-muted/10 px-3 py-2 text-xs text-muted-foreground">
+            حالة الحساب: يتطلب تحقق Demo في مرحلة A24
+          </div>
+
+          {/* زر التنفيذ — disabled دائماً في A23 */}
+          <div className="flex flex-wrap items-center gap-3">
+            <button
+              disabled
+              aria-disabled="true"
+              className="inline-flex items-center justify-center rounded-md border border-emerald-500/20 bg-emerald-700/20 px-4 py-2 text-sm font-medium text-emerald-400/60 cursor-not-allowed select-none"
+            >
+              إرسال الأمر إلى MT5 Demo — غير مفعل في A23
+            </button>
+            <span className="text-xs text-muted-foreground">
+              A23 = Preview فقط — التنفيذ في مرحلة لاحقة
+            </span>
+          </div>
+        </>
+      ) : (
+        /* Blocked → أسباب المنع */
+        <>
+          <div className="rounded-md border border-amber-500/20 bg-amber-500/5 px-3 py-2 text-xs text-amber-300">
+            غير جاهز للتنفيذ التجريبي
+          </div>
+          <ul className="space-y-1.5">
+            {preview.blockedReasons.map((reason, i) => (
+              <li key={i} className="flex items-start gap-1.5 text-xs text-muted-foreground">
+                <span className="text-red-400 shrink-0 mt-0.5">✗</span>
+                {reason}
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
+
+      {/* تحذير دائم — لا يختفي سواء كان allowed أم لا */}
+      <p className="text-[10px] text-muted-foreground/50 border-t border-border pt-2">
+        ⚠ هذا Preview فقط — لا يُرسل أي أمر إلى MT5 — لا order_send — لا order_close
+        — لا تنفيذ تداول — لا pending order حقيقي — لا userId من الواجهة
+      </p>
+    </div>
+  );
+}
+
 // canSave: true فقط عند توفر الحقول الأساسية
 function getMissingFields(r: AnalysisResult | null): string[] {
   if (!r) return [];
@@ -1116,6 +1363,9 @@ export function AnalysisControlPanel() {
 
                 {/* ── A22: ملخص اللجان قبل الحفظ ───────────────────────────── */}
                 <CommitteeSummaryPreview result={result} />
+
+                {/* ── A23: مراجعة أمر التداول Demo Preview ─────────────────── */}
+                <TradePreviewPanel result={result} />
 
                 {/* ── Debug: معلومات التوقيت والمصدر ─────────────────────────── */}
                 <details className="rounded border border-border/30 px-3 py-2 text-[10px] text-muted-foreground/55">
