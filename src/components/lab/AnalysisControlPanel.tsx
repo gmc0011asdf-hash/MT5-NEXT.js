@@ -15,6 +15,13 @@
 import { useEffect, useState } from "react";
 import { useConvexAuth, useMutation, useQuery } from "convex/react";
 import { api } from "../../../convex/_generated/api";
+import {
+  type DemoExecutionSettings,
+  type ExecutionEligibility,
+  EXECUTION_BUTTON_TEXT,
+  DEFAULT_DEMO_SETTINGS,
+  loadDemoSettings,
+} from "@/lib/trading/shared/demo-execution-settings";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -837,11 +844,18 @@ const ORDER_TYPE_LABEL: Record<OrderTypePreview, string> = {
   NONE:                "لا يوجد أمر",
 };
 
-// ── TradePreviewPanel — A23 ───────────────────────────────────────────────────
+// ── TradePreviewPanel — A23/A24/A25 ──────────────────────────────────────────
 // Preview فقط — زر التنفيذ disabled دائماً — لا order_send — لا تنفيذ تداول
 function TradePreviewPanel({ result }: { result: AnalysisResult }) {
+  // A25: load demo execution settings from localStorage (lazy init — no flash)
+  const [settings] = useState<DemoExecutionSettings>(loadDemoSettings);
   const summary = buildDecisionSummary(result);
   const preview = buildTradeOrderPreview(result, summary);
+  const eligibility = buildExecutionEligibility(
+    preview,
+    settings,
+    { spreadPoints: result.currentSpreadPoints },
+  );
 
   return (
     <div className="rounded-lg border border-border bg-card p-4 space-y-4">
@@ -948,22 +962,56 @@ function TradePreviewPanel({ result }: { result: AnalysisResult }) {
             </div>
           )}
 
-          {/* حالة الحساب */}
-          <div className="rounded-md border border-border bg-muted/10 px-3 py-2 text-xs text-muted-foreground">
-            حالة الحساب: Demo — يتطلب تحقق تداول حقيقي في مرحلة A25
+          {/* A25: تقييم أهلية التنفيذ التجريبي */}
+          <div className="rounded-md border border-border bg-muted/5 p-3 space-y-2">
+            <p className="text-xs font-semibold text-foreground/80">
+              تقييم أهلية التنفيذ التجريبي
+            </p>
+            <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-3">
+              {[
+                { label: "وضع التنفيذ",      ok: settings.executionMode !== "READ_ONLY", val: settings.executionMode === "READ_ONLY" ? "مغلق" : settings.executionMode === "DEMO_PREVIEW" ? "معاينة" : "مسلّح" },
+                { label: "Kill Switch",       ok: !eligibility.killSwitchOn,      val: eligibility.killSwitchOn      ? "مفعّل ✗" : "معطّل ✓" },
+                { label: "حساب Demo مؤكد",   ok: eligibility.isDemoConfirmed,    val: eligibility.isDemoConfirmed   ? "نعم ✓" : "غير مؤكد ✗" },
+                { label: "الرمز مسموح",      ok: eligibility.symbolAllowed,      val: eligibility.symbolAllowed     ? "مسموح ✓" : "غير مسموح ✗" },
+                { label: "نسبة R/R",          ok: eligibility.rrOk,              val: eligibility.rrOk              ? `≥ ${settings.minRewardRiskRatio} ✓` : `< ${settings.minRewardRiskRatio} ✗` },
+                { label: "السبريد",           ok: eligibility.spreadOk,          val: eligibility.spreadOk          ? "مقبول ✓" : "مرتفع ✗" },
+                { label: "المخاطرة",          ok: eligibility.riskOk,            val: eligibility.riskOk            ? `ضمن $${settings.maxRiskUsdPerTrade} ✓` : `تتجاوز الحد ✗` },
+                { label: "عدد الصفقات",      ok: true,                          val: `حد ${settings.maxTradesPerDay}/يوم — A26` },
+                { label: "مراكز مفتوحة",     ok: true,                          val: `حد ${settings.maxOpenPositions} — A26` },
+              ].map(({ label, ok, val }) => (
+                <div key={label} className="flex items-center justify-between gap-1 rounded border border-border bg-muted/5 px-2 py-1">
+                  <span className="text-[10px] text-muted-foreground truncate">{label}</span>
+                  <span className={`text-[10px] font-medium shrink-0 ${ok ? "text-emerald-300" : "text-red-300"}`}>
+                    {val}
+                  </span>
+                </div>
+              ))}
+            </div>
+
+            {!eligibility.isDemoConfirmed && (
+              <p className="text-[10px] text-amber-300/80">
+                ⚠ لن يتم السماح بالتنفيذ إلا على حساب Demo مؤكد — فعّل من صفحة الإعدادات
+              </p>
+            )}
           </div>
 
-          {/* زر التنفيذ — disabled دائماً في A24 */}
+          {/* زر التنفيذ — disabled دائماً في A25 — نص يتغير بحسب الوضع */}
           <div className="flex flex-wrap items-center gap-3">
             <button
               disabled
               aria-disabled="true"
-              className="inline-flex items-center justify-center rounded-md border border-emerald-500/20 bg-emerald-700/20 px-4 py-2 text-sm font-medium text-emerald-400/60 cursor-not-allowed select-none"
+              className={`inline-flex items-center justify-center rounded-md border px-4 py-2 text-sm font-medium cursor-not-allowed select-none ${
+                settings.executionMode === "READ_ONLY"
+                  ? "border-zinc-500/20 bg-zinc-700/20 text-zinc-400/60"
+                  : settings.executionMode === "DEMO_PREVIEW"
+                    ? "border-amber-500/20 bg-amber-700/20 text-amber-400/60"
+                    : "border-emerald-500/20 bg-emerald-700/20 text-emerald-400/60"
+              }`}
             >
-              إرسال الأمر إلى MT5 Demo — غير مفعل في A24
+              {eligibility.buttonText}
             </button>
             <span className="text-xs text-muted-foreground">
-              A24 = Preview فقط — التنفيذ في مرحلة لاحقة
+              A25 = Guard فقط — التنفيذ في A26
             </span>
           </div>
         </>
@@ -991,6 +1039,74 @@ function TradePreviewPanel({ result }: { result: AnalysisResult }) {
       </p>
     </div>
   );
+}
+
+// ── buildExecutionEligibility — A25 ──────────────────────────────────────────
+// يقيّم أهلية التنفيذ التجريبي — لا order_send — للمراجعة فقط
+function buildExecutionEligibility(
+  preview: TradeOrderPreview,
+  settings: DemoExecutionSettings,
+  opts?: { spreadPoints?: number },
+): ExecutionEligibility {
+  const reasons: string[] = [];
+
+  if (!preview.allowed) {
+    reasons.push("شروط التحليل غير متحققة — راجع ملخص اللجان");
+  }
+  if (settings.killSwitchEnabled) {
+    reasons.push("Kill Switch مفعّل — جميع التنفيذات معطّلة");
+  }
+  if (settings.executionMode === "READ_ONLY") {
+    reasons.push("وضع القراءة فقط — التنفيذ مغلق من الإعدادات");
+  }
+  if (!settings.isConfirmedDemo) {
+    reasons.push("يجب تأكيد أن الحساب Demo من صفحة الإعدادات");
+  }
+
+  const allowedArr = settings.allowedExecutionSymbols
+    .split(",")
+    .map((s) => s.trim().toUpperCase())
+    .filter(Boolean);
+  const symbolAllowed =
+    allowedArr.length === 0 || allowedArr.includes(preview.symbol.toUpperCase());
+  if (!symbolAllowed) {
+    reasons.push(`الرمز ${preview.symbol} غير مسموح — أضفه في الأزواج المسموحة بالإعدادات`);
+  }
+
+  const rrOk = (preview.rrRatio ?? 0) >= settings.minRewardRiskRatio;
+  if (!rrOk) {
+    reasons.push(
+      `R/R ${preview.rrRatio?.toFixed(2) ?? "—"} أقل من الحد الأدنى ${settings.minRewardRiskRatio}`,
+    );
+  }
+
+  const spreadOk =
+    opts?.spreadPoints === undefined || opts.spreadPoints <= settings.maxSpreadPoints;
+  if (opts?.spreadPoints !== undefined && !spreadOk) {
+    reasons.push(
+      `السبريد ${opts.spreadPoints} نقطة يتجاوز الحد ${settings.maxSpreadPoints} نقطة`,
+    );
+  }
+
+  const riskOk = preview.riskUsd <= settings.maxRiskUsdPerTrade;
+  if (!riskOk) {
+    reasons.push(
+      `المخاطرة $${preview.riskUsd} تتجاوز الحد $${settings.maxRiskUsdPerTrade} للصفقة الواحدة`,
+    );
+  }
+
+  return {
+    eligible:        reasons.length === 0,
+    blockedReasons:  reasons,
+    executionMode:   settings.executionMode,
+    killSwitchOn:    settings.killSwitchEnabled,
+    isDemoConfirmed: settings.isConfirmedDemo,
+    symbolAllowed,
+    rrOk,
+    spreadOk,
+    riskOk,
+    buttonText: EXECUTION_BUTTON_TEXT[settings.executionMode],
+  };
 }
 
 // canSave: true فقط عند توفر الحقول الأساسية

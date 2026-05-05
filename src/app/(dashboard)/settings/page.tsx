@@ -17,6 +17,14 @@ import { useConvexAuth, useMutation, useQuery } from "convex/react";
 import { useEffect, useMemo, useState } from "react";
 
 import { api } from "../../../../convex/_generated/api";
+import {
+  type DemoExecutionSettings,
+  type ExecutionMode,
+  DEFAULT_DEMO_SETTINGS,
+  EXECUTION_MODE_LABELS,
+  loadDemoSettings,
+  saveDemoSettings,
+} from "@/lib/trading/shared/demo-execution-settings";
 
 const SYMBOL_SYNC_CHUNK = 100;
 const DISPLAY_ROW_CAP = 300;
@@ -109,6 +117,13 @@ export default function SettingsPage() {
   const [mt5Server, setMt5Server] = useState("");
   const [mt5Password, setMt5Password] = useState("");
   const [mt5TerminalPath, setMt5TerminalPath] = useState(DEFAULT_TERMINAL_PATH);
+
+  // ── A25: Demo Execution Settings — localStorage only, no secrets ──────────
+  const [demoSettings, setDemoSettings] = useState<DemoExecutionSettings>(DEFAULT_DEMO_SETTINGS);
+
+  useEffect(() => {
+    setDemoSettings(loadDemoSettings());
+  }, []);
 
   const filteredSymbols = useMemo(() => {
     if (!mt5Symbols || mt5Symbols.length === 0) return [];
@@ -232,6 +247,17 @@ export default function SettingsPage() {
     } catch {
       setSyncMessage("تعذّر حفظ الإعدادات.");
     }
+  }
+
+  function updateDemoSetting<K extends keyof DemoExecutionSettings>(
+    key: K,
+    value: DemoExecutionSettings[K],
+  ) {
+    setDemoSettings((prev) => {
+      const next = { ...prev, [key]: value };
+      saveDemoSettings(next);
+      return next;
+    });
   }
 
   async function syncSnapshotAfterConnect() {
@@ -561,6 +587,179 @@ export default function SettingsPage() {
           <Field label="Kill switch (مفتاح الطوارئ)" value="غير مفعل (عرض)" />
           <Field label="تبريد بعد خسارة متتالية" value="60 دقيقة" />
           <Field label="حد الخسائر المتتالية (Drawdown)" value="3 صفقات خاسرة" />
+        </div>
+      </Section>
+
+      {/* ── A25: Demo Execution Guard Settings ──────────────────────────────── */}
+      <Section title="إعدادات تنفيذ MT5 التجريبي">
+        <p className="rounded-xl border border-red-500/20 bg-red-500/5 px-3 py-2 text-red-200/90 text-xs leading-relaxed mb-4">
+          ⚠ هذه الإعدادات للتنفيذ التجريبي Demo فقط — لا تنفيذ تداول حقيقي — لا order_send —
+          الإعدادات محفوظة محلياً (localStorage) ولا تُرسَل إلى أي سيرفر.
+        </p>
+
+        {/* وضع التنفيذ */}
+        <div className="space-y-2">
+          <label className="text-sm font-medium">وضع التنفيذ</label>
+          <div className="flex flex-wrap gap-2">
+            {(["READ_ONLY", "DEMO_PREVIEW", "DEMO_ARMED"] as ExecutionMode[]).map((mode) => (
+              <button
+                key={mode}
+                type="button"
+                onClick={() => updateDemoSetting("executionMode", mode)}
+                className={`rounded-md border px-3 py-1.5 text-xs font-medium transition-colors ${
+                  demoSettings.executionMode === mode
+                    ? mode === "READ_ONLY"
+                      ? "border-zinc-500/60 bg-zinc-500/20 text-zinc-200"
+                      : mode === "DEMO_PREVIEW"
+                        ? "border-amber-500/60 bg-amber-500/20 text-amber-200"
+                        : "border-emerald-500/60 bg-emerald-500/20 text-emerald-200"
+                    : "border-border bg-muted/10 text-muted-foreground hover:bg-muted/20"
+                }`}
+              >
+                {EXECUTION_MODE_LABELS[mode]}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Kill Switch + Demo Confirmation */}
+        <div className="grid gap-4 md:grid-cols-2">
+          <div className="flex items-center justify-between rounded-xl border border-border/60 px-4 py-3">
+            <div>
+              <p className="text-sm font-medium">Kill Switch</p>
+              <p className="text-xs text-muted-foreground">إيقاف فوري لجميع التنفيذات</p>
+            </div>
+            <SymbolToggleSwitch
+              checked={demoSettings.killSwitchEnabled}
+              label="تبديل Kill Switch"
+              onToggle={() => updateDemoSetting("killSwitchEnabled", !demoSettings.killSwitchEnabled)}
+            />
+          </div>
+
+          <div className="flex items-center justify-between rounded-xl border border-border/60 px-4 py-3">
+            <div>
+              <p className="text-sm font-medium">تأكيد حساب Demo</p>
+              <p className="text-xs text-muted-foreground">
+                يجب تأكيده يدوياً — لا يمكن اكتشافه تلقائياً
+              </p>
+            </div>
+            <SymbolToggleSwitch
+              checked={demoSettings.isConfirmedDemo}
+              label="تأكيد حساب Demo"
+              onToggle={() => updateDemoSetting("isConfirmedDemo", !demoSettings.isConfirmedDemo)}
+            />
+          </div>
+        </div>
+
+        {!demoSettings.isConfirmedDemo && (
+          <p className="rounded-md border border-amber-500/20 bg-amber-500/5 px-3 py-2 text-xs text-amber-300">
+            ⚠ لن يتم السماح بالتنفيذ إلا على حساب Demo مؤكد.
+            تحقق من نوع حسابك في MT5 قبل التفعيل.
+          </p>
+        )}
+
+        {/* حدود المخاطرة */}
+        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+          <div className="space-y-1.5">
+            <label className="text-xs font-medium text-muted-foreground">
+              حد المخاطرة لكل صفقة (USD)
+            </label>
+            <input
+              type="number"
+              min={1}
+              max={10000}
+              value={demoSettings.maxRiskUsdPerTrade}
+              onChange={(e) => updateDemoSetting("maxRiskUsdPerTrade", Math.max(1, Number(e.target.value)))}
+              className="w-full rounded-md border border-border bg-background px-3 py-1.5 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-amber-500/50"
+              dir="ltr"
+            />
+          </div>
+
+          <div className="space-y-1.5">
+            <label className="text-xs font-medium text-muted-foreground">
+              حد الصفقات اليومي
+            </label>
+            <input
+              type="number"
+              min={1}
+              max={50}
+              value={demoSettings.maxTradesPerDay}
+              onChange={(e) => updateDemoSetting("maxTradesPerDay", Math.max(1, Number(e.target.value)))}
+              className="w-full rounded-md border border-border bg-background px-3 py-1.5 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-amber-500/50"
+              dir="ltr"
+            />
+          </div>
+
+          <div className="space-y-1.5">
+            <label className="text-xs font-medium text-muted-foreground">
+              حد الصفقات المفتوحة
+            </label>
+            <input
+              type="number"
+              min={1}
+              max={20}
+              value={demoSettings.maxOpenPositions}
+              onChange={(e) => updateDemoSetting("maxOpenPositions", Math.max(1, Number(e.target.value)))}
+              className="w-full rounded-md border border-border bg-background px-3 py-1.5 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-amber-500/50"
+              dir="ltr"
+            />
+          </div>
+
+          <div className="space-y-1.5">
+            <label className="text-xs font-medium text-muted-foreground">
+              الحد الأدنى لنسبة RR
+            </label>
+            <input
+              type="number"
+              min={0.5}
+              max={10}
+              step={0.1}
+              value={demoSettings.minRewardRiskRatio}
+              onChange={(e) => updateDemoSetting("minRewardRiskRatio", Math.max(0.5, Number(e.target.value)))}
+              className="w-full rounded-md border border-border bg-background px-3 py-1.5 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-amber-500/50"
+              dir="ltr"
+            />
+          </div>
+
+          <div className="space-y-1.5">
+            <label className="text-xs font-medium text-muted-foreground">
+              حد السبريد الأقصى (نقاط)
+            </label>
+            <input
+              type="number"
+              min={1}
+              max={500}
+              value={demoSettings.maxSpreadPoints}
+              onChange={(e) => updateDemoSetting("maxSpreadPoints", Math.max(1, Number(e.target.value)))}
+              className="w-full rounded-md border border-border bg-background px-3 py-1.5 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-amber-500/50"
+              dir="ltr"
+            />
+          </div>
+        </div>
+
+        {/* الأزواج المسموحة */}
+        <div className="space-y-1.5">
+          <label className="text-xs font-medium text-muted-foreground">
+            الأزواج المسموحة للتنفيذ (فاصلة بين الرموز — فارغ = كل الأزواج)
+          </label>
+          <input
+            type="text"
+            placeholder="مثال: EURUSD,GBPUSD,XAUUSD"
+            value={demoSettings.allowedExecutionSymbols}
+            onChange={(e) => updateDemoSetting("allowedExecutionSymbols", e.target.value)}
+            className="w-full rounded-md border border-border bg-background px-3 py-1.5 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-amber-500/50"
+            dir="ltr"
+          />
+        </div>
+
+        {/* ملخص الإعدادات */}
+        <div className="rounded-lg border border-border bg-muted/5 px-4 py-3 text-xs text-muted-foreground space-y-1">
+          <p className="font-semibold text-foreground/80 mb-1.5">ملخص الإعدادات الحالية</p>
+          <p>الوضع: <span className="text-amber-300">{EXECUTION_MODE_LABELS[demoSettings.executionMode]}</span></p>
+          <p>Kill Switch: <span className={demoSettings.killSwitchEnabled ? "text-red-300" : "text-emerald-300"}>{demoSettings.killSwitchEnabled ? "مفعّل" : "معطّل"}</span></p>
+          <p>حساب Demo مؤكد: <span className={demoSettings.isConfirmedDemo ? "text-emerald-300" : "text-amber-300"}>{demoSettings.isConfirmedDemo ? "نعم ✓" : "لا ✗"}</span></p>
+          <p>حد المخاطرة: <span className="text-foreground">${demoSettings.maxRiskUsdPerTrade} — RR ≥ {demoSettings.minRewardRiskRatio} — سبريد ≤ {demoSettings.maxSpreadPoints} pts</span></p>
+          <p className="text-[10px] text-muted-foreground/50 pt-1">الإعدادات تُخزَّن محلياً فقط — لا ترسل لأي سيرفر — لا تنفيذ في A25</p>
         </div>
       </Section>
 
