@@ -142,6 +142,59 @@ function trendLabel(t?: string): string {
   return "محايد";
 }
 
+function gradeColor(g: string): string {
+  if (g === "A+" || g === "A") return "text-emerald-300";
+  if (g === "B")               return "text-amber-300";
+  return "text-red-300";
+}
+
+function verdictLabel(v: string): string {
+  if (v === "PASS")  return "ناجح ✓";
+  if (v === "WARN")  return "تحذير ⚠";
+  if (v === "BLOCK") return "محظور ✗";
+  return v;
+}
+
+function verdictBadgeClass(v: string): string {
+  if (v === "PASS")  return "text-emerald-300 bg-emerald-500/10 border-emerald-500/30";
+  if (v === "WARN")  return "text-amber-300   bg-amber-500/10   border-amber-500/30";
+  if (v === "BLOCK") return "text-red-300     bg-red-500/10     border-red-500/30";
+  return "text-muted-foreground bg-muted/10 border-border";
+}
+
+function verdictBarColor(v: string): string {
+  if (v === "PASS")  return "bg-emerald-500/70";
+  if (v === "WARN")  return "bg-amber-500/70";
+  if (v === "BLOCK") return "bg-red-500/70";
+  return "bg-muted";
+}
+
+function finalDecisionColor(d: string): string {
+  if (d === "BUY")   return "text-emerald-300";
+  if (d === "SELL")  return "text-red-300";
+  if (d === "BLOCK") return "text-red-400";
+  return "text-amber-300";
+}
+
+function finalDecisionLabel(d: string): string {
+  if (d === "BUY")   return "شراء ↑";
+  if (d === "SELL")  return "بيع ↓";
+  if (d === "HOLD")  return "انتظار ⏸";
+  if (d === "BLOCK") return "حظر ✗";
+  return d;
+}
+
+function journalStatusLabel(s: string): string {
+  const map: Record<string, string> = {
+    READY_FOR_REVIEW: "جاهز للمراجعة",
+    BLOCKED:          "محظور",
+    HOLD:             "تعليق",
+    WATCHING:         "مراقبة",
+    SETUP_FORMING:    "تهيؤ",
+  };
+  return map[s] ?? s;
+}
+
 // ---------------------------------------------------------------------------
 // A18: Multi-Committee Scoring — AnalysisResult → saveAnalysisDecision args
 // لا تنفيذ تداول — للتوثيق التحليلي فقط
@@ -443,11 +496,21 @@ function deriveGradeFromCommittees(
   return "D";
 }
 
-// ── buildSaveArgs — Multi-Committee ──────────────────────────────────────────
-function buildSaveArgs(r: AnalysisResult) {
-  const timeframe = r.selectedTimeframe ?? "UNKNOWN";
+// ── DecisionSummary — نتيجة اللجان للعرض المسبق والحفظ معاً ─────────────────
 
-  // بناء اللجان الست من بيانات التحليل
+type DecisionSummary = {
+  committees:     CommitteeResult[];
+  probability:    number;
+  grade:          string;
+  finalDecision:  string;
+  journalStatus:  string;
+  criticalBlocks: CommitteeResult[];
+  anyBlock:       boolean;
+};
+
+// buildDecisionSummary — الدالة المشتركة بين العرض قبل الحفظ وعملية الحفظ الفعلية
+// لا تنفيذ تداول — للتحليل والتوثيق فقط
+function buildDecisionSummary(r: AnalysisResult): DecisionSummary {
   const committees: CommitteeResult[] = [
     buildTrendCommittee(r),
     buildMomentumCommittee(r),
@@ -460,35 +523,38 @@ function buildSaveArgs(r: AnalysisResult) {
   const probability = computeWeightedProbability(committees);
   const grade       = deriveGradeFromCommittees(r, committees, probability);
 
-  // فحص اللجان الحرجة التي تصدر BLOCK
   const criticalBlocks = committees.filter(
     c => c.verdict === "BLOCK" && CRITICAL_COMMITTEES.has(c.committeeId),
   );
   const anyBlock = committees.some(c => c.verdict === "BLOCK");
 
-  // تحديد القرار النهائي
   let finalDecision: string;
   if (r.status === "opportunity" && r.direction === "bullish") finalDecision = "BUY";
   else if (r.status === "opportunity" && r.direction === "bearish") finalDecision = "SELL";
   else if (r.status === "rejected") finalDecision = "BLOCK";
   else finalDecision = "HOLD";
 
-  // تجاوز القرار إذا وجدت لجنة حرجة بـ BLOCK
   if (criticalBlocks.length > 0) {
     finalDecision = "BLOCK";
   } else if (anyBlock && (finalDecision === "BUY" || finalDecision === "SELL")) {
-    finalDecision = "HOLD"; // تخفيض إلى HOLD عند BLOCK غير حرجة
+    finalDecision = "HOLD";
   }
 
-  // حالة سجل القرارات
   let journalStatus: string;
-  if      (finalDecision === "BLOCK") journalStatus = "BLOCKED";
-  else if (finalDecision === "HOLD")  journalStatus = "HOLD";
+  if      (finalDecision === "BLOCK")  journalStatus = "BLOCKED";
+  else if (finalDecision === "HOLD")   journalStatus = "HOLD";
   else if (r.status === "opportunity") journalStatus = "READY_FOR_REVIEW";
   else if (r.status === "wait")        journalStatus = "HOLD";
   else journalStatus = "WATCHING";
 
-  // أسباب القرار من ملخصات اللجان
+  return { committees, probability, grade, finalDecision, journalStatus, criticalBlocks, anyBlock };
+}
+
+// ── buildSaveArgs — يفوّض إلى buildDecisionSummary لتجنّب تكرار المنطق ────────
+function buildSaveArgs(r: AnalysisResult) {
+  const timeframe = r.selectedTimeframe ?? "UNKNOWN";
+  const { committees, probability, grade, finalDecision, journalStatus } = buildDecisionSummary(r);
+
   const committeeInsights = committees
     .filter(c => c.verdict !== "PASS")
     .map(c => `[${c.committeeName}] ${c.summary}`)
@@ -497,7 +563,6 @@ function buildSaveArgs(r: AnalysisResult) {
     ? committeeInsights.join(" | ")
     : r.reasons.slice(0, 3).join(" | ") || "لا توجد ملاحظات من اللجان";
 
-  // لقطة المخاطرة
   const risk =
     r.estimatedLot !== undefined &&
     r.stopLoss      !== undefined &&
@@ -514,22 +579,118 @@ function buildSaveArgs(r: AnalysisResult) {
       : undefined;
 
   return {
-    platform:          "MT5",           // ثابت — لا OKX real API
+    platform:          "MT5",
     symbol:            r.symbol,
     timeframe,
     status:            journalStatus,
     finalDecision,
     grade,
     probability,
-    entryPrice:        r.entry    ?? 0, // canSave يضمن أن entry موجود
-    invalidationPrice: r.stopLoss ?? 0, // canSave يضمن أن stopLoss موجود
+    entryPrice:        r.entry    ?? 0,
+    invalidationPrice: r.stopLoss ?? 0,
     reason:            reasonText,
     source:            "mt5-lab-analysis",
-    committees,        // 6 لجان حقيقية — ≤ 20 (حد saveAnalysisDecision)
+    committees,
     risk,
     // userId: من ctx.auth server-side — لا يُمرَّر من الواجهة
     // readOnly: true مُجبَر server-side
   };
+}
+
+// ── CommitteeSummaryPreview — A22 ────────────────────────────────────────────
+// يعرض ملخص اللجان قبل الحفظ — قراءة فقط — لا useMutation — لا تنفيذ تداول
+function CommitteeSummaryPreview({ result }: { result: AnalysisResult }) {
+  const {
+    committees, probability, grade,
+    finalDecision, journalStatus,
+    criticalBlocks,
+  } = buildDecisionSummary(result);
+
+  const passCount  = committees.filter(c => c.verdict === "PASS").length;
+  const warnCount  = committees.filter(c => c.verdict === "WARN").length;
+  const blockCount = committees.filter(c => c.verdict === "BLOCK").length;
+
+  return (
+    <div className="rounded-lg border border-amber-500/20 bg-amber-500/[0.04] p-4 space-y-4">
+      <p className="text-sm font-bold text-amber-200/90">ملخص قرار اللجان قبل الحفظ</p>
+
+      {/* تحذير عند وجود لجنة حرجة BLOCK */}
+      {criticalBlocks.length > 0 && (
+        <div className="rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-300 flex items-start gap-2">
+          <span className="shrink-0 font-bold mt-0.5">⚠</span>
+          <span>
+            لجنة حرجة أصدرت BLOCK ({criticalBlocks.map(c => c.committeeName).join("، ")}) —
+            هذا القرار سيتم حفظه كحظر/مراجعة وليس كفرصة جاهزة.
+          </span>
+        </div>
+      )}
+
+      {/* القرار + حالة السجل + الاحتمالية + الدرجة */}
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+        <div className="flex flex-col gap-0.5">
+          <span className="text-xs text-muted-foreground">القرار المتوقع</span>
+          <span className={`text-sm font-bold ${finalDecisionColor(finalDecision)}`}>
+            {finalDecisionLabel(finalDecision)}
+          </span>
+        </div>
+        <div className="flex flex-col gap-0.5">
+          <span className="text-xs text-muted-foreground">حالة السجل</span>
+          <span className="text-sm font-medium text-foreground">{journalStatusLabel(journalStatus)}</span>
+        </div>
+        <div className="flex flex-col gap-0.5">
+          <span className="text-xs text-muted-foreground">الاحتمالية الموزونة</span>
+          <span className="text-sm font-bold tabular-nums text-foreground">{probability}%</span>
+        </div>
+        <div className="flex flex-col gap-0.5">
+          <span className="text-xs text-muted-foreground">الدرجة</span>
+          <span className={`text-sm font-bold ${gradeColor(grade)}`}>{grade}</span>
+        </div>
+      </div>
+
+      {/* عداد PASS / WARN / BLOCK */}
+      <div className="flex flex-wrap gap-2">
+        <span className="inline-flex items-center gap-1 rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2.5 py-0.5 text-xs font-medium text-emerald-300">
+          ✓ PASS: {passCount}
+        </span>
+        <span className="inline-flex items-center gap-1 rounded-full border border-amber-500/30 bg-amber-500/10 px-2.5 py-0.5 text-xs font-medium text-amber-300">
+          ⚠ WARN: {warnCount}
+        </span>
+        <span className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-0.5 text-xs font-medium ${
+          blockCount > 0
+            ? "border-red-500/30 bg-red-500/10 text-red-300"
+            : "border-border bg-muted/10 text-muted-foreground"
+        }`}>
+          ✗ BLOCK: {blockCount}
+        </span>
+      </div>
+
+      {/* بطاقات اللجان الست */}
+      <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+        {committees.map((c) => (
+          <div key={c.committeeId} className="rounded-md border border-border bg-muted/5 p-3 space-y-1.5">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-xs font-semibold text-foreground leading-tight">
+                {c.committeeName}
+              </span>
+              <span className={`inline-flex shrink-0 items-center rounded-full border px-1.5 py-0.5 text-[10px] font-medium ${verdictBadgeClass(c.verdict)}`}>
+                {verdictLabel(c.verdict)}
+              </span>
+            </div>
+            <div className="h-1 overflow-hidden rounded-full bg-muted/40">
+              <div
+                className={`h-full rounded-full ${verdictBarColor(c.verdict)}`}
+                style={{ width: `${Math.min(100, Math.max(0, c.score))}%` }}
+              />
+            </div>
+            <div className="flex items-center justify-between text-[10px] text-muted-foreground gap-1">
+              <span className="truncate">{c.summary}</span>
+              <span className="font-mono shrink-0">{c.score}</span>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
 }
 
 // canSave: true فقط عند توفر الحقول الأساسية
@@ -952,6 +1113,9 @@ export function AnalysisControlPanel() {
 
                 {/* تحذيرات */}
                 {result.warnings.length > 0 && <WarnList items={result.warnings} />}
+
+                {/* ── A22: ملخص اللجان قبل الحفظ ───────────────────────────── */}
+                <CommitteeSummaryPreview result={result} />
 
                 {/* ── Debug: معلومات التوقيت والمصدر ─────────────────────────── */}
                 <details className="rounded border border-border/30 px-3 py-2 text-[10px] text-muted-foreground/55">
