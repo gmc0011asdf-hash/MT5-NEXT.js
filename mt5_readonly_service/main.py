@@ -52,9 +52,18 @@ class Utf8JsonResponse(JSONResponse):
 # -----------------------------------------------------------------------------
 READ_ONLY_MODE: bool = True
 
-# Names we must never invoke via MetaTrader5 (documentation + lint anchor).
+# MT5_DEMO_EXECUTION_ENABLED — authorises the /demo/order-send endpoint (A26.2).
+# Defaults to False.  Set MT5_DEMO_EXECUTION_ENABLED=1 in the process environment
+# to enable Demo execution.  This flag does NOT affect READ_ONLY_MODE.
+MT5_DEMO_EXECUTION_ENABLED: bool = os.environ.get(
+    "MT5_DEMO_EXECUTION_ENABLED", ""
+).lower() in ("1", "true", "yes")
+
+# Names forbidden in ALL read-only endpoints above this marker.
+# The ONLY authorised use of order_send in this file is inside
+# /demo/order-send (A26.2, Demo accounts only, gated by MT5_DEMO_EXECUTION_ENABLED).
 FORBIDDEN_MT5_FUNCTION_NAMES: tuple[str, ...] = (
-    "order_send",
+    "order_send",   # forbidden in read-only paths; ONLY /demo/order-send may use it
     "order_close",
     "order_modify",
     "order_check",
@@ -875,4 +884,289 @@ def readonly_candles(
         mt5.shutdown()
 
 
-# Explicit reminder: never attach routers that expose {FORBIDDEN_MT5_FUNCTION_NAMES}.
+# =============================================================================
+# DEMO EXECUTION — A26.2
+# =============================================================================
+# order_send is used ONLY here, gated by:
+#   1. MT5_DEMO_EXECUTION_ENABLED = True  (env flag, default False)
+#   2. manualConfirmation = True           (explicit user action)
+#   3. accountMode = "DEMO_ONLY"           (request contract)
+#   4. MT5 account trade_mode == 0         (live Demo account check)
+#   5. All price/lot/rr validations pass
+#
+# READ_ONLY_MODE is intentionally NOT changed — all read-only endpoints above
+# continue to call _enforce_read_only_policy() and will never reach order_send.
+# =============================================================================
+
+# ── Mapping: preview order type string → (MT5 order type const, MT5 action const) ──
+_DEMO_ORDER_TYPE_MAP: dict[str, tuple[int, int]] = {
+    "BUY_MARKET_PREVIEW":  (mt5.ORDER_TYPE_BUY,        mt5.TRADE_ACTION_DEAL),
+    "SELL_MARKET_PREVIEW": (mt5.ORDER_TYPE_SELL,        mt5.TRADE_ACTION_DEAL),
+    "BUY_LIMIT_PREVIEW":   (mt5.ORDER_TYPE_BUY_LIMIT,  mt5.TRADE_ACTION_PENDING),
+    "SELL_LIMIT_PREVIEW":  (mt5.ORDER_TYPE_SELL_LIMIT,  mt5.TRADE_ACTION_PENDING),
+    "BUY_STOP_PREVIEW":    (mt5.ORDER_TYPE_BUY_STOP,    mt5.TRADE_ACTION_PENDING),
+    "SELL_STOP_PREVIEW":   (mt5.ORDER_TYPE_SELL_STOP,   mt5.TRADE_ACTION_PENDING),
+    # BUY_STOP_LIMIT / SELL_STOP_LIMIT deferred to A26.3
+}
+
+# ── MT5 retcode → human-readable string ──────────────────────────────────────
+_MT5_RETCODES: dict[int, str] = {
+    10008: "PLACED (أمر معلق مقبول)",
+    10009: "DONE (تم التنفيذ)",
+    10010: "DONE_PARTIAL (تنفيذ جزئي)",
+    10004: "REQUOTE (إعادة التسعير)",
+    10006: "REJECT (مرفوض من السيرفر)",
+    10007: "CANCEL (ملغى)",
+    10011: "ERROR (خطأ)",
+    10012: "TIMEOUT (انتهت المهلة)",
+    10013: "INVALID (طلب غير صالح)",
+    10014: "INVALID_VOLUME (حجم غير صالح)",
+    10015: "INVALID_PRICE (سعر غير صالح)",
+    10016: "INVALID_STOPS (SL/TP غير صالح)",
+    10017: "TRADE_DISABLED (التداول معطّل)",
+    10018: "MARKET_CLOSED (السوق مغلق)",
+    10019: "NO_MONEY (رصيد غير كافٍ)",
+    10020: "PRICE_CHANGED (تغيّر السعر)",
+    10021: "PRICE_OFF (السعر خارج النطاق)",
+    10024: "TOO_MANY_REQUESTS (طلبات كثيرة)",
+    10030: "INVALID_FILL (وضع التنفيذ غير مدعوم)",
+    10031: "CONNECTION (خطأ اتصال)",
+    10032: "ONLY_REAL (مسموح للحسابات الحقيقية فقط)",
+    10033: "LIMIT_ORDERS (تجاوز حد الأوامر المعلقة)",
+    10034: "LIMIT_VOLUME (تجاوز حد الحجم)",
+}
+
+def _retcode_text(retcode: int) -> str:
+    return _MT5_RETCODES.get(retcode, f"RETCODE_{retcode}")
+
+
+class DemoOrderRequest(BaseModel):
+    """
+    عقد طلب التنفيذ التجريبي — A26.2.
+    يُرسَل فقط من واجهة المراجعة النهائية بعد تأكيد يدوي.
+    لا يُقبَل إلا على حسابات Demo مؤكدة.
+    """
+    platform:                   str
+    accountMode:                str            # must be "DEMO_ONLY"
+    symbol:                     str
+    orderType:                  str
+    direction:                  str | None = None
+    entryPrice:                 float | None = None
+    stopLoss:                   float | None = None
+    takeProfit:                 float | None = None
+    estimatedLot:               float | None = None
+    riskUsd:                    float = 0.0
+    rrRatio:                    float | None = None
+    currentBid:                 float | None = None
+    currentAsk:                 float | None = None
+    spreadPoints:               float | None = None
+    decisionId:                 str | None = None
+    generatedAt:                float | None = None
+    requiresManualConfirmation: bool = False   # must be True from contract
+    executionEnabled:           bool = False   # contract value — remains False
+    manualConfirmation:         bool = False   # must be True from explicit user action
+
+
+def _validate_demo_order(req: DemoOrderRequest) -> str | None:
+    """Returns Arabic error string if validation fails, else None."""
+    # ── Contract checks ───────────────────────────────────────────────────────
+    if req.manualConfirmation is not True:
+        return "manualConfirmation يجب أن يكون true"
+    if req.accountMode != "DEMO_ONLY":
+        return "accountMode يجب أن يكون DEMO_ONLY"
+    if req.requiresManualConfirmation is not True:
+        return "requiresManualConfirmation يجب أن يكون true في العقد"
+    # ── Field presence ────────────────────────────────────────────────────────
+    if not req.symbol or not req.symbol.strip():
+        return "symbol مطلوب"
+    if req.estimatedLot is None or req.estimatedLot <= 0:
+        return "estimatedLot يجب أن يكون > 0"
+    if req.stopLoss is None or req.stopLoss <= 0:
+        return "stopLoss مطلوب ويجب > 0"
+    if req.takeProfit is None or req.takeProfit <= 0:
+        return "takeProfit مطلوب ويجب > 0"
+    if req.entryPrice is None or req.entryPrice <= 0:
+        return "entryPrice مطلوب ويجب > 0"
+    # ── Order type ────────────────────────────────────────────────────────────
+    if req.orderType not in _DEMO_ORDER_TYPE_MAP:
+        return f"orderType غير مدعوم: {req.orderType}"
+    # ── RR ────────────────────────────────────────────────────────────────────
+    if req.rrRatio is not None and req.rrRatio < 1.5:
+        return f"rrRatio {req.rrRatio:.2f} أقل من الحد الأدنى 1.5"
+    # ── SL/TP direction sanity ────────────────────────────────────────────────
+    is_buy = "BUY" in req.orderType
+    if is_buy:
+        if req.stopLoss >= req.entryPrice:
+            return "BUY: stopLoss يجب أن يكون < entryPrice"
+        if req.takeProfit <= req.entryPrice:
+            return "BUY: takeProfit يجب أن يكون > entryPrice"
+    else:
+        if req.stopLoss <= req.entryPrice:
+            return "SELL: stopLoss يجب أن يكون > entryPrice"
+        if req.takeProfit >= req.entryPrice:
+            return "SELL: takeProfit يجب أن يكون < entryPrice"
+    # ── Spread guard (if provided) ────────────────────────────────────────────
+    if req.spreadPoints is not None and req.spreadPoints > 100:
+        return f"السبريد {req.spreadPoints} نقطة يتجاوز الحد الأقصى المسموح (100)"
+    return None
+
+
+def _demo_mt5_init() -> tuple[bool, str | None]:
+    """Initialize MT5 for demo execution — does NOT call _enforce_read_only_policy."""
+    if not MT5_DEMO_EXECUTION_ENABLED:
+        return False, "MT5_DEMO_EXECUTION_ENABLED غير مفعّل في بيئة الخدمة"
+    if not mt5.initialize():
+        err = mt5.last_error()
+        return False, f"تعذّر تهيئة MT5: {err}"
+    return True, None
+
+
+@app.post("/demo/order-send")
+def demo_order_send(payload: DemoOrderRequest) -> JSONResponse:
+    """
+    Demo-only order execution — A26.2.
+
+    Authorisation layers (ALL must pass before order_send is called):
+      1. MT5_DEMO_EXECUTION_ENABLED env flag
+      2. manualConfirmation = true
+      3. accountMode = "DEMO_ONLY"
+      4. All field/price/rr validations
+      5. MT5 account trade_mode == 0 (Demo)
+
+    READ_ONLY_MODE is NOT checked here — it applies only to the read-only endpoints.
+    order_send is called ONLY inside this function.
+    """
+    # ── Gate 1: env flag ──────────────────────────────────────────────────────
+    if not MT5_DEMO_EXECUTION_ENABLED:
+        return Utf8JsonResponse(
+            status_code=403,
+            content={
+                "ok": False,
+                "accepted": False,
+                "error": "Demo execution disabled — set MT5_DEMO_EXECUTION_ENABLED=1",
+                "demoOnly": True,
+            },
+        )
+
+    # ── Gate 2: request validation ────────────────────────────────────────────
+    val_err = _validate_demo_order(payload)
+    if val_err:
+        return Utf8JsonResponse(
+            status_code=400,
+            content={"ok": False, "accepted": False, "error": val_err, "demoOnly": True},
+        )
+
+    # ── Gate 3: MT5 initialise (no read-only policy) ──────────────────────────
+    ok, err = _demo_mt5_init()
+    if not ok:
+        return Utf8JsonResponse(
+            status_code=503,
+            content={"ok": False, "accepted": False, "error": err or "MT5 غير متاح", "demoOnly": True},
+        )
+
+    try:
+        # ── Gate 4: verify Demo account ───────────────────────────────────────
+        info = mt5.account_info()
+        if info is None:
+            return Utf8JsonResponse(
+                status_code=503,
+                content={"ok": False, "accepted": False, "error": "تعذّر جلب بيانات الحساب", "demoOnly": True},
+            )
+        # ACCOUNT_TRADE_MODE_DEMO = 0
+        if int(getattr(info, "trade_mode", -1)) != 0:
+            return Utf8JsonResponse(
+                status_code=403,
+                content={
+                    "ok": False,
+                    "accepted": False,
+                    "error": "الحساب ليس Demo — يُسمح بالتنفيذ على حسابات Demo فقط",
+                    "demoOnly": True,
+                },
+            )
+
+        sym = payload.symbol.strip().upper()
+
+        # ── Symbol activation ─────────────────────────────────────────────────
+        if not mt5.symbol_select(sym, True):
+            return Utf8JsonResponse(
+                status_code=400,
+                content={"ok": False, "accepted": False, "error": f"الرمز '{sym}' غير موجود في Market Watch", "demoOnly": True},
+            )
+
+        order_type_val, action_val = _DEMO_ORDER_TYPE_MAP[payload.orderType]
+
+        # ── Determine execution price ─────────────────────────────────────────
+        if action_val == mt5.TRADE_ACTION_DEAL:
+            # Market orders: use current live price
+            tick = mt5.symbol_info_tick(sym)
+            if tick is None:
+                return Utf8JsonResponse(
+                    status_code=503,
+                    content={"ok": False, "accepted": False, "error": f"تعذّر جلب السعر الحالي للرمز {sym}", "demoOnly": True},
+                )
+            exec_price = float(tick.ask) if "BUY" in payload.orderType else float(tick.bid)
+        else:
+            # Pending orders: use entryPrice from request
+            exec_price = float(payload.entryPrice)  # type: ignore[arg-type]
+
+        # ── Build order_send request ──────────────────────────────────────────
+        # order_send: ONLY authorised use in this entire service — A26.2 Demo only
+        order_request: dict[str, Any] = {
+            "action":       action_val,
+            "symbol":       sym,
+            "volume":       float(payload.estimatedLot),  # type: ignore[arg-type]
+            "type":         order_type_val,
+            "price":        exec_price,
+            "sl":           float(payload.stopLoss),       # type: ignore[arg-type]
+            "tp":           float(payload.takeProfit),     # type: ignore[arg-type]
+            "deviation":    20,
+            "magic":        26200,        # A26.2 magic number
+            "comment":      "KING_MT5_DEMO_A26_2",
+            "type_time":    mt5.ORDER_TIME_GTC,
+            "type_filling": mt5.ORDER_FILLING_RETURN,
+        }
+
+        # ── order_send — ONLY call in this entire codebase ────────────────────
+        mt5_result = mt5.order_send(order_request)  # noqa: S603  # authorised A26.2
+
+        if mt5_result is None:
+            last_err = mt5.last_error()
+            return Utf8JsonResponse(
+                status_code=503,
+                content={"ok": False, "accepted": False, "error": f"order_send أرجع None: {last_err}", "demoOnly": True},
+            )
+
+        _record_successful_mt5_call()
+
+        accepted = int(mt5_result.retcode) == mt5.TRADE_RETCODE_DONE
+
+        return Utf8JsonResponse(
+            content={
+                "ok":          True,
+                "accepted":    accepted,
+                "ticket":      int(mt5_result.order) if accepted else None,
+                "retcode":     int(mt5_result.retcode),
+                "retcodeText": _retcode_text(int(mt5_result.retcode)),
+                "message":     getattr(mt5_result, "comment", ""),
+                "requestSummary": {
+                    "symbol":    sym,
+                    "orderType": payload.orderType,
+                    "lot":       float(payload.estimatedLot),  # type: ignore[arg-type]
+                    "price":     exec_price,
+                    "sl":        float(payload.stopLoss),       # type: ignore[arg-type]
+                    "tp":        float(payload.takeProfit),     # type: ignore[arg-type]
+                },
+                "accountLogin": int(getattr(info, "login", 0) or 0),
+                "server":       getattr(info, "server", None),
+                "demoOnly":     True,
+            },
+        )
+
+    finally:
+        mt5.shutdown()
+
+
+# Read-only endpoints reminder + demo endpoint authorisation note:
+# - FORBIDDEN_MT5_FUNCTION_NAMES applies to ALL endpoints ABOVE /demo/order-send.
+# - order_send is ONLY used inside /demo/order-send, gated by MT5_DEMO_EXECUTION_ENABLED.
+# - READ_ONLY_MODE remains True and governs all /readonly/* endpoints.

@@ -845,14 +845,34 @@ const ORDER_TYPE_LABEL: Record<OrderTypePreview, string> = {
   NONE:                "لا يوجد أمر",
 };
 
-// ── TradePreviewPanel — A23/A24/A25/A26.1 ────────────────────────────────────
-// Preview فقط — زر التنفيذ disabled دائماً — لا order_send — لا تنفيذ تداول
+// ── A26.2: نوع نتيجة الأمر من /api/mt5-demo/order-send ──────────────────────
+type DemoOrderResult = {
+  ok:              boolean;
+  accepted:        boolean;
+  ticket?:         number;
+  retcode?:        number;
+  retcodeText?:    string;
+  message?:        string;
+  requestSummary?: { symbol: string; orderType: string; lot: number; price: number; sl: number; tp: number };
+  accountLogin?:   number;
+  server?:         string;
+  demoOnly:        boolean;
+  error?:          string;
+};
+
+// ── TradePreviewPanel — A23/A24/A25/A26.1/A26.2 ──────────────────────────────
+// A26.2: زر إرسال Demo مفعّل داخل الـ modal فقط بعد checkbox — لا real execution
 function TradePreviewPanel({ result }: { result: AnalysisResult }) {
   // A25: load demo execution settings from localStorage (lazy init — no flash)
   const [settings] = useState<DemoExecutionSettings>(loadDemoSettings);
   // A26.1: state for review modal
   const [showModal,    setShowModal]    = useState(false);
   const [userConfirmed, setUserConfirmed] = useState(false);
+
+  // A26.2: state for actual Demo order send — لا تنفيذ تداول خارج الـ modal
+  const [ordering,    setOrdering]    = useState(false);
+  const [orderResult, setOrderResult] = useState<DemoOrderResult | null>(null);
+  const [orderError,  setOrderError]  = useState<string | null>(null);
 
   const summary = buildDecisionSummary(result);
   const preview = buildTradeOrderPreview(result, summary);
@@ -869,6 +889,39 @@ function TradePreviewPanel({ result }: { result: AnalysisResult }) {
     settings.executionMode === "DEMO_ARMED" &&
     !settings.killSwitchEnabled &&
     settings.isConfirmedDemo;
+
+  // A26.2: يمكن الإرسال فقط بعد checkbox + جميع شروط canOpenReview + ليس قيد التنفيذ
+  const canSend = canOpenReview && userConfirmed && !ordering;
+
+  // A26.2: إرسال أمر Demo إلى MT5 — Demo فقط — بعد تأكيد يدوي
+  async function handleSendToMT5Demo() {
+    if (!canSend) return;
+    setOrdering(true);
+    setOrderResult(null);
+    setOrderError(null);
+    try {
+      const execReq = buildExecutionRequestPreview(result, preview, eligibility);
+      // إضافة manualConfirmation: true من هنا — لا يُمرَّر userId
+      const body = { ...execReq, manualConfirmation: true as const };
+      const res = await fetch("/api/mt5-demo/order-send", {
+        method:  "POST",
+        headers: { "Content-Type": "application/json" },
+        body:    JSON.stringify(body),
+        cache:   "no-store",
+      });
+      const data = (await res.json()) as DemoOrderResult;
+      if (data.ok || data.accepted) {
+        setOrderResult(data);
+        setUserConfirmed(false); // إعادة تعيين التأكيد بعد الإرسال
+      } else {
+        setOrderError(data.error ?? "فشل إرسال الأمر إلى MT5");
+      }
+    } catch (e) {
+      setOrderError(e instanceof Error ? e.message : "خطأ غير معروف في الإرسال");
+    } finally {
+      setOrdering(false);
+    }
+  }
 
   return (
     <div className="rounded-lg border border-border bg-card p-4 space-y-4">
@@ -1052,7 +1105,7 @@ function TradePreviewPanel({ result }: { result: AnalysisResult }) {
                       المراجعة النهائية قبل تنفيذ Demo
                     </p>
                     <p className="text-xs text-muted-foreground mt-0.5">
-                      A26.1 — مراجعة فقط — لا يُرسل أي أمر إلى MT5
+                      A26.2 — إرسال Demo فقط بعد تأكيد يدوي
                     </p>
                   </div>
                   <span className="inline-flex items-center rounded-full border border-red-500/30 bg-red-500/10 px-2.5 py-0.5 text-xs font-medium text-red-300">
@@ -1061,10 +1114,14 @@ function TradePreviewPanel({ result }: { result: AnalysisResult }) {
                 </div>
 
                 <div className="p-5 space-y-5">
-                  {/* تحذير واضح */}
-                  <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-xs text-amber-200/90">
-                    هذه مراجعة فقط في A26.1 — لا يتم إرسال أي أمر إلى MT5.
-                    التنفيذ الفعلي سيُفعَّل في A26.2 بعد مراجعة إضافية.
+                  {/* تحذير واضح A26.2 */}
+                  <div className="rounded-md border border-red-500/30 bg-red-500/10 px-4 py-3 text-xs text-red-200/90 space-y-1">
+                    <p className="font-semibold">⚠ A26.2 — تنفيذ Demo حقيقي</p>
+                    <p>
+                      الضغط على الزر سيُرسل أمراً فعلياً إلى حساب MT5 Demo.
+                      تأكد أن الحساب تجريبي (Demo) قبل الإرسال.
+                      يتطلب تفعيل MT5_DEMO_EXECUTION_ENABLED=1 في خدمة MT5 المحلية.
+                    </p>
                   </div>
 
                   {/* تفاصيل الطلب */}
@@ -1124,30 +1181,63 @@ function TradePreviewPanel({ result }: { result: AnalysisResult }) {
                     </span>
                   </label>
 
-                  {/* الأزرار النهائية */}
+                  {/* A26.2: الأزرار النهائية */}
                   <div className="flex flex-wrap items-center gap-3 pt-1">
-                    {/* زر الإرسال — disabled دائماً في A26.1 */}
+                    {/* زر الإرسال — مفعّل عند checkbox + DEMO_ARMED + جميع الشروط */}
                     <button
-                      disabled
-                      aria-disabled="true"
-                      className="inline-flex items-center justify-center rounded-md border border-emerald-500/20 bg-emerald-700/20 px-4 py-2 text-sm font-medium text-emerald-400/50 cursor-not-allowed select-none"
+                      type="button"
+                      disabled={!canSend}
+                      onClick={() => void handleSendToMT5Demo()}
+                      className={`inline-flex items-center justify-center rounded-md border px-4 py-2 text-sm font-medium transition-colors ${
+                        canSend
+                          ? "border-emerald-500/50 bg-emerald-600/25 text-emerald-300 hover:bg-emerald-600/40 cursor-pointer"
+                          : "border-emerald-500/20 bg-emerald-700/20 text-emerald-400/50 cursor-not-allowed"
+                      }`}
                     >
-                      إرسال إلى MT5 Demo — سيُفعّل في A26.2
+                      {ordering ? "جارٍ الإرسال إلى MT5…" : "إرسال إلى MT5 Demo"}
                     </button>
 
                     {/* زر الإغلاق */}
                     <button
                       type="button"
-                      onClick={() => { setShowModal(false); setUserConfirmed(false); }}
+                      onClick={() => {
+                        setShowModal(false);
+                        setUserConfirmed(false);
+                        setOrderResult(null);
+                        setOrderError(null);
+                      }}
                       className="inline-flex items-center justify-center rounded-md border border-border bg-muted/20 px-4 py-2 text-sm font-medium text-muted-foreground hover:text-foreground hover:bg-muted/40 transition-colors"
                     >
                       إغلاق المراجعة
                     </button>
                   </div>
 
+                  {/* A26.2: نتيجة الإرسال — نجاح */}
+                  {orderResult && (
+                    <div className="rounded-md border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-xs text-emerald-300 space-y-1">
+                      <p className="font-semibold text-sm">✓ تم إرسال أمر Demo إلى MT5</p>
+                      {orderResult.ticket != null && (
+                        <p>رقم التذكرة: <span className="font-mono font-bold">{orderResult.ticket}</span></p>
+                      )}
+                      <p>الاستجابة: {orderResult.retcodeText ?? orderResult.message ?? "—"}</p>
+                      <p className="text-muted-foreground">
+                        الحساب: {orderResult.accountLogin ?? "—"} — {orderResult.server ?? "—"}
+                      </p>
+                      <p className="text-emerald-400/60">demoOnly: {String(orderResult.demoOnly)}</p>
+                    </div>
+                  )}
+
+                  {/* A26.2: نتيجة الإرسال — خطأ */}
+                  {orderError && (
+                    <div className="rounded-md border border-red-500/30 bg-red-500/10 px-4 py-3 text-xs text-red-300 space-y-1">
+                      <p className="font-semibold">✗ فشل إرسال الأمر</p>
+                      <p>{orderError}</p>
+                    </div>
+                  )}
+
                   <p className="text-[10px] text-muted-foreground/50 border-t border-border pt-2">
-                    ⚠ A26.1 — لا order_send — لا order_close — لا تنفيذ تداول —
-                    requiresManualConfirmation: true — executionEnabled: false
+                    ⚠ A26.2 — Demo فقط — يُرسَل إلى MT5 عبر /api/mt5-demo/order-send —
+                    manualConfirmation: true — accountMode: DEMO_ONLY — لا userId من الواجهة
                   </p>
                 </div>
               </div>
