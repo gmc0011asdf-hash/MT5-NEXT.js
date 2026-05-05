@@ -890,6 +890,15 @@ function TradePreviewPanel({ result }: { result: AnalysisResult }) {
   const [orderResult, setOrderResult] = useState<DemoOrderResult | null>(null);
   const [orderError,  setOrderError]  = useState<string | null>(null);
 
+  // A27: سجل محاولات التنفيذ — non-blocking — لا يمنع عرض النتيجة
+  const { isAuthenticated } = useConvexAuth();
+  const recordAttempt = useMutation(api.demoExecutionJournal.recordDemoExecutionAttempt);
+  const recentAttempts = useQuery(
+    api.demoExecutionJournal.listMyDemoExecutionAttempts,
+    isAuthenticated ? { limit: 5 } : "skip",
+  );
+  const [journalStatus, setJournalStatus] = useState<string | null>(null);
+
   const summary = buildDecisionSummary(result);
   const preview = buildTradeOrderPreview(result, summary);
 
@@ -921,6 +930,12 @@ function TradePreviewPanel({ result }: { result: AnalysisResult }) {
     setOrdering(true);
     setOrderResult(null);
     setOrderError(null);
+    setJournalStatus(null);
+
+    let attemptStatus: string = "ERROR";
+    let attemptData: DemoOrderResult | null = null;
+    let attemptErrorMsg: string | null = null;
+
     try {
       const execReq = buildExecutionRequestPreview(result, preview, eligibility);
       // A26.5.1: دائماً أرسل manualLot — لا يُمرَّر userId
@@ -936,19 +951,54 @@ function TradePreviewPanel({ result }: { result: AnalysisResult }) {
         cache:   "no-store",
       });
       const data = (await res.json()) as DemoOrderResult;
+      attemptData = data;
       if (data.ok || data.accepted) {
+        attemptStatus = "DONE";
         setOrderResult(data);
         setUserConfirmed(false); // إعادة تعيين التأكيد بعد الإرسال
       } else if (data.retcodeText === "NO_MONEY_PRECHECK") {
+        attemptStatus = "PRECHECK_FAILED";
         // عرض تفاصيل الهامش — لم يصل الطلب إلى order_send
         setOrderResult(data);
       } else {
+        attemptStatus = "REJECTED";
         setOrderError(data.error ?? "فشل إرسال الأمر إلى MT5");
+        attemptErrorMsg = data.error ?? null;
       }
     } catch (e) {
-      setOrderError(e instanceof Error ? e.message : "خطأ غير معروف في الإرسال");
+      attemptStatus = "ERROR";
+      attemptErrorMsg = e instanceof Error ? e.message : "خطأ غير معروف في الإرسال";
+      setOrderError(attemptErrorMsg);
     } finally {
       setOrdering(false);
+    }
+
+    // A27: تسجيل المحاولة في Convex — non-blocking — لا يمنع عرض النتيجة
+    if (isAuthenticated) {
+      void recordAttempt({
+        platform:        "MT5",
+        accountMode:     "DEMO_ONLY",
+        decisionId:      undefined,
+        symbol:          result.symbol,
+        orderType:       preview.orderType,
+        direction:       result.direction ?? undefined,
+        requestedLot:    manualLot > 0 ? manualLot : preview.estimatedLot,
+        status:          attemptStatus,
+        ok:              attemptData?.ok ?? false,
+        accepted:        attemptData?.accepted,
+        ticket:          attemptData?.ticket,
+        retcode:         attemptData?.retcode,
+        retcodeText:     attemptData?.retcodeText,
+        errorMessage:    attemptErrorMsg ?? undefined,
+        marginRequired:  attemptData?.marginRequired ?? undefined,
+        marginFree:      attemptData?.freeMarginBefore,
+        marginFreeAfter: undefined,
+        fillingMode:     attemptData?.fillingModeUsed,
+        fillingRetries:  attemptData?.fillingModesTried != null
+                           ? attemptData.fillingModesTried.length - 1
+                           : undefined,
+      }).then(() => setJournalStatus("✓ سُجِّلت المحاولة في السجل"))
+        .catch(() => setJournalStatus("⚠ لم يُسجَّل في Convex"));
     }
   }
 
@@ -1408,6 +1458,48 @@ function TradePreviewPanel({ result }: { result: AnalysisResult }) {
             ))}
           </ul>
         </>
+      )}
+
+      {/* A27: حالة تسجيل المحاولة في Convex */}
+      {journalStatus && (
+        <p className="text-[10px] text-muted-foreground/70">{journalStatus}</p>
+      )}
+
+      {/* A27: آخر محاولات تنفيذ Demo */}
+      {recentAttempts && recentAttempts.length > 0 && (
+        <div className="rounded-md border border-border bg-muted/5 p-3 space-y-2">
+          <p className="text-xs font-semibold text-foreground/80">آخر محاولات تنفيذ Demo</p>
+          <div className="space-y-1.5">
+            {recentAttempts.map((a) => (
+              <div
+                key={a._id}
+                className="flex items-center justify-between gap-2 rounded border border-border px-2.5 py-1.5 text-[11px]"
+              >
+                <span className="font-mono text-muted-foreground">
+                  {new Date(a.createdAt).toLocaleTimeString("ar-IQ", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
+                </span>
+                <span className="font-mono text-foreground">{a.symbol}</span>
+                <span className={
+                  a.status === "DONE"             ? "text-emerald-400" :
+                  a.status === "PRECHECK_FAILED"  ? "text-orange-400"  :
+                  a.status === "REJECTED"         ? "text-red-400"     :
+                                                    "text-zinc-400"
+                }>
+                  {a.status === "DONE"            ? "✓ نجاح"           :
+                   a.status === "PRECHECK_FAILED" ? "✗ هامش"           :
+                   a.status === "REJECTED"        ? "✗ مرفوض"          :
+                                                    "✗ خطأ"}
+                </span>
+                {a.ticket != null && (
+                  <span className="font-mono text-emerald-300/70">#{a.ticket}</span>
+                )}
+                {a.retcodeText && a.status !== "DONE" && (
+                  <span className="text-muted-foreground/60 truncate max-w-[100px]">{a.retcodeText}</span>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
       )}
 
       {/* تحذير دائم — لا يختفي سواء كان allowed أم لا */}

@@ -362,4 +362,31 @@ export default defineSchema({
   })
     .index("by_decisionId",      ["decisionId"])
     .index("by_userId_createdAt", ["userId", "createdAt"]),
+
+  demoExecutionAttempts: defineTable({
+    userId:        v.string(),
+    platform:      v.string(),            // "MT5"
+    accountMode:   v.string(),            // "DEMO_ONLY"
+    decisionId:    v.optional(v.string()),
+    symbol:        v.string(),
+    orderType:     v.string(),
+    direction:     v.optional(v.string()),
+    requestedLot:  v.optional(v.number()),
+    status:        v.string(),            // "DONE" | "REJECTED" | "PRECHECK_FAILED" | "ERROR"
+    ok:            v.boolean(),
+    accepted:      v.optional(v.boolean()),
+    ticket:        v.optional(v.number()),
+    retcode:       v.optional(v.number()),
+    retcodeText:   v.optional(v.string()),
+    errorMessage:  v.optional(v.string()),
+    marginRequired:   v.optional(v.number()),
+    marginFree:       v.optional(v.number()),
+    marginFreeAfter:  v.optional(v.number()),
+    fillingMode:      v.optional(v.string()),
+    fillingRetries:   v.optional(v.number()),
+    createdAt:     v.number(),
+  })
+    .index("by_user_createdAt",         ["userId", "createdAt"])
+    .index("by_user_symbol_createdAt",  ["userId", "symbol", "createdAt"])
+    .index("by_user_decisionId",        ["userId", "decisionId"]),
 });
