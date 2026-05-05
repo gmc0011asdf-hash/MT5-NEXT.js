@@ -845,19 +845,22 @@ const ORDER_TYPE_LABEL: Record<OrderTypePreview, string> = {
   NONE:                "لا يوجد أمر",
 };
 
-// ── A26.2: نوع نتيجة الأمر من /api/mt5-demo/order-send ──────────────────────
+// ── A26.2/A26.3: نوع نتيجة الأمر من /api/mt5-demo/order-send ─────────────────
 type DemoOrderResult = {
-  ok:              boolean;
-  accepted:        boolean;
-  ticket?:         number;
-  retcode?:        number;
-  retcodeText?:    string;
-  message?:        string;
-  requestSummary?: { symbol: string; orderType: string; lot: number; price: number; sl: number; tp: number };
-  accountLogin?:   number;
-  server?:         string;
-  demoOnly:        boolean;
-  error?:          string;
+  ok:                  boolean;
+  accepted:            boolean;
+  ticket?:             number;
+  retcode?:            number;
+  retcodeText?:        string;
+  message?:            string;
+  fillingModeUsed?:    string;    // A26.3: FOK | IOC | RETURN
+  fillingModesTried?:  string[];  // A26.3: modes tried in order
+  symbolFillingMode?:  number;    // A26.3: raw bitmask from symbol_info
+  requestSummary?:     { symbol: string; orderType: string; lot: number; price: number; sl: number; tp: number };
+  accountLogin?:       number;
+  server?:             string;
+  demoOnly:            boolean;
+  error?:              string;
 };
 
 // ── TradePreviewPanel — A23/A24/A25/A26.1/A26.2 ──────────────────────────────
@@ -1212,7 +1215,7 @@ function TradePreviewPanel({ result }: { result: AnalysisResult }) {
                     </button>
                   </div>
 
-                  {/* A26.2: نتيجة الإرسال — نجاح */}
+                  {/* A26.2/A26.3: نتيجة الإرسال — نجاح */}
                   {orderResult && (
                     <div className="rounded-md border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-xs text-emerald-300 space-y-1">
                       <p className="font-semibold text-sm">✓ تم إرسال أمر Demo إلى MT5</p>
@@ -1220,10 +1223,17 @@ function TradePreviewPanel({ result }: { result: AnalysisResult }) {
                         <p>رقم التذكرة: <span className="font-mono font-bold">{orderResult.ticket}</span></p>
                       )}
                       <p>الاستجابة: {orderResult.retcodeText ?? orderResult.message ?? "—"}</p>
+                      {orderResult.fillingModeUsed && (
+                        <p>وضع التنفيذ: <span className="font-mono">{orderResult.fillingModeUsed}</span></p>
+                      )}
+                      {orderResult.fillingModesTried && orderResult.fillingModesTried.length > 1 && (
+                        <p className="text-emerald-300/60">
+                          محاولات Filling: {orderResult.fillingModesTried.join(" → ")}
+                        </p>
+                      )}
                       <p className="text-muted-foreground">
                         الحساب: {orderResult.accountLogin ?? "—"} — {orderResult.server ?? "—"}
                       </p>
-                      <p className="text-emerald-400/60">demoOnly: {String(orderResult.demoOnly)}</p>
                     </div>
                   )}
 

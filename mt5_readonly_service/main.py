@@ -898,6 +898,56 @@ def readonly_candles(
 # continue to call _enforce_read_only_policy() and will never reach order_send.
 # =============================================================================
 
+# ── Filling mode helpers — A26.3 ─────────────────────────────────────────────
+# symbol_info.filling_mode is a bitmask:
+#   bit 0 (value 1) → ORDER_FILLING_FOK  (0) supported
+#   bit 1 (value 2) → ORDER_FILLING_IOC  (1) supported
+#   RETURN (2) is tried as final fallback.
+_FILLING_MODE_NAMES: dict[int, str] = {
+    mt5.ORDER_FILLING_FOK:    "FOK",
+    mt5.ORDER_FILLING_IOC:    "IOC",
+    mt5.ORDER_FILLING_RETURN: "RETURN",
+}
+
+def _filling_mode_name(mode: int | None) -> str | None:
+    if mode is None:
+        return None
+    return _FILLING_MODE_NAMES.get(mode, f"MODE_{mode}")
+
+
+def _resolve_filling_modes(sym_info: Any, action: int) -> list[int]:
+    """
+    Returns candidate filling modes in priority order.
+    Market  orders: IOC → FOK → RETURN
+    Pending orders: RETURN → IOC → FOK
+    """
+    mask   = int(getattr(sym_info, "filling_mode", 0) or 0) if sym_info is not None else 0
+    fok_ok = bool(mask & 1)
+    ioc_ok = bool(mask & 2)
+
+    if action == mt5.TRADE_ACTION_DEAL:
+        raw = (
+            ([mt5.ORDER_FILLING_IOC]    if ioc_ok else []) +
+            ([mt5.ORDER_FILLING_FOK]    if fok_ok else []) +
+            [mt5.ORDER_FILLING_RETURN]
+        )
+    else:
+        raw = (
+            [mt5.ORDER_FILLING_RETURN] +
+            ([mt5.ORDER_FILLING_IOC]   if ioc_ok else []) +
+            ([mt5.ORDER_FILLING_FOK]   if fok_ok else [])
+        )
+
+    # Deduplicate, preserve order
+    seen: set[int] = set()
+    result: list[int] = []
+    for m in raw:
+        if m not in seen:
+            seen.add(m)
+            result.append(m)
+    return result
+
+
 # ── Mapping: preview order type string → (MT5 order type const, MT5 action const) ──
 _DEMO_ORDER_TYPE_MAP: dict[str, tuple[int, int]] = {
     "BUY_MARKET_PREVIEW":  (mt5.ORDER_TYPE_BUY,        mt5.TRADE_ACTION_DEAL),
@@ -1109,32 +1159,61 @@ def demo_order_send(payload: DemoOrderRequest) -> JSONResponse:
             # Pending orders: use entryPrice from request
             exec_price = float(payload.entryPrice)  # type: ignore[arg-type]
 
-        # ── Build order_send request ──────────────────────────────────────────
-        # order_send: ONLY authorised use in this entire service — A26.2 Demo only
-        order_request: dict[str, Any] = {
-            "action":       action_val,
-            "symbol":       sym,
-            "volume":       float(payload.estimatedLot),  # type: ignore[arg-type]
-            "type":         order_type_val,
-            "price":        exec_price,
-            "sl":           float(payload.stopLoss),       # type: ignore[arg-type]
-            "tp":           float(payload.takeProfit),     # type: ignore[arg-type]
-            "deviation":    20,
-            "magic":        26200,        # A26.2 magic number
-            "comment":      "KING_MT5_DEMO_A26_2",
-            "type_time":    mt5.ORDER_TIME_GTC,
-            "type_filling": mt5.ORDER_FILLING_RETURN,
+        # ── A26.3: read symbol_info for filling mode detection ────────────────
+        sym_info = mt5.symbol_info(sym)
+        symbol_filling_mask = int(getattr(sym_info, "filling_mode", 0) or 0) if sym_info else 0
+        filling_modes = _resolve_filling_modes(sym_info, action_val)
+
+        # ── Build base request (no type_filling yet) ──────────────────────────
+        # order_send: ONLY authorised use in this entire service — A26.2/A26.3 Demo
+        base_req: dict[str, Any] = {
+            "action":    action_val,
+            "symbol":    sym,
+            "volume":    float(payload.estimatedLot),  # type: ignore[arg-type]
+            "type":      order_type_val,
+            "price":     exec_price,
+            "sl":        float(payload.stopLoss),       # type: ignore[arg-type]
+            "tp":        float(payload.takeProfit),     # type: ignore[arg-type]
+            "deviation": 20,
+            "magic":     26200,        # A26.2 magic number
+            "comment":   "KING_MT5_DEMO_A26_2",
+            "type_time": mt5.ORDER_TIME_GTC,
         }
 
-        # ── order_send — ONLY call in this entire codebase ────────────────────
-        mt5_result = mt5.order_send(order_request)  # noqa: S603  # authorised A26.2
+        # ── Try filling modes in priority order; retry only on INVALID_FILL ──
+        _RETCODE_INVALID_FILL = 10030
+        mt5_result              = None
+        filling_mode_used: int | None = None
+        filling_modes_tried: list[int] = []
+        last_candidate          = None
+
+        for fill_mode in filling_modes:
+            req = {**base_req, "type_filling": fill_mode}
+            filling_modes_tried.append(fill_mode)
+            # order_send — ONLY authorised call in this codebase — A26.2/A26.3 Demo
+            candidate = mt5.order_send(req)  # noqa: S603  # authorised A26.2
+            if candidate is None:
+                continue
+            last_candidate = candidate
+            if int(candidate.retcode) != _RETCODE_INVALID_FILL:
+                mt5_result       = candidate
+                filling_mode_used = fill_mode
+                break
+            # INVALID_FILL (10030) → loop: try next filling mode
 
         if mt5_result is None:
-            last_err = mt5.last_error()
-            return Utf8JsonResponse(
-                status_code=503,
-                content={"ok": False, "accepted": False, "error": f"order_send أرجع None: {last_err}", "demoOnly": True},
-            )
+            if last_candidate is not None:
+                mt5_result = last_candidate          # return last INVALID_FILL result
+            else:
+                last_err = mt5.last_error()
+                return Utf8JsonResponse(
+                    status_code=503,
+                    content={
+                        "ok": False, "accepted": False,
+                        "error": f"order_send أرجع None بعد {len(filling_modes_tried)} محاولة: {last_err}",
+                        "demoOnly": True,
+                    },
+                )
 
         _record_successful_mt5_call()
 
@@ -1142,12 +1221,15 @@ def demo_order_send(payload: DemoOrderRequest) -> JSONResponse:
 
         return Utf8JsonResponse(
             content={
-                "ok":          True,
-                "accepted":    accepted,
-                "ticket":      int(mt5_result.order) if accepted else None,
-                "retcode":     int(mt5_result.retcode),
-                "retcodeText": _retcode_text(int(mt5_result.retcode)),
-                "message":     getattr(mt5_result, "comment", ""),
+                "ok":                 True,
+                "accepted":           accepted,
+                "ticket":             int(mt5_result.order) if accepted else None,
+                "retcode":            int(mt5_result.retcode),
+                "retcodeText":        _retcode_text(int(mt5_result.retcode)),
+                "message":            getattr(mt5_result, "comment", ""),
+                "fillingModeUsed":    _filling_mode_name(filling_mode_used),
+                "fillingModesTried":  [_filling_mode_name(m) for m in filling_modes_tried],
+                "symbolFillingMode":  symbol_filling_mask,
                 "requestSummary": {
                     "symbol":    sym,
                     "orderType": payload.orderType,
