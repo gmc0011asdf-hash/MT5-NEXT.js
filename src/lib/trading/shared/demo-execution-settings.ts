@@ -65,6 +65,30 @@ export type ExecutionEligibility = {
   buttonText:      string;
 };
 
+// ─── Execution Request Contract — A26.1 ──────────────────────────────────────
+// عقد طلب التنفيذ التجريبي — Preview فقط — لا order_send — لا تنفيذ تداول
+
+export type ExecutionRequestPreview = {
+  platform:                   "MT5";
+  accountMode:                "DEMO_ONLY";
+  symbol:                     string;
+  orderType:                  string;             // e.g. "BUY_MARKET_PREVIEW"
+  direction:                  "bullish" | "bearish" | null;
+  entryPrice:                 number | undefined;
+  stopLoss:                   number | undefined;
+  takeProfit:                 number | undefined;
+  estimatedLot:               number | undefined;
+  riskUsd:                    number;
+  rrRatio:                    number | undefined;
+  currentBid:                 number | undefined;
+  currentAsk:                 number | undefined;
+  spreadPoints:               number | undefined;
+  decisionId?:                string;
+  generatedAt:                number;
+  requiresManualConfirmation: true;
+  executionEnabled:           false;
+};
+
 // ─── localStorage helpers ─────────────────────────────────────────────────────
 
 export const DEMO_SETTINGS_KEY = "mt5-demo-exec-settings-v1";

@@ -18,6 +18,7 @@ import { api } from "../../../convex/_generated/api";
 import {
   type DemoExecutionSettings,
   type ExecutionEligibility,
+  type ExecutionRequestPreview,
   EXECUTION_BUTTON_TEXT,
   DEFAULT_DEMO_SETTINGS,
   loadDemoSettings,
@@ -844,11 +845,15 @@ const ORDER_TYPE_LABEL: Record<OrderTypePreview, string> = {
   NONE:                "لا يوجد أمر",
 };
 
-// ── TradePreviewPanel — A23/A24/A25 ──────────────────────────────────────────
+// ── TradePreviewPanel — A23/A24/A25/A26.1 ────────────────────────────────────
 // Preview فقط — زر التنفيذ disabled دائماً — لا order_send — لا تنفيذ تداول
 function TradePreviewPanel({ result }: { result: AnalysisResult }) {
   // A25: load demo execution settings from localStorage (lazy init — no flash)
   const [settings] = useState<DemoExecutionSettings>(loadDemoSettings);
+  // A26.1: state for review modal
+  const [showModal,    setShowModal]    = useState(false);
+  const [userConfirmed, setUserConfirmed] = useState(false);
+
   const summary = buildDecisionSummary(result);
   const preview = buildTradeOrderPreview(result, summary);
   const eligibility = buildExecutionEligibility(
@@ -856,6 +861,14 @@ function TradePreviewPanel({ result }: { result: AnalysisResult }) {
     settings,
     { spreadPoints: result.currentSpreadPoints },
   );
+
+  // A26.1: زر المراجعة يُفعَّل فقط عند اكتمال جميع الشروط + DEMO_ARMED
+  const canOpenReview =
+    preview.allowed &&
+    eligibility.eligible &&
+    settings.executionMode === "DEMO_ARMED" &&
+    !settings.killSwitchEnabled &&
+    settings.isConfirmedDemo;
 
   return (
     <div className="rounded-lg border border-border bg-card p-4 space-y-4">
@@ -995,8 +1008,23 @@ function TradePreviewPanel({ result }: { result: AnalysisResult }) {
             )}
           </div>
 
-          {/* زر التنفيذ — disabled دائماً في A25 — نص يتغير بحسب الوضع */}
+          {/* A26.1: أزرار التنفيذ */}
           <div className="flex flex-wrap items-center gap-3">
+            {/* زر مراجعة طلب التنفيذ — enabled فقط عند DEMO_ARMED + جميع الشروط */}
+            <button
+              type="button"
+              disabled={!canOpenReview}
+              onClick={() => { setShowModal(true); setUserConfirmed(false); }}
+              className={`inline-flex items-center justify-center rounded-md border px-4 py-2 text-sm font-medium transition-colors ${
+                canOpenReview
+                  ? "border-emerald-500/40 bg-emerald-500/15 text-emerald-300 hover:bg-emerald-500/25"
+                  : "border-zinc-500/20 bg-zinc-700/20 text-zinc-400/60 cursor-not-allowed"
+              }`}
+            >
+              مراجعة طلب التنفيذ التجريبي
+            </button>
+
+            {/* زر التنفيذ — disabled دائماً — نص يتغير بالوضع */}
             <button
               disabled
               aria-disabled="true"
@@ -1010,10 +1038,121 @@ function TradePreviewPanel({ result }: { result: AnalysisResult }) {
             >
               {eligibility.buttonText}
             </button>
-            <span className="text-xs text-muted-foreground">
-              A25 = Guard فقط — التنفيذ في A26
-            </span>
           </div>
+
+          {/* A26.1: Modal — المراجعة النهائية قبل تنفيذ Demo */}
+          {showModal && (() => {
+            const execReq = buildExecutionRequestPreview(result, preview, eligibility);
+            return (
+              <div className="mt-4 rounded-xl border-2 border-emerald-500/30 bg-card shadow-lg">
+                {/* Header */}
+                <div className="flex items-center justify-between px-5 py-4 border-b border-border">
+                  <div>
+                    <p className="text-sm font-bold text-foreground">
+                      المراجعة النهائية قبل تنفيذ Demo
+                    </p>
+                    <p className="text-xs text-muted-foreground mt-0.5">
+                      A26.1 — مراجعة فقط — لا يُرسل أي أمر إلى MT5
+                    </p>
+                  </div>
+                  <span className="inline-flex items-center rounded-full border border-red-500/30 bg-red-500/10 px-2.5 py-0.5 text-xs font-medium text-red-300">
+                    ⚠ DEMO ONLY
+                  </span>
+                </div>
+
+                <div className="p-5 space-y-5">
+                  {/* تحذير واضح */}
+                  <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-xs text-amber-200/90">
+                    هذه مراجعة فقط في A26.1 — لا يتم إرسال أي أمر إلى MT5.
+                    التنفيذ الفعلي سيُفعَّل في A26.2 بعد مراجعة إضافية.
+                  </div>
+
+                  {/* تفاصيل الطلب */}
+                  <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+                    {[
+                      { label: "المنصة",       val: execReq.platform,                     cls: "text-amber-300" },
+                      { label: "نوع الحساب",   val: execReq.accountMode,                  cls: "text-emerald-300" },
+                      { label: "الرمز",         val: execReq.symbol,                       cls: "font-mono font-bold" },
+                      { label: "نوع الأمر",    val: ORDER_TYPE_LABEL[execReq.orderType as OrderTypePreview] ?? execReq.orderType, cls: "" },
+                      { label: "الاتجاه",      val: execReq.direction === "bullish" ? "شراء ↑" : "بيع ↓", cls: execReq.direction === "bullish" ? "text-emerald-300" : "text-red-300" },
+                      { label: "سعر الدخول",  val: execReq.entryPrice?.toFixed(5) ?? "—", cls: "font-mono" },
+                      { label: "وقف الخسارة", val: execReq.stopLoss?.toFixed(5) ?? "—",   cls: "font-mono text-red-300" },
+                      { label: "الهدف",        val: execReq.takeProfit?.toFixed(5) ?? "—", cls: "font-mono text-emerald-300" },
+                      { label: "اللوت",         val: execReq.estimatedLot?.toFixed(2) ?? "—", cls: "font-mono font-bold" },
+                      { label: "المخاطرة",     val: `$${execReq.riskUsd}`,                cls: "" },
+                      { label: "نسبة RR",       val: `${execReq.rrRatio?.toFixed(2) ?? "—"} : 1`, cls: "" },
+                      { label: "Bid الحالي",   val: execReq.currentBid?.toFixed(5) ?? "—", cls: "font-mono text-red-300" },
+                      { label: "Ask الحالي",   val: execReq.currentAsk?.toFixed(5) ?? "—", cls: "font-mono text-emerald-300" },
+                      { label: "السبريد",      val: execReq.spreadPoints !== undefined ? `${execReq.spreadPoints} pts` : "—", cls: "" },
+                    ].map(({ label, val, cls }) => (
+                      <div key={label} className="flex flex-col gap-0.5">
+                        <span className="text-[10px] text-muted-foreground">{label}</span>
+                        <span className={`text-sm ${cls || "text-foreground"}`}>{val}</span>
+                      </div>
+                    ))}
+                  </div>
+
+                  {/* حالة الحارس */}
+                  <div className="rounded-md border border-border bg-muted/5 p-3 space-y-1">
+                    <p className="text-xs font-semibold text-foreground/80 mb-2">حالة الحارس</p>
+                    <div className="grid grid-cols-2 gap-1.5">
+                      {[
+                        { label: "Kill Switch",    ok: !eligibility.killSwitchOn,  val: !eligibility.killSwitchOn  ? "معطّل ✓" : "مفعّل ✗" },
+                        { label: "حساب Demo مؤكد", ok: eligibility.isDemoConfirmed, val: eligibility.isDemoConfirmed ? "مؤكد ✓" : "غير مؤكد ✗" },
+                        { label: "الرمز مسموح",   ok: eligibility.symbolAllowed,   val: eligibility.symbolAllowed  ? "مسموح ✓" : "ممنوع ✗" },
+                        { label: "RR مقبول",       ok: eligibility.rrOk,            val: eligibility.rrOk           ? "مقبول ✓" : "ضعيف ✗" },
+                      ].map(({ label, ok, val }) => (
+                        <div key={label} className="flex items-center justify-between rounded border border-border px-2 py-1 text-[10px]">
+                          <span className="text-muted-foreground">{label}</span>
+                          <span className={ok ? "text-emerald-300" : "text-red-300"}>{val}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Checkbox تأكيد Demo */}
+                  <label className="flex items-start gap-3 cursor-pointer rounded-md border border-border bg-muted/5 px-4 py-3">
+                    <input
+                      type="checkbox"
+                      checked={userConfirmed}
+                      onChange={(e) => setUserConfirmed(e.target.checked)}
+                      className="mt-0.5 h-4 w-4 shrink-0 rounded border-border accent-emerald-500"
+                    />
+                    <span className="text-xs text-foreground/90 leading-relaxed">
+                      أؤكد أن هذا تنفيذ تجريبي Demo فقط، وأن الحساب ليس حساباً حقيقياً،
+                      وأن هذا الإجراء للمراجعة والاختبار فقط بدون تداول فعلي.
+                    </span>
+                  </label>
+
+                  {/* الأزرار النهائية */}
+                  <div className="flex flex-wrap items-center gap-3 pt-1">
+                    {/* زر الإرسال — disabled دائماً في A26.1 */}
+                    <button
+                      disabled
+                      aria-disabled="true"
+                      className="inline-flex items-center justify-center rounded-md border border-emerald-500/20 bg-emerald-700/20 px-4 py-2 text-sm font-medium text-emerald-400/50 cursor-not-allowed select-none"
+                    >
+                      إرسال إلى MT5 Demo — سيُفعّل في A26.2
+                    </button>
+
+                    {/* زر الإغلاق */}
+                    <button
+                      type="button"
+                      onClick={() => { setShowModal(false); setUserConfirmed(false); }}
+                      className="inline-flex items-center justify-center rounded-md border border-border bg-muted/20 px-4 py-2 text-sm font-medium text-muted-foreground hover:text-foreground hover:bg-muted/40 transition-colors"
+                    >
+                      إغلاق المراجعة
+                    </button>
+                  </div>
+
+                  <p className="text-[10px] text-muted-foreground/50 border-t border-border pt-2">
+                    ⚠ A26.1 — لا order_send — لا order_close — لا تنفيذ تداول —
+                    requiresManualConfirmation: true — executionEnabled: false
+                  </p>
+                </div>
+              </div>
+            );
+          })()}
         </>
       ) : (
         /* Blocked → أسباب المنع */
@@ -1106,6 +1245,37 @@ function buildExecutionEligibility(
     spreadOk,
     riskOk,
     buttonText: EXECUTION_BUTTON_TEXT[settings.executionMode],
+  };
+}
+
+// ── buildExecutionRequestPreview — A26.1 ──────────────────────────────────────
+// يبني عقد طلب التنفيذ التجريبي — Preview فقط — لا order_send — لا تنفيذ
+// يُستدعى فقط عندما: allowed=true, eligible=true, DEMO_ARMED, !killSwitch, isConfirmedDemo
+function buildExecutionRequestPreview(
+  result: AnalysisResult,
+  preview: TradeOrderPreview,
+  _eligibility: ExecutionEligibility,
+  opts?: { decisionId?: string },
+): ExecutionRequestPreview {
+  return {
+    platform:                   "MT5",
+    accountMode:                "DEMO_ONLY",
+    symbol:                     preview.symbol,
+    orderType:                  preview.orderType,
+    direction:                  preview.direction,
+    entryPrice:                 preview.entry,
+    stopLoss:                   preview.stopLoss,
+    takeProfit:                 preview.takeProfit,
+    estimatedLot:               preview.estimatedLot,
+    riskUsd:                    preview.riskUsd,
+    rrRatio:                    preview.rrRatio,
+    currentBid:                 result.currentBid,
+    currentAsk:                 result.currentAsk,
+    spreadPoints:               result.currentSpreadPoints,
+    decisionId:                 opts?.decisionId,
+    generatedAt:                Date.now(),
+    requiresManualConfirmation: true  as const,
+    executionEnabled:           false as const,
   };
 }
 
