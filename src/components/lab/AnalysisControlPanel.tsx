@@ -911,8 +911,9 @@ function TradePreviewPanel({ result }: { result: AnalysisResult }) {
     !settings.killSwitchEnabled &&
     settings.isConfirmedDemo;
 
-  // A26.2: يمكن الإرسال فقط بعد checkbox + جميع شروط canOpenReview + ليس قيد التنفيذ
-  const canSend = canOpenReview && userConfirmed && !ordering;
+  // A26.2/A26.5.1: يمكن الإرسال فقط بعد checkbox + جميع الشروط + manualLot صالح
+  const manualLotInvalid = !(manualLot > 0);
+  const canSend = canOpenReview && userConfirmed && !ordering && !manualLotInvalid;
 
   // A26.2: إرسال أمر Demo إلى MT5 — Demo فقط — بعد تأكيد يدوي
   async function handleSendToMT5Demo() {
@@ -922,13 +923,11 @@ function TradePreviewPanel({ result }: { result: AnalysisResult }) {
     setOrderError(null);
     try {
       const execReq = buildExecutionRequestPreview(result, preview, eligibility);
-      // A26.5: استخدام manualLot إذا غيّره المستخدم — لا يُمرَّر userId
+      // A26.5.1: دائماً أرسل manualLot — لا يُمرَّر userId
       const body = {
         ...execReq,
         manualConfirmation: true as const,
-        manualLot: (manualLot > 0 && manualLot !== execReq.estimatedLot)
-          ? manualLot
-          : undefined,
+        manualLot: manualLot > 0 ? manualLot : execReq.estimatedLot,
       };
       const res = await fetch("/api/mt5-demo/order-send", {
         method:  "POST",
@@ -1165,7 +1164,7 @@ function TradePreviewPanel({ result }: { result: AnalysisResult }) {
                       { label: "سعر الدخول",  val: execReq.entryPrice?.toFixed(5) ?? "—", cls: "font-mono" },
                       { label: "وقف الخسارة", val: execReq.stopLoss?.toFixed(5) ?? "—",   cls: "font-mono text-red-300" },
                       { label: "الهدف",        val: execReq.takeProfit?.toFixed(5) ?? "—", cls: "font-mono text-emerald-300" },
-                      { label: "اللوت",         val: execReq.estimatedLot?.toFixed(2) ?? "—", cls: "font-mono font-bold" },
+                      { label: "اللوت المحسوب", val: execReq.estimatedLot?.toFixed(2) ?? "—", cls: "font-mono" },
                       { label: "المخاطرة",     val: `$${execReq.riskUsd}`,                cls: "" },
                       { label: "نسبة RR",       val: `${execReq.rrRatio?.toFixed(2) ?? "—"} : 1`, cls: "" },
                       { label: "Bid الحالي",   val: execReq.currentBid?.toFixed(5) ?? "—", cls: "font-mono text-red-300" },
@@ -1177,6 +1176,19 @@ function TradePreviewPanel({ result }: { result: AnalysisResult }) {
                         <span className={`text-sm ${cls || "text-foreground"}`}>{val}</span>
                       </div>
                     ))}
+                  </div>
+
+                  {/* A26.5.1: اللوت اليدوي مع badge "معدّل يدوياً" */}
+                  <div className="flex items-center justify-between rounded-md border border-border bg-muted/5 px-4 py-2 text-xs">
+                    <span className="text-muted-foreground">اللوت للتنفيذ</span>
+                    <span className="flex items-center gap-1.5 font-mono font-bold text-foreground">
+                      {manualLot > 0 ? manualLot.toFixed(2) : "—"}
+                      {manualLot > 0 && manualLot !== (execReq.estimatedLot ?? 0) && (
+                        <span className="rounded border border-amber-500/30 bg-amber-500/10 px-1 py-0.5 text-[10px] font-medium text-amber-300">
+                          معدّل يدوياً
+                        </span>
+                      )}
+                    </span>
                   </div>
 
                   {/* حالة الحارس */}
@@ -1197,10 +1209,10 @@ function TradePreviewPanel({ result }: { result: AnalysisResult }) {
                     </div>
                   </div>
 
-                  {/* A26.5: input اللوت اليدوي */}
-                  <div className="rounded-md border border-border bg-muted/5 px-4 py-3 space-y-2">
+                  {/* A26.5.1: تعديل اللوت قبل الإرسال */}
+                  <div className="rounded-md border border-amber-500/20 bg-amber-500/[0.04] px-4 py-3 space-y-2">
                     <div className="flex items-center justify-between gap-2">
-                      <p className="text-xs font-semibold text-foreground/80">اللوت اليدوي للتنفيذ</p>
+                      <p className="text-xs font-semibold text-amber-200/90">تعديل اللوت قبل الإرسال</p>
                       <button
                         type="button"
                         onClick={() => setManualLot(preview.estimatedLot ?? 0.01)}
@@ -1214,32 +1226,27 @@ function TradePreviewPanel({ result }: { result: AnalysisResult }) {
                       value={manualLot}
                       onChange={(e) => {
                         const v = parseFloat(e.target.value);
-                        if (!isNaN(v) && v > 0) setManualLot(v);
+                        if (!isNaN(v)) setManualLot(v);
                       }}
                       min={0.01}
                       step={0.01}
-                      className="w-full rounded border border-border bg-muted/10 px-3 py-1.5 text-sm font-mono text-foreground focus:outline-none focus:ring-1 focus:ring-amber-500/40"
+                      className={`w-full rounded border px-3 py-1.5 text-sm font-mono text-foreground focus:outline-none focus:ring-1 ${
+                        manualLotInvalid
+                          ? "border-red-500/50 bg-red-500/10 focus:ring-red-500/40"
+                          : "border-border bg-muted/10 focus:ring-amber-500/40"
+                      }`}
                     />
-                    {manualLot !== (preview.estimatedLot ?? 0.01) && (
+                    {manualLotInvalid && (
+                      <p className="text-xs text-red-400">⚠ اللوت اليدوي غير صالح — يجب أن يكون أكبر من 0</p>
+                    )}
+                    {!manualLotInvalid && manualLot !== (preview.estimatedLot ?? 0.01) && (
                       <p className="text-[10px] text-amber-300/70">
                         ⚠ اللوت معدّل يدوياً — لا يغيّر قرار اللجان، للتنفيذ فقط.
                       </p>
                     )}
-                    {/* A26.5: زر استخدام اللوت المقترح بعد NO_MONEY_PRECHECK */}
-                    {orderResult?.retcodeText === "NO_MONEY_PRECHECK" && orderResult.suggestedMaxLot != null && (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setManualLot(orderResult.suggestedMaxLot!);
-                          setOrderResult(null);
-                          setOrderError(null);
-                          setUserConfirmed(false);
-                        }}
-                        className="inline-flex items-center gap-1 rounded border border-amber-500/30 bg-amber-500/10 px-3 py-1 text-xs text-amber-300 hover:bg-amber-500/20 transition-colors"
-                      >
-                        استخدام اللوت المقترح: {orderResult.suggestedMaxLot}
-                      </button>
-                    )}
+                    <p className="text-[10px] text-muted-foreground/50">
+                      هذا التعديل للتنفيذ فقط ولا يغيّر نتيجة التحليل أو قرار اللجان.
+                    </p>
                   </div>
 
                   {/* Checkbox تأكيد Demo */}
@@ -1287,6 +1294,11 @@ function TradePreviewPanel({ result }: { result: AnalysisResult }) {
                     </button>
                   </div>
 
+                  {/* A26.5.1: تنبيه اللوت غير صالح قرب زر الإرسال */}
+                  {manualLotInvalid && (
+                    <p className="text-xs text-red-400">⚠ اللوت اليدوي غير صالح — عدّله في قسم "تعديل اللوت" أعلاه</p>
+                  )}
+
                   {/* A26.4/A26.5: رفض precheck الهامش */}
                   {orderResult && orderResult.retcodeText === "NO_MONEY_PRECHECK" && (
                     <div className="rounded-md border border-orange-500/40 bg-orange-500/10 px-4 py-3 text-xs text-orange-200 space-y-2">
@@ -1304,17 +1316,32 @@ function TradePreviewPanel({ result }: { result: AnalysisResult }) {
                         )}
                       </div>
                       {orderResult.suggestedMaxLot != null ? (
-                        <p className="text-amber-300">
-                          اللوت المقترح: <span className="font-mono font-bold">{orderResult.suggestedMaxLot}</span>
-                          {orderResult.suggestedLotReason && (
-                            <span className="text-orange-200/60 ms-1">({orderResult.suggestedLotReason})</span>
-                          )}
-                        </p>
+                        <>
+                          <p className="text-amber-300">
+                            اللوت المقترح: <span className="font-mono font-bold">{orderResult.suggestedMaxLot}</span>
+                            {orderResult.suggestedLotReason && (
+                              <span className="text-orange-200/60 ms-1">({orderResult.suggestedLotReason})</span>
+                            )}
+                          </p>
+                          {/* A26.5.1: زر استخدام اللوت المقترح مباشرةً في قسم الخطأ */}
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setManualLot(orderResult.suggestedMaxLot!);
+                              setOrderResult(null);
+                              setOrderError(null);
+                              setUserConfirmed(false);
+                            }}
+                            className="inline-flex items-center gap-1.5 rounded-md border border-amber-500/40 bg-amber-500/15 px-3 py-1.5 text-xs font-medium text-amber-300 hover:bg-amber-500/25 transition-colors"
+                          >
+                            ← استخدام اللوت المقترح: {orderResult.suggestedMaxLot}
+                          </button>
+                        </>
                       ) : orderResult.suggestedLotReason && (
                         <p className="text-orange-200/70">{orderResult.suggestedLotReason}</p>
                       )}
                       <p className="text-orange-200/60 text-[10px]">
-                        استخدم زر "استخدام اللوت المقترح" أعلاه، أو عدّل اللوت يدوياً ثم أعد المحاولة.
+                        اضغط "استخدام اللوت المقترح" أعلاه ثم أعد الختم وأرسل مجدداً.
                       </p>
                     </div>
                   )}
