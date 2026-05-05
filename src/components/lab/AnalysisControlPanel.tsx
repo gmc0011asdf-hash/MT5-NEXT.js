@@ -40,6 +40,16 @@ type LotValidation = {
   normalized: number;
 };
 
+// TickData — شكل tick واحد من /api/mt5-readonly/snapshot → snapshot.ticks[]
+type TickData = {
+  symbol:         string;
+  bid?:           number;
+  ask?:           number;
+  spread?:        number;
+  spread_points?: number;
+  market_closed?: boolean;
+};
+
 type IndicatorSnapshot = {
   status: string;
   candleCount?: number;
@@ -84,6 +94,12 @@ type AnalysisResult = {
   reasons: string[];
   warnings: string[];
   error?: string;
+  // A24: live MT5 tick — مدموج بعد التحليل، best-effort
+  currentBid?:          number;
+  currentAsk?:          number;
+  currentSpread?:       number;
+  currentSpreadPoints?: number;
+  currentPriceSource?:  string;
 };
 
 // ---------------------------------------------------------------------------
@@ -763,30 +779,34 @@ function buildTradeOrderPreview(
 
   const allowed = blockedReasons.length === 0;
 
-  // ── تحديد نوع الأمر ───────────────────────────────────────────────────────
-  // entry = lastClose (من candle analysis) = السعر الحالي المتوفر
-  // لا يوجد tick price حقيقي في هذه المرحلة → نفترض MARKET دائماً
-  // (Buy/Sell Stop Limit مؤجلة للمرحلة التالية)
+  // ── تحديد نوع الأمر — A24: يستخدم live tick إذا توفّر ────────────────────
+  // BUY → نقارن entry مع ask (سعر الشراء الفعلي لدى الوسيط)
+  // SELL → نقارن entry مع bid (سعر البيع الفعلي لدى الوسيط)
+  // fallback → lastClose إذا لم يتوفر tick حقيقي
   let orderType: OrderTypePreview = "NONE";
 
   if (finalDecision === "BUY" || finalDecision === "SELL") {
-    const currentPrice = result.indicators?.lastClose;
     const entry = result.entry;
 
-    // نسبة الفرق النسبي — threshold 0.05% = 5 pips على 1.0000
+    const refPrice =
+      finalDecision === "BUY"
+        ? (result.currentAsk ?? result.indicators?.lastClose)
+        : (result.currentBid ?? result.indicators?.lastClose);
+
+    // نسبة الفرق — threshold 0.05% ≈ 5 pips على 1.0000
     const MARKET_THRESHOLD_RATIO = 0.0005;
     const isMarket =
-      !currentPrice || !entry ||
-      Math.abs(entry - currentPrice) / currentPrice < MARKET_THRESHOLD_RATIO;
+      !refPrice || !entry ||
+      Math.abs(entry - refPrice) / refPrice < MARKET_THRESHOLD_RATIO;
 
     if (finalDecision === "BUY") {
-      if (isMarket)          orderType = "BUY_MARKET_PREVIEW";
-      else if (entry < currentPrice!) orderType = "BUY_LIMIT_PREVIEW";
-      else                   orderType = "BUY_STOP_PREVIEW";
+      if (isMarket)             orderType = "BUY_MARKET_PREVIEW";
+      else if (entry < refPrice!) orderType = "BUY_LIMIT_PREVIEW";
+      else                      orderType = "BUY_STOP_PREVIEW";
     } else {
-      if (isMarket)          orderType = "SELL_MARKET_PREVIEW";
-      else if (entry > currentPrice!) orderType = "SELL_LIMIT_PREVIEW";
-      else                   orderType = "SELL_STOP_PREVIEW";
+      if (isMarket)             orderType = "SELL_MARKET_PREVIEW";
+      else if (entry > refPrice!) orderType = "SELL_LIMIT_PREVIEW";
+      else                      orderType = "SELL_STOP_PREVIEW";
     }
   }
 
@@ -895,22 +915,55 @@ function TradePreviewPanel({ result }: { result: AnalysisResult }) {
             </div>
           </div>
 
+          {/* A24: live tick — Bid / Ask / Spread */}
+          {result.currentPriceSource === "mt5-live-tick" ? (
+            <div className="rounded-md border border-sky-500/20 bg-sky-500/5 px-3 py-2 space-y-1.5">
+              <p className="text-xs font-semibold text-sky-300">السعر الحالي — MT5 Live Tick</p>
+              <div className="grid grid-cols-3 gap-3">
+                <div className="flex flex-col gap-0.5">
+                  <span className="text-[10px] text-muted-foreground">Bid (بيع)</span>
+                  <span className="text-sm font-mono text-red-300">
+                    {result.currentBid?.toFixed(5) ?? "—"}
+                  </span>
+                </div>
+                <div className="flex flex-col gap-0.5">
+                  <span className="text-[10px] text-muted-foreground">Ask (شراء)</span>
+                  <span className="text-sm font-mono text-emerald-300">
+                    {result.currentAsk?.toFixed(5) ?? "—"}
+                  </span>
+                </div>
+                <div className="flex flex-col gap-0.5">
+                  <span className="text-[10px] text-muted-foreground">Spread</span>
+                  <span className="text-sm font-mono text-muted-foreground">
+                    {result.currentSpreadPoints !== undefined
+                      ? `${result.currentSpreadPoints} pts`
+                      : result.currentSpread?.toFixed(5) ?? "—"}
+                  </span>
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div className="rounded-md border border-amber-500/20 bg-amber-500/5 px-3 py-2 text-xs text-amber-300/80">
+              ⚠ لم يتم جلب السعر الحالي — نوع الأمر تقديري بناءً على آخر سعر إغلاق
+            </div>
+          )}
+
           {/* حالة الحساب */}
           <div className="rounded-md border border-border bg-muted/10 px-3 py-2 text-xs text-muted-foreground">
-            حالة الحساب: يتطلب تحقق Demo في مرحلة A24
+            حالة الحساب: Demo — يتطلب تحقق تداول حقيقي في مرحلة A25
           </div>
 
-          {/* زر التنفيذ — disabled دائماً في A23 */}
+          {/* زر التنفيذ — disabled دائماً في A24 */}
           <div className="flex flex-wrap items-center gap-3">
             <button
               disabled
               aria-disabled="true"
               className="inline-flex items-center justify-center rounded-md border border-emerald-500/20 bg-emerald-700/20 px-4 py-2 text-sm font-medium text-emerald-400/60 cursor-not-allowed select-none"
             >
-              إرسال الأمر إلى MT5 Demo — غير مفعل في A23
+              إرسال الأمر إلى MT5 Demo — غير مفعل في A24
             </button>
             <span className="text-xs text-muted-foreground">
-              A23 = Preview فقط — التنفيذ في مرحلة لاحقة
+              A24 = Preview فقط — التنفيذ في مرحلة لاحقة
             </span>
           </div>
         </>
@@ -1051,10 +1104,10 @@ export function AnalysisControlPanel() {
       // best-effort — نكمل حتى لو فشلت المزامنة
     }
 
-    // ── Step 2: تشغيل التحليل على البيانات المحدّثة ─────────────────────────
+    // ── Step 2: تشغيل التحليل + جلب live tick بالتوازي — A24 ───────────────
     setSyncStatus("جاري التحليل…");
     try {
-      const body = {
+      const analysisBody = {
         symbol: symbol.trim().toUpperCase(),
         timeframeMode,
         ...(timeframeMode === "manual" ? { timeframe: manualTF } : {}),
@@ -1064,12 +1117,43 @@ export function AnalysisControlPanel() {
         ...(useRR ? { rrRatio } : { targetPoints }),
         riskUsd,
       };
-      const res = await fetch("/api/lab/analyze-preview", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
-      const json = (await res.json()) as AnalysisResult;
+
+      // التحليل وجلب السعر الحالي يعملان بالتوازي — tick best-effort
+      const [analysisSettled, tickSettled] = await Promise.allSettled([
+        fetch("/api/lab/analyze-preview", {
+          method:  "POST",
+          headers: { "Content-Type": "application/json" },
+          body:    JSON.stringify(analysisBody),
+        }).then((r) => r.json() as Promise<AnalysisResult>),
+        fetch("/api/mt5-readonly/snapshot", { cache: "no-store" })
+          .then((r) => r.json() as Promise<{ ok: boolean; snapshot?: { ticks?: TickData[] } }>)
+          .catch(() => null),
+      ]);
+
+      if (analysisSettled.status === "rejected") {
+        throw new Error(String(analysisSettled.reason));
+      }
+      const json: AnalysisResult = analysisSettled.value;
+
+      // ── A24: دمج live tick إذا كان متاحاً ────────────────────────────────
+      // لا نمنع setResult إذا فشل tick — best-effort فقط
+      if (
+        tickSettled.status === "fulfilled" &&
+        tickSettled.value?.ok &&
+        Array.isArray(tickSettled.value.snapshot?.ticks)
+      ) {
+        const tick = tickSettled.value.snapshot!.ticks!.find(
+          (t) => t.symbol === symbol.trim().toUpperCase(),
+        );
+        if (tick && typeof tick.bid === "number" && typeof tick.ask === "number") {
+          json.currentBid           = tick.bid;
+          json.currentAsk           = tick.ask;
+          json.currentSpread        = typeof tick.spread       === "number" ? tick.spread       : undefined;
+          json.currentSpreadPoints  = typeof tick.spread_points === "number" ? tick.spread_points : undefined;
+          json.currentPriceSource   = "mt5-live-tick";
+        }
+      }
+
       setResult(json);
     } catch (e) {
       setFetchError(e instanceof Error ? e.message : "خطأ غير معروف في الطلب");
