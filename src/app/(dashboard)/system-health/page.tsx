@@ -7,7 +7,7 @@ import { api } from "../../../../convex/_generated/api";
 import { Id } from "../../../../convex/_generated/dataModel";
 import {
   AlertCircle, CheckCircle2, Circle, XCircle,
-  RefreshCw, Newspaper, ChevronDown, ChevronUp, Save,
+  RefreshCw, Newspaper, ChevronDown, ChevronUp, Save, Languages,
 } from "lucide-react";
 
 // ─── Service status types ─────────────────────────────────────────────────────
@@ -128,7 +128,8 @@ type ReviewData = {
 };
 
 function NewsReviewPanel({ item, onClose }: { item: NewsItem; onClose: () => void }) {
-  const upsertReview = useMutation(api.newsReviews.upsertNewsReview);
+  const upsertReview   = useMutation(api.newsReviews.upsertNewsReview);
+  const autoTranslate  = useAction(api.newsTranslation.autoTranslateNews);
   const r = item.review;
 
   const [translatedHeadline, setTranslatedHeadline] = useState(r?.translatedHeadline ?? "");
@@ -139,14 +140,36 @@ function NewsReviewPanel({ item, onClose }: { item: NewsItem; onClose: () => voi
   const [confidence,         setConfidence]         = useState<number>(r?.userConfidence ?? 50);
   const [userNote,           setUserNote]           = useState(r?.userNote           ?? "");
   const [selectedSymbols,    setSelectedSymbols]    = useState<string[]>(r?.userAffectedSymbolsOverride ?? []);
-  const [saving, setSaving]   = useState(false);
-  const [saved,  setSaved]    = useState(false);
-  const [saveErr, setSaveErr] = useState<string | null>(null);
+  const [saving,       setSaving]       = useState(false);
+  const [saved,        setSaved]        = useState(false);
+  const [saveErr,      setSaveErr]      = useState<string | null>(null);
+  const [translating,  setTranslating]  = useState(false);
+  const [translateMsg, setTranslateMsg] = useState<string | null>(null);
+  const [translateErr, setTranslateErr] = useState<string | null>(null);
 
   function toggleSymbol(sym: string) {
     setSelectedSymbols((prev) =>
       prev.includes(sym) ? prev.filter((s) => s !== sym) : [...prev, sym],
     );
+  }
+
+  async function handleAutoTranslate() {
+    if (translating) return;
+    setTranslating(true); setTranslateMsg(null); setTranslateErr(null);
+    try {
+      const result = await autoTranslate({ newsEventId: item._id });
+      if (result.ok) {
+        setTranslatedHeadline(result.translatedHeadline ?? "");
+        setTranslatedSummary(result.translatedSummary   ?? "");
+        setTranslateMsg(`✓ تمت الترجمة عبر ${result.provider === "openai" ? "OpenAI" : "Google Translate"}`);
+      } else {
+        setTranslateErr(result.message ?? "فشلت الترجمة الآلية");
+      }
+    } catch (e) {
+      setTranslateErr(e instanceof Error ? e.message : "خطأ غير معروف");
+    } finally {
+      setTranslating(false);
+    }
   }
 
   async function handleSave() {
@@ -213,21 +236,42 @@ function NewsReviewPanel({ item, onClose }: { item: NewsItem; onClose: () => voi
 
           {/* Translation */}
           <div className="space-y-2">
-            <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center justify-between gap-2 flex-wrap">
               <p className="text-xs font-semibold text-foreground/80">الترجمة العربية</p>
-              <span className="text-[9px] text-amber-400/70 italic">
-                يدوية حالياً — يمكن إضافة ترجمة آلية لاحقاً
-              </span>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => void handleAutoTranslate()}
+                  disabled={translating}
+                  className={`inline-flex items-center gap-1 rounded border px-2.5 py-1 text-[11px] font-medium transition-colors ${
+                    translating
+                      ? "border-border text-muted-foreground cursor-not-allowed"
+                      : "border-sky-500/40 bg-sky-500/10 text-sky-300 hover:bg-sky-500/20 cursor-pointer"
+                  }`}
+                >
+                  <Languages className={`h-3 w-3 ${translating ? "animate-pulse" : ""}`} />
+                  {translating ? "جارٍ الترجمة…" : "ترجمة تلقائية"}
+                </button>
+              </div>
             </div>
+
+            {/* Auto-translate result messages */}
+            {translateMsg && (
+              <p className="text-[10px] text-emerald-400 font-medium">{translateMsg}</p>
+            )}
+            {translateErr && (
+              <p className="text-[10px] text-amber-300/90">{translateErr}</p>
+            )}
+
             <input
               type="text"
-              placeholder="اكتب ترجمة العنوان هنا…"
+              placeholder="اكتب ترجمة العنوان هنا أو استخدم الترجمة التلقائية…"
               value={translatedHeadline}
               onChange={(e) => setTranslatedHeadline(e.target.value)}
               className="w-full rounded border border-amber-500/30 bg-zinc-900/80 px-3 py-2 text-sm text-white placeholder:text-zinc-500 focus:outline-none focus:ring-1 focus:ring-amber-500/60"
             />
             <textarea
-              placeholder="اكتب ترجمة الملخص هنا…"
+              placeholder="اكتب ترجمة الملخص هنا أو استخدم الترجمة التلقائية…"
               value={translatedSummary}
               onChange={(e) => setTranslatedSummary(e.target.value)}
               rows={3}
