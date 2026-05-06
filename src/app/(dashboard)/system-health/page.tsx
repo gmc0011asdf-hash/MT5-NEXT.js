@@ -213,20 +213,25 @@ function NewsReviewPanel({ item, onClose }: { item: NewsItem; onClose: () => voi
 
           {/* Translation */}
           <div className="space-y-2">
-            <p className="text-xs font-semibold text-foreground/80">الترجمة العربية (يدوي)</p>
+            <div className="flex items-center justify-between gap-2">
+              <p className="text-xs font-semibold text-foreground/80">الترجمة العربية</p>
+              <span className="text-[9px] text-amber-400/70 italic">
+                يدوية حالياً — يمكن إضافة ترجمة آلية لاحقاً
+              </span>
+            </div>
             <input
               type="text"
-              placeholder="ترجمة العنوان…"
+              placeholder="اكتب ترجمة العنوان هنا…"
               value={translatedHeadline}
               onChange={(e) => setTranslatedHeadline(e.target.value)}
-              className="w-full rounded border border-border bg-muted/10 px-3 py-1.5 text-sm text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:ring-1 focus:ring-amber-500/40"
+              className="w-full rounded border border-amber-500/30 bg-zinc-900/80 px-3 py-2 text-sm text-white placeholder:text-zinc-500 focus:outline-none focus:ring-1 focus:ring-amber-500/60"
             />
             <textarea
-              placeholder="ترجمة الملخص…"
+              placeholder="اكتب ترجمة الملخص هنا…"
               value={translatedSummary}
               onChange={(e) => setTranslatedSummary(e.target.value)}
               rows={3}
-              className="w-full rounded border border-border bg-muted/10 px-3 py-1.5 text-sm text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:ring-1 focus:ring-amber-500/40 resize-none"
+              className="w-full rounded border border-amber-500/30 bg-zinc-900/80 px-3 py-2 text-sm text-white placeholder:text-zinc-500 focus:outline-none focus:ring-1 focus:ring-amber-500/60 resize-none"
             />
           </div>
 
@@ -234,68 +239,99 @@ function NewsReviewPanel({ item, onClose }: { item: NewsItem; onClose: () => voi
           <div className="rounded-md border border-border bg-muted/5 p-3 space-y-3">
             <p className="text-xs font-semibold text-foreground/80">تقييم المستخدم</p>
 
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-              {/* Impact override */}
-              <div className="flex flex-col gap-1">
-                <label className="text-[10px] text-muted-foreground">الأثر المقدَّر</label>
-                <select
-                  value={impactOverride}
-                  onChange={(e) => setImpactOverride(e.target.value)}
-                  className="rounded border border-border bg-muted/10 px-2 py-1.5 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-amber-500/40"
-                >
-                  <option value="">— (آلي: {item.impact})</option>
-                  <option value="NONE">لا يؤثر (NONE)</option>
-                  <option value="LOW">ضعيف (LOW)</option>
-                  <option value="MEDIUM">متوسط (MEDIUM)</option>
-                  <option value="HIGH">عالي (HIGH)</option>
-                  <option value="BLOCK">حظر مؤقت (BLOCK)</option>
-                </select>
+            {/* Impact override — chips */}
+            <div className="flex flex-col gap-1.5">
+              <label className="text-[10px] text-muted-foreground">الأثر المقدَّر (آلي: {item.impact})</label>
+              <div className="flex flex-wrap gap-1.5">
+                {[
+                  { val: "",      label: "آلي",         cls: "border-border text-muted-foreground" },
+                  { val: "NONE",  label: "لا يؤثر",     cls: "border-zinc-500/40 text-zinc-400" },
+                  { val: "LOW",   label: "ضعيف",         cls: "border-emerald-500/40 text-emerald-400" },
+                  { val: "MEDIUM",label: "متوسط",        cls: "border-amber-500/40 text-amber-400" },
+                  { val: "HIGH",  label: "عالي",         cls: "border-orange-500/40 text-orange-400" },
+                  { val: "BLOCK", label: "حظر مؤقت",    cls: "border-red-500/40 text-red-400" },
+                ].map(({ val, label, cls }) => (
+                  <button
+                    key={val}
+                    type="button"
+                    onClick={() => setImpactOverride(val)}
+                    className={`rounded border px-2.5 py-1 text-[11px] font-medium transition-colors ${cls} ${
+                      impactOverride === val
+                        ? "ring-2 ring-offset-1 ring-offset-card ring-current opacity-100 bg-current/10"
+                        : "opacity-60 hover:opacity-90"
+                    }`}
+                  >
+                    {label}
+                  </button>
+                ))}
               </div>
+            </div>
 
-              {/* Relationship */}
-              <div className="flex flex-col gap-1">
-                <label className="text-[10px] text-muted-foreground">نوع العلاقة بالسوق</label>
-                <select
-                  value={relationship}
-                  onChange={(e) => setRelationship(e.target.value)}
-                  className="rounded border border-border bg-muted/10 px-2 py-1.5 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-amber-500/40"
-                >
-                  <option value="">غير محدد</option>
-                  <option value="DIRECT">مباشر (DIRECT)</option>
-                  <option value="INDIRECT">غير مباشر (INDIRECT)</option>
-                  <option value="MACRO">ماكرو (MACRO)</option>
-                  <option value="GLOBAL_RISK">خطر عالمي (GLOBAL_RISK)</option>
-                  <option value="NONE">لا علاقة (NONE)</option>
-                </select>
+            {/* Relationship — chips */}
+            <div className="flex flex-col gap-1.5">
+              <label className="text-[10px] text-muted-foreground">نوع العلاقة بالسوق</label>
+              <div className="flex flex-wrap gap-1.5">
+                {[
+                  { val: "",            label: "غير محدد",       cls: "border-border text-muted-foreground" },
+                  { val: "DIRECT",      label: "مباشر",          cls: "border-sky-500/50 text-sky-400" },
+                  { val: "INDIRECT",    label: "غير مباشر",      cls: "border-violet-500/50 text-violet-400" },
+                  { val: "MACRO",       label: "ماكرو",           cls: "border-amber-500/50 text-amber-400" },
+                  { val: "GLOBAL_RISK", label: "خطر عالمي",     cls: "border-red-500/50 text-red-400" },
+                  { val: "NONE",        label: "لا علاقة",       cls: "border-zinc-500/40 text-zinc-400" },
+                ].map(({ val, label, cls }) => (
+                  <button
+                    key={val}
+                    type="button"
+                    onClick={() => setRelationship(val)}
+                    className={`rounded border px-2.5 py-1 text-[11px] font-medium transition-colors ${cls} ${
+                      relationship === val
+                        ? "ring-2 ring-offset-1 ring-offset-card ring-current opacity-100 bg-current/10"
+                        : "opacity-60 hover:opacity-90"
+                    }`}
+                  >
+                    {label}
+                  </button>
+                ))}
               </div>
+            </div>
 
-              {/* Direction bias */}
-              <div className="flex flex-col gap-1">
-                <label className="text-[10px] text-muted-foreground">انحياز الاتجاه</label>
-                <select
-                  value={directionBias}
-                  onChange={(e) => setDirectionBias(e.target.value)}
-                  className="rounded border border-border bg-muted/10 px-2 py-1.5 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-amber-500/40"
-                >
-                  <option value="">غير محدد</option>
-                  <option value="BULLISH">صاعد ↑</option>
-                  <option value="BEARISH">هابط ↓</option>
-                  <option value="NEUTRAL">محايد ↔</option>
-                  <option value="UNKNOWN">غير معروف</option>
-                </select>
+            {/* Direction bias — chips */}
+            <div className="flex flex-col gap-1.5">
+              <label className="text-[10px] text-muted-foreground">انحياز الاتجاه</label>
+              <div className="flex flex-wrap gap-1.5">
+                {[
+                  { val: "",        label: "غير محدد",   cls: "border-border text-muted-foreground" },
+                  { val: "BULLISH", label: "صاعد ↑",     cls: "border-emerald-500/50 text-emerald-400" },
+                  { val: "BEARISH", label: "هابط ↓",     cls: "border-red-500/50 text-red-400" },
+                  { val: "NEUTRAL", label: "محايد ↔",    cls: "border-sky-500/40 text-sky-400" },
+                  { val: "UNKNOWN", label: "غير معروف",  cls: "border-zinc-500/40 text-zinc-400" },
+                ].map(({ val, label, cls }) => (
+                  <button
+                    key={val}
+                    type="button"
+                    onClick={() => setDirectionBias(val)}
+                    className={`rounded border px-2.5 py-1 text-[11px] font-medium transition-colors ${cls} ${
+                      directionBias === val
+                        ? "ring-2 ring-offset-1 ring-offset-card ring-current opacity-100 bg-current/10"
+                        : "opacity-60 hover:opacity-90"
+                    }`}
+                  >
+                    {label}
+                  </button>
+                ))}
               </div>
+            </div>
 
-              {/* Confidence */}
-              <div className="flex flex-col gap-1">
-                <label className="text-[10px] text-muted-foreground">الثقة: {confidence}%</label>
-                <input
-                  type="range"
-                  min={0} max={100} step={5}
-                  value={confidence}
-                  onChange={(e) => setConfidence(Number(e.target.value))}
-                  className="w-full accent-amber-500"
-                />
-              </div>
+            {/* Confidence */}
+            <div className="flex flex-col gap-1">
+              <label className="text-[10px] text-muted-foreground">الثقة: {confidence}%</label>
+              <input
+                type="range"
+                min={0} max={100} step={5}
+                value={confidence}
+                onChange={(e) => setConfidence(Number(e.target.value))}
+                className="w-full accent-amber-500"
+              />
             </div>
 
             {/* Symbol selection */}
@@ -481,6 +517,15 @@ function NewsPanel() {
                       </button>
                     </div>
                   </div>
+                  {/* Translation status */}
+                  {rev?.translatedHeadline ? (
+                    <p className="text-[10px] text-amber-300/90 leading-tight">
+                      <span className="text-muted-foreground/50">ترجمة: </span>
+                      {rev.translatedHeadline}
+                    </p>
+                  ) : (
+                    <p className="text-[9px] text-muted-foreground/40 italic">لا توجد ترجمة بعد</p>
+                  )}
                   <div className="flex flex-wrap gap-1.5">
                     <span className="text-[9px] text-muted-foreground/60 font-mono">
                       {item.source ?? "finnhub"} • {new Date(item.publishedAt).toLocaleDateString("ar-IQ")}
@@ -488,9 +533,6 @@ function NewsPanel() {
                     <span className={`text-[9px] font-medium ${
                       item.category==="crypto" ? "text-violet-400" : item.category==="forex" ? "text-emerald-400" : "text-sky-400"
                     }`}>{item.category}</span>
-                    {rev && rev.translatedHeadline && (
-                      <span className="text-[9px] text-amber-400/70 italic">{"← "+rev.translatedHeadline.slice(0,40)}</span>
-                    )}
                   </div>
                 </div>
               );
