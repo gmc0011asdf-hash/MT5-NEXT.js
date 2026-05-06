@@ -240,6 +240,39 @@ type GoldenZone = {
   distanceFromCurrentPct: number;
 };
 
+// ── B6.2: News Protection Committee types ────────────────────────────────────
+type NewsMatchType = "DIRECT" | "USER_OVERRIDE" | "MACRO_USD" | "MACRO_RISK" | "FOREX_GENERAL";
+type NewsItemVerdict = "BLOCK" | "WARN" | "WATCH" | "PASS";
+
+type MatchedNewsEvent = {
+  headline:          string;
+  source?:           string;
+  category:          string;
+  publishedAt:       number;
+  finalImpact:       string;
+  finalDecision:     string;
+  affectedSymbols:   string[];
+  relationshipType?: string;
+  userNote?:         string;
+  ageMinutes:        number;
+  matchType:         NewsMatchType;
+  itemVerdict:       NewsItemVerdict;
+};
+
+type NewsCommitteeResult = {
+  committee:         "NEWS_PROTECTION_B6_2";
+  verdict:           "PASS" | "WATCH" | "WARN" | "BLOCK";
+  score:             number;
+  symbol:            string;
+  matchedNewsCount:  number;
+  highImpactCount:   number;
+  blockingNewsCount: number;
+  reasons:           string[];
+  warnings:          string[];
+  blockers:          string[];
+  matchedEvents:     MatchedNewsEvent[];
+};
+
 // ── B5: Multi-Timeframe Consensus types (mirror multi-timeframe-consensus.ts) ─
 type TFBias = "bullish" | "bearish" | "neutral" | "unknown";
 
@@ -349,6 +382,7 @@ type AnalysisResult = {
   zonesAnalysis?:       ZonesAnalysis;              // B3
   fibonacciAnalysis?:        FibonacciAnalysis;          // B4
   multiTimeframeConsensus?:  MultiTimeframeConsensus;   // B5
+  newsProtectionCommittee?:  NewsCommitteeResult;        // B6.2
   reasons: string[];
   warnings: string[];
   error?: string;
@@ -561,20 +595,20 @@ type CommitteeResult = {
 
 // أوزان اللجان — مجموعها 1.0 — B4: أضيفت لجنة توافق Fibonacci
 const COMMITTEE_WEIGHTS: Record<string, number> = {
-  "market-state-data-quality":  0.10,  // B3.2 — critical
-  "market-structure":           0.16,  // B1
-  "candlestick-price-action":   0.11,  // B2
-  "zones-confluence":           0.11,  // B3
-  "fibonacci-confluence":       0.09,  // B4
-  "multi-timeframe-consensus":  0.10,  // B5 — context alignment
-  "entry-quality":              0.11,
-  "trend":                      0.08,
-  "momentum":                   0.07,
+  "market-state-data-quality":  0.09,  // B3.2 — critical
+  "market-structure":           0.15,  // B1
+  "candlestick-price-action":   0.10,  // B2
+  "zones-confluence":           0.10,  // B3
+  "fibonacci-confluence":       0.08,  // B4
+  "multi-timeframe-consensus":  0.09,  // B5
+  "news-protection":            0.09,  // B6.2 — news sentinel
+  "entry-quality":              0.10,
+  "trend":                      0.07,
+  "momentum":                   0.06,
   "freshness":                  0.04,
   "risk":                       0.02,
   "protection":                 0.01,
-}; // مجموع: 0.10+0.16+0.11+0.11+0.09+0.10+0.11+0.08+0.07+0.04+0.02+0.01 = 1.00
-// Price Action + Zones + Fib + MTF (0.16+0.11+0.11+0.09+0.10=0.57) > EMA/MACD (0.08+0.07=0.15) ✓
+}; // مجموع: 0.09+0.15+0.10+0.10+0.08+0.09+0.09+0.10+0.07+0.06+0.04+0.02+0.01 = 1.00
 
 // اللجان الحرجة التي تستطيع إصدار BLOCK فعّال على القرار
 const CRITICAL_COMMITTEES = new Set([
@@ -1332,6 +1366,33 @@ function buildMTFCommittee(r: AnalysisResult): CommitteeResult {
   };
 }
 
+// ── 13. لجنة الأخبار والحماية — B6.2 ─────────────────────────────────────────
+function buildNewsCommittee(r: AnalysisResult): CommitteeResult {
+  const nc = r.newsProtectionCommittee;
+
+  if (!nc) {
+    return {
+      committeeId: "news-protection", committeeName: "لجنة الأخبار والحماية",
+      verdict: "WARN", score: 42,
+      summary: "لم تُجلب أخبار Finnhub بعد",
+      reasons: ["افتح صفحة صحة النظام واضغط 'جلب الأخبار' لتفعيل حماية الأخبار"],
+    };
+  }
+
+  const reasons  = [...nc.blockers.slice(0, 2), ...nc.warnings.slice(0, 2), ...nc.reasons.slice(0, 3)];
+  const verdict: CommitteeResult["verdict"] =
+    nc.verdict === "BLOCK" ? "BLOCK" :
+    nc.verdict === "WARN"  ? "WARN"  : "PASS"; // WATCH → PASS in committee (just context)
+  const score = Math.max(5, Math.min(90, nc.score));
+
+  return {
+    committeeId: "news-protection", committeeName: "لجنة الأخبار والحماية",
+    verdict, score,
+    summary: `${nc.verdict} | مطابق: ${nc.matchedNewsCount} | عالي: ${nc.highImpactCount} | حظر: ${nc.blockingNewsCount}`,
+    reasons: reasons.slice(0, 8),
+  };
+}
+
 // ── حساب الاحتمالية الموزونة من اللجان ──────────────────────────────────────
 function computeWeightedProbability(committees: CommitteeResult[]): number {
   let weightedSum = 0;
@@ -1402,6 +1463,7 @@ function buildDecisionSummary(r: AnalysisResult): DecisionSummary {
     buildZonesCommittee(r),             // B3
     buildFibonacciCommittee(r),         // B4
     buildMTFCommittee(r),               // B5
+    buildNewsCommittee(r),              // B6.2
   ];
 
   const probability = computeWeightedProbability(committees);
@@ -2319,6 +2381,98 @@ function MTFSection({ mtf }: { mtf: MultiTimeframeConsensus }) {
   );
 }
 
+// ── NewsSentinelSection — B6.2 ───────────────────────────────────────────────
+function NewsSentinelSection({ nc }: { nc: NewsCommitteeResult }) {
+  const verdictColor =
+    nc.verdict === "BLOCK" ? "text-red-300"     :
+    nc.verdict === "WARN"  ? "text-amber-300"   :
+    nc.verdict === "WATCH" ? "text-sky-300"     : "text-emerald-300";
+  const matchTypeLabel: Record<string, string> = {
+    DIRECT:        "مباشر",
+    USER_OVERRIDE: "مستخدم",
+    MACRO_USD:     "ماكرو USD",
+    MACRO_RISK:    "ماكرو خطر",
+    FOREX_GENERAL: "Forex عام",
+  };
+  const impactColor = (i: string) =>
+    i === "HIGH" || i === "BLOCK" ? "text-red-400" :
+    i === "MEDIUM" ? "text-amber-400" : "text-muted-foreground";
+
+  return (
+    <div className={`rounded-lg border p-4 space-y-3 ${
+      nc.verdict === "BLOCK" ? "border-red-500/30 bg-red-500/[0.04]" :
+      nc.verdict === "WARN"  ? "border-amber-500/25 bg-amber-500/[0.04]" :
+      nc.verdict === "WATCH" ? "border-sky-500/20 bg-sky-500/[0.04]" :
+                               "border-emerald-500/20 bg-emerald-500/[0.04]"
+    }`}>
+      <div className="flex items-center justify-between gap-2">
+        <p className="text-sm font-bold text-foreground/90">لجنة الأخبار والحماية — B6.2</p>
+        <div className="flex items-center gap-2">
+          <span className="text-[10px] text-muted-foreground/60 font-mono">
+            مطابق: {nc.matchedNewsCount} | عالي: {nc.highImpactCount}
+          </span>
+          <span className={`text-[11px] font-bold ${verdictColor}`}>{nc.verdict}</span>
+        </div>
+      </div>
+
+      {/* Blockers */}
+      {nc.blockers.length > 0 && (
+        <div className="space-y-1">
+          {nc.blockers.map((b, i) => (
+            <p key={i} className="text-[11px] text-red-300/90 font-medium leading-snug">✗ {b}</p>
+          ))}
+        </div>
+      )}
+
+      {/* Warnings */}
+      {nc.warnings.length > 0 && (
+        <div className="space-y-1">
+          {nc.warnings.map((w, i) => (
+            <p key={i} className="text-[11px] text-amber-300/80 leading-snug">⚠ {w}</p>
+          ))}
+        </div>
+      )}
+
+      {/* PASS reasons */}
+      {nc.verdict === "PASS" && nc.reasons.length > 0 && (
+        <p className="text-[11px] text-emerald-300/80">{nc.reasons[0]}</p>
+      )}
+
+      {/* Matched events */}
+      {nc.matchedEvents.length > 0 && (
+        <div className="space-y-1.5">
+          <p className="text-[10px] text-muted-foreground/60">الأخبار المرتبطة بالرمز:</p>
+          {nc.matchedEvents.map((e, i) => (
+            <div key={i} className="rounded border border-border bg-muted/5 px-2.5 py-1.5 space-y-0.5">
+              <div className="flex items-center justify-between gap-2">
+                <p className="text-[10px] text-foreground/80 leading-tight flex-1 truncate">{e.headline}</p>
+                <span className={`text-[9px] font-semibold shrink-0 ${impactColor(e.finalImpact)}`}>
+                  {e.finalImpact}
+                </span>
+              </div>
+              <div className="flex flex-wrap gap-1.5 text-[9px]">
+                <span className="text-muted-foreground/60 font-mono">{e.ageMinutes} دق</span>
+                <span className="text-sky-400/70">{matchTypeLabel[e.matchType] ?? e.matchType}</span>
+                <span className={
+                  e.itemVerdict === "BLOCK" ? "text-red-400" :
+                  e.itemVerdict === "WARN"  ? "text-amber-400" : "text-sky-400"
+                }>{e.itemVerdict}</span>
+                {e.finalDecision !== "PASS" && (
+                  <span className="text-muted-foreground/50">{e.finalDecision}</span>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <p className="text-[9px] text-muted-foreground/40 border-t border-border/30 pt-1.5 italic">
+        B6.2 — الأخبار المرتبطة بالرمز خلال 24 ساعة — لا تؤدي تلقائياً إلى order_send.
+      </p>
+    </div>
+  );
+}
+
 // ── CommitteeSummaryPreview — A22 ────────────────────────────────────────────
 // يعرض ملخص اللجان قبل الحفظ — قراءة فقط — لا useMutation — لا تنفيذ تداول
 function CommitteeSummaryPreview({ result }: { result: AnalysisResult }) {
@@ -2907,6 +3061,24 @@ function buildPriceActionExecutionGuard(
     }
   } else {
     warnings.push("توافق الفريمات غير محسوب — تحقق من مزامنة H4/H1/M30/M15");
+  }
+
+  // ── م) الأخبار والحماية — B6.2 ────────────────────────────────────────────
+  const nc = result.newsProtectionCommittee;
+  if (nc) {
+    if (nc.verdict === "BLOCK") {
+      for (const b of nc.blockers.slice(0, 2)) {
+        blockers.push(`ممنوع التنفيذ (لجنة الأخبار): ${b}`);
+      }
+    } else if (nc.verdict === "WARN") {
+      for (const w of nc.warnings.slice(0, 2)) {
+        warnings.push(`تحذير أخبار: ${w}`);
+      }
+    } else if (nc.verdict === "WATCH" && nc.matchedNewsCount > 0) {
+      warnings.push(`أخبار مرتبطة بالرمز تحت المراقبة (${nc.matchedNewsCount})`);
+    } else if (nc.verdict === "PASS") {
+      reasons.push("لا أخبار مؤثرة مرتبطة بالرمز حالياً ✓");
+    }
   }
 
   // ── ح) هامش من آخر response ───────────────────────────────────────────────
@@ -4257,6 +4429,11 @@ export function AnalysisControlPanel() {
                 {/* ── B5: توافق الفريمات ────────────────────────────────────── */}
                 {result.multiTimeframeConsensus && (
                   <MTFSection mtf={result.multiTimeframeConsensus} />
+                )}
+
+                {/* ── B6.2: لجنة الأخبار والحماية ─────────────────────────── */}
+                {result.newsProtectionCommittee && (
+                  <NewsSentinelSection nc={result.newsProtectionCommittee} />
                 )}
 
                 {/* ── A22: ملخص اللجان قبل الحفظ ───────────────────────────── */}

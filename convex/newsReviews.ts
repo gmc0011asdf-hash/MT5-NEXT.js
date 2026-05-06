@@ -218,3 +218,59 @@ export const listMyReviews = query({
       .take(limit);
   },
 });
+
+// ─── Query: news + reviews for B6.2 News Protection Committee ────────────────
+// Returns combined news event + user review data for committee evaluation.
+// No collect() — uses take(100) to stay within Convex limits.
+
+export const getRecentNewsForCommittee = query({
+  args: {
+    sinceMs: v.number(),   // timestamp — typically now() - 24h
+  },
+  handler: async (ctx, args) => {
+    const userId = await requireUserId(ctx);
+
+    // Fetch last 100 news events ordered by time desc (no collect)
+    const allNews = await ctx.db
+      .query("newsEvents")
+      .withIndex("by_publishedAt")
+      .order("desc")
+      .take(100);
+
+    // Filter to requested time window in memory
+    const recent = allNews.filter((e) => e.publishedAt >= args.sinceMs);
+
+    // Join with user reviews
+    const withReviews = await Promise.all(
+      recent.map(async (event) => {
+        const review = await ctx.db
+          .query("newsReviews")
+          .withIndex("by_news_user", (q) =>
+            q.eq("newsEventId", event._id).eq("userId", userId),
+          )
+          .first();
+        return {
+          eventId:              event._id,
+          headline:             event.headline,
+          source:               event.source,
+          category:             event.category,
+          publishedAt:          event.publishedAt,
+          autoImpact:           event.impact,
+          autoAffectedSymbols:  event.affectedSymbols,
+          // From review (if exists) — otherwise fall back to auto values
+          finalImpact:          review?.finalImpact ?? event.impact,
+          finalDecision:        review?.finalDecision ?? "PASS",
+          finalAffectedSymbols: review?.finalAffectedSymbols ?? event.affectedSymbols,
+          userImpactOverride:   review?.userImpactOverride,
+          userAffectedSymbolsOverride: review?.userAffectedSymbolsOverride,
+          relationshipType:     review?.relationshipType,
+          userDirectionBias:    review?.userDirectionBias,
+          userNote:             review?.userNote,
+          hasHumanReview:       review !== null,
+        };
+      }),
+    );
+
+    return withReviews;
+  },
+});

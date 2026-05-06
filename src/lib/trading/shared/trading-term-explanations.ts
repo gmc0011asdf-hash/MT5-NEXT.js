@@ -130,6 +130,17 @@ export const MTF_EXPLANATIONS: Record<string, string> = {
   TimeframeAlignment: "توافق الفريمات — عندما تتفق H4/H1 مع اتجاه الدخول على M15، مما يعزز ثقة الإشارة.",
 };
 
+// ─── News Protection (B6.2) ───────────────────────────────────────────────────
+
+export const NEWS_PROTECTION_EXPLANATIONS: Record<string, string> = {
+  NewsProtectionCommittee: "لجنة الأخبار والحماية — تراقب الأخبار المؤثرة على الرمز وتمنع الدخول إذا كان هناك خبر عالي الخطورة حديث.",
+  NewsImpact:              "أثر الخبر — يقيس مدى تأثير الخبر على السوق: NONE / LOW / MEDIUM / HIGH / BLOCK.",
+  UserNewsOverride:        "تقييم المستخدم للخبر — يسمح بتصحيح الأثر الآلي ورفعه عند الحاجة.",
+  MacroNewsRisk:           "مخاطر الأخبار الكلية — أخبار مثل Fed/CPI/NFP تؤثر بشكل غير مباشر على معظم الأزواج.",
+  DirectNewsImpact:        "أثر مباشر — الخبر يذكر الرمز الحالي أو عملته بشكل صريح.",
+  BlockReview:             "حظر مؤقت — خبر قيّمه المستخدم بأنه عالي الخطورة ويمنع الدخول حتى 24 ساعة.",
+};
+
 export function getTradingTermExplanation(term: string): string {
   const all: Record<string, string> = {
     ...STRUCTURE_POINT_EXPLANATIONS,
@@ -138,6 +149,7 @@ export function getTradingTermExplanation(term: string): string {
     ...PREMIUM_DISCOUNT_EXPLANATIONS,
     ...FIBONACCI_EXPLANATIONS,
     ...MTF_EXPLANATIONS,
+    ...NEWS_PROTECTION_EXPLANATIONS,
     BOS:    BOS_EXPLANATION,
     CHoCH:  CHOCH_EXPLANATION,
     ...TREND_STATE_EXPLANATIONS,

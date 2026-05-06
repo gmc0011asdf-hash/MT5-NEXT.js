@@ -44,6 +44,11 @@ import {
   analyzeMultiTimeframeConsensus,
   type MultiTimeframeConsensus,
 } from "@/lib/trading/mt5/multi-timeframe-consensus";
+import {
+  analyzeNewsProtectionCommittee,
+  type NewsCommitteeResult,
+  type NewsCommitteeItem,
+} from "@/lib/trading/mt5/news-protection-committee";
 
 export const dynamic = "force-dynamic";
 
@@ -139,6 +144,7 @@ type AnalysisResult = {
   marketStructure?:          MarketStructureAnalysis;   // B1
   fibonacciAnalysis?:        FibonacciAnalysis;          // B4
   multiTimeframeConsensus?:  MultiTimeframeConsensus;   // B5
+  newsProtectionCommittee?:  NewsCommitteeResult;        // B6.2
   candlestickAnalysis?: CandlestickAnalysis;        // B2
   zonesAnalysis?:       ZonesAnalysis;              // B3
   reasons: string[];
@@ -423,6 +429,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   let zonesAnalysis:            ZonesAnalysis            | undefined;
   let fibonacciAnalysis:        FibonacciAnalysis        | undefined;
   let multiTimeframeConsensus:  MultiTimeframeConsensus  | undefined;
+  let newsProtectionCommittee:  NewsCommitteeResult      | undefined;
   if (selectedTimeframe) {
     let rawCandles: { time: number; open: number; high: number; low: number; close: number }[] = [];
     try {
@@ -521,6 +528,38 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     );
   } catch {
     // non-blocking
+  }
+
+  // ── B6.2: News Protection Committee ──────────────────────────────────────
+  try {
+    const COMMITTEE_WINDOW_MS = 24 * 60 * 60 * 1000; // last 24 hours
+    const recentNewsData = await client.query(api.newsReviews.getRecentNewsForCommittee, {
+      sinceMs: Date.now() - COMMITTEE_WINDOW_MS,
+    });
+
+    if (recentNewsData.length > 0) {
+      const committeeItems: NewsCommitteeItem[] = recentNewsData.map((n) => ({
+        headline:              n.headline,
+        source:                n.source,
+        category:              n.category,
+        publishedAt:           n.publishedAt,
+        autoImpact:            n.autoImpact,
+        autoAffectedSymbols:   n.autoAffectedSymbols,
+        finalImpact:           n.finalImpact,
+        finalDecision:         n.finalDecision,
+        finalAffectedSymbols:  n.finalAffectedSymbols,
+        userImpactOverride:    n.userImpactOverride,
+        userAffectedSymbolsOverride: n.userAffectedSymbolsOverride,
+        relationshipType:      n.relationshipType,
+        userDirectionBias:     n.userDirectionBias,
+        userNote:              n.userNote,
+        hasHumanReview:        n.hasHumanReview,
+      }));
+
+      newsProtectionCommittee = analyzeNewsProtectionCommittee(committeeItems, symbol, Date.now());
+    }
+  } catch {
+    // non-blocking — news data is enrichment only
   }
 
   // ── build reasons and warnings ────────────────────────────────────────────
@@ -760,6 +799,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     marketStateAnalysis,  // B3.2 — undefined if fetch/compute failed
     fibonacciAnalysis,           // B4 — undefined if fetch/compute failed
     multiTimeframeConsensus,     // B5 — undefined if fetch/compute failed
+    newsProtectionCommittee,     // B6.2 — undefined if no news or compute failed
     marketStructure,      // B1 — undefined if fetch/compute failed
     candlestickAnalysis,  // B2 — undefined if fetch/compute failed
     zonesAnalysis,        // B3 — undefined if fetch/compute failed
