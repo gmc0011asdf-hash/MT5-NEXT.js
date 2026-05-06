@@ -800,6 +800,16 @@ type DecisionSummary = {
   anyBlock:       boolean;
 };
 
+// ── B2.1: Price Action Execution Guard ────────────────────────────────────────
+type PriceActionExecutionGuard = {
+  allowed:  boolean;
+  status:   "PASS" | "WARN" | "BLOCK";
+  score:    number;
+  reasons:  string[];
+  blockers: string[];
+  warnings: string[];
+};
+
 // buildDecisionSummary — الدالة المشتركة بين العرض قبل الحفظ وعملية الحفظ الفعلية
 // لا تنفيذ تداول — للتحليل والتوثيق فقط
 function buildDecisionSummary(r: AnalysisResult): DecisionSummary {
@@ -1411,6 +1421,228 @@ type DemoOrderResult = {
   error?:                      string;
 };
 
+// ── buildPriceActionExecutionGuard — B2.1 ────────────────────────────────────
+// حارس Price Action — يمنع التنفيذ إذا التحليل غير مؤهل
+// لا order_send — لا تنفيذ تداول — حارس واجهة فقط
+function buildPriceActionExecutionGuard(
+  result:         AnalysisResult,
+  summary:        DecisionSummary,
+  preview:        TradeOrderPreview,
+  lastOrderResult: DemoOrderResult | null,
+): PriceActionExecutionGuard {
+  const blockers: string[] = [];
+  const warnings: string[] = [];
+  const reasons:  string[] = [];
+
+  const { grade, probability, committees, finalDecision } = summary;
+  const ms = result.marketStructure;
+  const cs = result.candlestickAnalysis;
+  const ind = result.indicators;
+
+  // ── أ) الدرجة ─────────────────────────────────────────────────────────────
+  if (grade === "D" || grade === "C") {
+    blockers.push(`ممنوع التنفيذ: الدرجة ${grade} أقل من الحد الأدنى B`);
+  } else {
+    reasons.push(`الدرجة ${grade} مقبولة للتنفيذ ✓`);
+  }
+
+  // ── ب) الاحتمالية ─────────────────────────────────────────────────────────
+  if (probability < 60) {
+    blockers.push(`ممنوع التنفيذ: احتمال القرار ${probability}% أقل من 60%`);
+  } else if (probability < 68) {
+    warnings.push(`احتمال القرار ${probability}% بين 60% و68% — تحقق من الإشارات`);
+  } else {
+    reasons.push(`احتمال القرار ${probability}% ✓`);
+  }
+
+  // ── ج) عدد التحذيرات ──────────────────────────────────────────────────────
+  const warnCount  = committees.filter((c) => c.verdict === "WARN").length;
+  const blockCount = committees.filter((c) => c.verdict === "BLOCK").length;
+  if (warnCount >= 3) {
+    blockers.push(`ممنوع التنفيذ: ${warnCount} لجان بتحذير WARN — إشارات متضاربة كثيرة`);
+  } else if (warnCount === 2) {
+    warnings.push(`${warnCount} لجان بتحذير WARN — مراجعة الإشارات موصى بها`);
+  }
+  if (blockCount > 0) {
+    warnings.push(`${blockCount} لجنة أصدرت BLOCK — الحارس الأول يجب أن يمنعه`);
+  }
+
+  // ── د) هيكل السوق ────────────────────────────────────────────────────────
+  const isMarketOrder =
+    preview.orderType === "BUY_MARKET_PREVIEW" ||
+    preview.orderType === "SELL_MARKET_PREVIEW";
+
+  if (ms) {
+    const msBiasBuy  = ms.bias === "BUY"  && finalDecision === "BUY";
+    const msBiasSell = ms.bias === "SELL" && finalDecision === "SELL";
+    const msBiasConflict =
+      (ms.bias === "SELL" && finalDecision === "BUY") ||
+      (ms.bias === "BUY"  && finalDecision === "SELL");
+
+    if (msBiasConflict) {
+      blockers.push(`ممنوع التنفيذ: هيكل السوق (${ms.bias}) يعاكس القرار (${finalDecision})`);
+    } else if (msBiasBuy || msBiasSell) {
+      reasons.push(`هيكل السوق يدعم القرار (${ms.trendState}/${ms.bias}) ✓`);
+    }
+
+    if ((ms.trendState === "RANGE" || ms.trendState === "TRANSITION") && isMarketOrder) {
+      blockers.push(
+        ms.trendState === "RANGE"
+          ? "ممنوع التنفيذ: هيكل السوق RANGE مع أمر Market — خطر الدخول في نطاق"
+          : "ممنوع التنفيذ: هيكل السوق في مرحلة تحوّل — ترقب اتجاه الكسر أولاً",
+      );
+    } else if (ms.trendState === "RANGE" && !isMarketOrder) {
+      warnings.push("السوق في نطاق — الأوامر Pending أكثر ملاءمة من Market في هذه الحالة");
+    }
+  } else {
+    warnings.push("هيكل السوق غير متوفر — سيتم تجاوز فحص Market Structure");
+  }
+
+  // ── هـ) الشموع والسيولة ───────────────────────────────────────────────────
+  if (cs) {
+    const csBiasConflict =
+      (cs.bias === "SELL" && result.direction === "bullish") ||
+      (cs.bias === "BUY"  && result.direction === "bearish");
+
+    if (csBiasConflict && cs.confidence >= 40) {
+      blockers.push(
+        `ممنوع التنفيذ: الشموع تعاكس قرار الـ${result.direction === "bullish" ? "شراء" : "بيع"} (bias: ${cs.bias})`,
+      );
+    } else if (csBiasConflict) {
+      warnings.push(`انحياز الشموع (${cs.bias}) عكس القرار — ثقة منخفضة ${cs.confidence}%`);
+    }
+
+    if (cs.quality === "SUSPICIOUS") {
+      blockers.push("ممنوع التنفيذ: جودة الشمعة مريبة — حركة غير اعتيادية");
+    } else if (cs.quality === "WEAK") {
+      // BLOCK only if there's also a strong opposing pattern
+      const opposingDir = result.direction === "bullish" ? "SELL" : "BUY";
+      const strongOpposing = cs.patterns.filter(
+        (p) => p.direction === opposingDir && p.strength >= 75,
+      );
+      if (strongOpposing.length > 0) {
+        blockers.push(
+          `ممنوع التنفيذ: شمعة ضعيفة مع ${strongOpposing.length} نمط انعكاسي قوي (قوة ≥75)`,
+        );
+      } else {
+        warnings.push("جودة الشمعة ضعيفة — الإشارة غير مؤكدة");
+      }
+    }
+
+    // Strong opposing pin bar or engulfing
+    const opposingDir2 = result.direction === "bullish" ? "SELL" : "BUY";
+    const strongReversal = cs.patterns.filter(
+      (p) =>
+        p.direction === opposingDir2 &&
+        p.strength >= 80 &&
+        (p.type === "PIN_BAR_BULLISH"    ||
+         p.type === "PIN_BAR_BEARISH"    ||
+         p.type === "BULLISH_ENGULFING"  ||
+         p.type === "BEARISH_ENGULFING"  ||
+         p.type === "LIQUIDITY_SWEEP_HIGH" ||
+         p.type === "LIQUIDITY_SWEEP_LOW"),
+    );
+    if (strongReversal.length > 0 && !blockers.some((b) => b.includes("شمعة"))) {
+      blockers.push(
+        `ممنوع التنفيذ: نمط انعكاسي قوي ضد القرار (${strongReversal[0]!.type}, قوة ${strongReversal[0]!.strength})`,
+      );
+    }
+
+    // Doji / Inside Bar only warning
+    const hasNeutralOnly =
+      cs.patterns.every((p) => p.type === "DOJI" || p.type === "INSIDE_BAR" || p.direction === "NEUTRAL");
+    if (hasNeutralOnly && cs.patterns.length > 0 && !blockers.length) {
+      warnings.push("Doji أو Inside Bar — تردد في السوق، لا إشارة اتجاهية واضحة");
+    }
+
+    if (cs.fakeoutDetected) {
+      const fakeAgainstDecision =
+        (cs.patterns.some((p) => p.type === "FAKE_BREAKOUT_UP") && finalDecision === "BUY") ||
+        (cs.patterns.some((p) => p.type === "FAKE_BREAKOUT_DOWN") && finalDecision === "SELL");
+      if (fakeAgainstDecision) {
+        blockers.push("ممنوع التنفيذ: كسر وهمي ضد اتجاه القرار — خطر انعكاس");
+      } else {
+        warnings.push("كسر وهمي مكتشف — تحقق من اتجاه الإغلاق");
+      }
+    }
+  } else {
+    warnings.push("تحليل الشموع غير متوفر — سيتم تجاوز فحص Candlestick");
+  }
+
+  // ── و) الزخم ──────────────────────────────────────────────────────────────
+  if (ind) {
+    const isWeakMomentum = ind.momentumBias !== "strong";
+    const tf = result.selectedTimeframe ?? "";
+    const isShortTF  = ["M1", "M5", "M15"].includes(tf);
+    const isMediumTF = ["H1", "H4"].includes(tf);
+
+    if (isWeakMomentum && isMarketOrder && isShortTF) {
+      blockers.push(
+        `ممنوع التنفيذ: الزخم ضعيف على ${tf} مع أمر Market — خطر الدخول بدون قوة`,
+      );
+    } else if (isWeakMomentum && isMediumTF) {
+      warnings.push(`الزخم ضعيف على ${tf} — الحركة قد تكون بطيئة`);
+    } else if (!isWeakMomentum) {
+      reasons.push("الزخم قوي ✓");
+    }
+  }
+
+  // ── ز) SL مقابل ATR ───────────────────────────────────────────────────────
+  if (result.entry !== undefined && result.stopLoss !== undefined && ind?.atr14) {
+    const slDist = Math.abs(result.entry - result.stopLoss);
+    const atr    = ind.atr14;
+    const isXAU  = result.symbol.includes("XAU") || result.symbol.includes("GOLD");
+
+    // XAU stricter thresholds: 0.7 BLOCK, 1.0 WARN
+    const blockRatio = isXAU ? 0.7 : 0.5;
+    const warnRatio  = isXAU ? 1.0 : 0.8;
+
+    if (slDist < blockRatio * atr) {
+      blockers.push(
+        `ممنوع التنفيذ: وقف الخسارة ضيق مقارنة بالـ ATR — SL: ${slDist.toFixed(5)} | ATR: ${atr.toFixed(5)} | نسبة: ${(slDist / atr).toFixed(2)}×${isXAU ? " (XAU: الحد 0.7×)" : ""}`,
+      );
+    } else if (slDist < warnRatio * atr) {
+      warnings.push(
+        `وقف الخسارة قريب من ATR — SL/ATR: ${(slDist / atr).toFixed(2)}× (الحد الموصى به ${warnRatio}×)`,
+      );
+    } else {
+      reasons.push(`SL/ATR: ${(slDist / atr).toFixed(2)}× — مقبول ✓`);
+    }
+  }
+
+  // ── ح) هامش من آخر response ───────────────────────────────────────────────
+  if (
+    lastOrderResult?.marginRequired != null &&
+    lastOrderResult?.freeMarginBefore != null &&
+    lastOrderResult.freeMarginBefore > 0
+  ) {
+    const marginRatio = lastOrderResult.marginRequired / lastOrderResult.freeMarginBefore;
+    if (marginRatio > 0.30) {
+      blockers.push(
+        `ممنوع التنفيذ: استخدام الهامش مرتفع ${(marginRatio * 100).toFixed(0)}% من الهامش المتاح (الحد 30%)`,
+      );
+    } else if (marginRatio > 0.20) {
+      warnings.push(
+        `استخدام الهامش ${(marginRatio * 100).toFixed(0)}% — مراقبة موصى بها`,
+      );
+    } else {
+      reasons.push(`الهامش ${(marginRatio * 100).toFixed(0)}% من المتاح ✓`);
+    }
+  } else {
+    warnings.push("الهامش غير متاح في هذه المرحلة — سيتم فحصه في backend عند الإرسال");
+  }
+
+  // ── النتيجة النهائية ──────────────────────────────────────────────────────
+  const allowed = blockers.length === 0;
+  const score   = Math.max(0, Math.min(100,
+    100 - blockers.length * 25 - warnings.length * 8,
+  ));
+  const status: PriceActionExecutionGuard["status"] =
+    blockers.length > 0 ? "BLOCK" : warnings.length > 0 ? "WARN" : "PASS";
+
+  return { allowed, status, score, reasons, blockers, warnings };
+}
+
 // ── TradePreviewPanel — A23/A24/A25/A26.1/A26.2 ──────────────────────────────
 // A26.2: زر إرسال Demo مفعّل داخل الـ modal فقط بعد checkbox — لا real execution
 function TradePreviewPanel({ result }: { result: AnalysisResult }) {
@@ -1447,10 +1679,16 @@ function TradePreviewPanel({ result }: { result: AnalysisResult }) {
     { spreadPoints: result.currentSpreadPoints },
   );
 
-  // A26.1: زر المراجعة يُفعَّل فقط عند اكتمال جميع الشروط + DEMO_ARMED
+  // B2.1: حارس Price Action — يُعاد حسابه عند تغيّر orderResult (للهامش)
+  const priceActionGuard = buildPriceActionExecutionGuard(
+    result, summary, preview, orderResult,
+  );
+
+  // A26.1: زر المراجعة يُفعَّل فقط عند اكتمال جميع الشروط + DEMO_ARMED + حارس B2.1
   const canOpenReview =
     preview.allowed &&
     eligibility.eligible &&
+    priceActionGuard.allowed &&
     settings.executionMode === "DEMO_ARMED" &&
     !settings.killSwitchEnabled &&
     settings.isConfirmedDemo;
@@ -1461,7 +1699,7 @@ function TradePreviewPanel({ result }: { result: AnalysisResult }) {
 
   // A26.2: إرسال أمر Demo إلى MT5 — Demo فقط — بعد تأكيد يدوي
   async function handleSendToMT5Demo() {
-    if (!canSend) return;
+    if (!canSend || !priceActionGuard.allowed) return; // belt-and-suspenders B2.1
     setOrdering(true);
     setOrderResult(null);
     setOrderError(null);
@@ -1675,9 +1913,51 @@ function TradePreviewPanel({ result }: { result: AnalysisResult }) {
             )}
           </div>
 
+          {/* ── B2.1: حارس جودة التنفيذ ──────────────────────────────────────── */}
+          <div className={`rounded-md border px-3 py-2.5 text-xs space-y-1.5 ${
+            priceActionGuard.status === "BLOCK"
+              ? "border-red-500/40 bg-red-500/8"
+              : priceActionGuard.status === "WARN"
+                ? "border-amber-500/30 bg-amber-500/8"
+                : "border-emerald-500/30 bg-emerald-500/8"
+          }`}>
+            <div className="flex items-center justify-between">
+              <span className={`font-bold text-sm ${
+                priceActionGuard.status === "BLOCK" ? "text-red-300" :
+                priceActionGuard.status === "WARN"  ? "text-amber-300" : "text-emerald-300"
+              }`}>
+                حارس جودة التنفيذ — {priceActionGuard.status}
+              </span>
+              <span className="font-mono text-muted-foreground/60 text-[10px]">
+                نقاط: {priceActionGuard.score}
+              </span>
+            </div>
+            {priceActionGuard.blockers.length > 0 && (
+              <ul className="space-y-0.5">
+                {priceActionGuard.blockers.map((b, i) => (
+                  <li key={i} className="text-red-300/90 font-medium">✗ {b}</li>
+                ))}
+              </ul>
+            )}
+            {priceActionGuard.warnings.length > 0 && (
+              <ul className="space-y-0.5">
+                {priceActionGuard.warnings.map((w, i) => (
+                  <li key={i} className="text-amber-300/80">⚠ {w}</li>
+                ))}
+              </ul>
+            )}
+            {priceActionGuard.reasons.length > 0 && priceActionGuard.status !== "BLOCK" && (
+              <ul className="space-y-0.5">
+                {priceActionGuard.reasons.slice(0, 3).map((r, i) => (
+                  <li key={i} className="text-emerald-300/70">✓ {r}</li>
+                ))}
+              </ul>
+            )}
+          </div>
+
           {/* A26.1: أزرار التنفيذ */}
           <div className="flex flex-wrap items-center gap-3">
-            {/* زر مراجعة طلب التنفيذ — enabled فقط عند DEMO_ARMED + جميع الشروط */}
+            {/* زر مراجعة طلب التنفيذ — enabled فقط عند DEMO_ARMED + جميع الشروط + حارس B2.1 */}
             <button
               type="button"
               disabled={!canOpenReview}
@@ -1847,6 +2127,19 @@ function TradePreviewPanel({ result }: { result: AnalysisResult }) {
                       وأن هذا الإجراء للمراجعة والاختبار فقط بدون تداول فعلي.
                     </span>
                   </label>
+
+                  {/* B2.1: حارس التنفيذ داخل الـ modal — belt-and-suspenders */}
+                  {!priceActionGuard.allowed && (
+                    <div className="rounded-md border border-red-500/50 bg-red-500/10 px-4 py-3 space-y-1">
+                      <p className="text-xs font-bold text-red-300">⛔ حارس جودة التنفيذ — BLOCK</p>
+                      {priceActionGuard.blockers.map((b, i) => (
+                        <p key={i} className="text-xs text-red-300/80">✗ {b}</p>
+                      ))}
+                      <p className="text-[10px] text-muted-foreground/60 pt-1">
+                        لإلغاء الحظر: وسّع وقف الخسارة، أو انتظر إشارة تقنية أقوى، أو راجع درجة القرار.
+                      </p>
+                    </div>
+                  )}
 
                   {/* A26.2: الأزرار النهائية */}
                   <div className="flex flex-wrap items-center gap-3 pt-1">
