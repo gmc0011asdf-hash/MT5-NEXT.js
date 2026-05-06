@@ -974,6 +974,7 @@ function buildMarketStateCommittee(r: AnalysisResult): CommitteeResult {
     if (ms.marketOpen)           reasons.push("السوق مفتوح ✓");
     if (ms.fakeCandleRisk === "LOW") reasons.push("لا شموع مشبوهة ✓");
     if (ms.latestCandleClosed)   reasons.push("آخر شمعة مغلقة ✓");
+    else if (ms.usingClosedCandleOnly) reasons.push("الشمعة الحالية قيد التكوين — التحليل يستخدم آخر شمعة مغلقة ✓");
     if (ms.spreadStatus === "NORMAL") reasons.push(`سبريد طبيعي (${ms.spreadPoints} نقطة) ✓`);
   }
 

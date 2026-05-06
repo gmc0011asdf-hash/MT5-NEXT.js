@@ -357,8 +357,8 @@ export function analyzeMarketState(
   } else if (
     marketSessionStatus === "UNKNOWN" ||
     fakeCandleRisk === "MEDIUM" ||
-    marketSessionStatus === "LOW_LIQUIDITY" ||
-    usingClosedCandleOnly
+    marketSessionStatus === "LOW_LIQUIDITY"
+    // usingClosedCandleOnly alone does NOT block — using closed candles is correct behaviour
   ) {
     decision = "ANALYSIS_ONLY";
   } else {
