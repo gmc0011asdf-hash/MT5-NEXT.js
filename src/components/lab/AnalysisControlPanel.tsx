@@ -241,7 +241,7 @@ type GoldenZone = {
 };
 
 // ── B6.2: News Protection Committee types ────────────────────────────────────
-type NewsMatchType = "DIRECT" | "USER_OVERRIDE" | "MACRO_USD" | "MACRO_RISK" | "FOREX_GENERAL";
+type NewsMatchType = "DIRECT" | "USER_OVERRIDE" | "MACRO_USD" | "MACRO_RISK" | "FOREX_GENERAL" | "EQUITY_RISK_SENTIMENT" | "TECH_AI_SENTIMENT" | "MARKET_INDEX_SENTIMENT";
 type NewsItemVerdict = "BLOCK" | "WARN" | "WATCH" | "PASS";
 
 type MatchedNewsEvent = {
@@ -2388,11 +2388,14 @@ function NewsSentinelSection({ nc }: { nc: NewsCommitteeResult }) {
     nc.verdict === "WARN"  ? "text-amber-300"   :
     nc.verdict === "WATCH" ? "text-sky-300"     : "text-emerald-300";
   const matchTypeLabel: Record<string, string> = {
-    DIRECT:        "مباشر",
-    USER_OVERRIDE: "مستخدم",
-    MACRO_USD:     "ماكرو USD",
-    MACRO_RISK:    "ماكرو خطر",
-    FOREX_GENERAL: "Forex عام",
+    DIRECT:                   "مباشر",
+    USER_OVERRIDE:            "مستخدم",
+    MACRO_USD:                "ماكرو USD",
+    MACRO_RISK:               "ماكرو خطر",
+    FOREX_GENERAL:            "Forex عام",
+    EQUITY_RISK_SENTIMENT:    "أسهم/شهية مخاطرة",
+    TECH_AI_SENTIMENT:        "تقنية/ذكاء اصطناعي",
+    MARKET_INDEX_SENTIMENT:   "مؤشرات السوق",
   };
   const impactColor = (i: string) =>
     i === "HIGH" || i === "BLOCK" ? "text-red-400" :

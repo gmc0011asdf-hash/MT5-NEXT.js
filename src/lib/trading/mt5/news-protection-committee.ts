@@ -10,11 +10,14 @@
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 export type NewsMatchType =
-  | "DIRECT"        // symbol is literally in finalAffectedSymbols
-  | "USER_OVERRIDE" // user explicitly added symbol in review
-  | "MACRO_USD"     // USD-pair symbol + news affects USD/GLOBAL
-  | "MACRO_RISK"    // XAUUSD + news has GLOBAL_RISK/OIL/WAR/GOLD
-  | "FOREX_GENERAL";// category=forex + symbol is major pair + generic FOREX tag
+  | "DIRECT"                  // symbol is literally in finalAffectedSymbols
+  | "USER_OVERRIDE"           // user explicitly added symbol in review
+  | "MACRO_USD"               // USD-pair symbol + news affects USD/GLOBAL
+  | "MACRO_RISK"              // XAUUSD + news has GLOBAL_RISK/OIL/WAR/GOLD
+  | "FOREX_GENERAL"           // category=forex + symbol is major pair + generic FOREX tag
+  | "EQUITY_RISK_SENTIMENT"   // general equity news → crypto only
+  | "TECH_AI_SENTIMENT"       // big-tech / AI news → crypto + weak XAUUSD signal
+  | "MARKET_INDEX_SENTIMENT"; // Nasdaq/S&P/risk-on/risk-off → crypto + XAUUSD
 
 export type NewsItemVerdict = "BLOCK" | "WARN" | "WATCH" | "PASS";
 
@@ -71,6 +74,33 @@ const MAJOR_FOREX_PAIRS = new Set([
   "EURUSD", "GBPUSD", "USDJPY", "USDCHF", "AUDUSD", "USDCAD", "NZDUSD", "XAUUSD",
 ]);
 
+// ─── B6.2.1: Equity / Sentiment keyword sets ─────────────────────────────────
+
+const TECH_AI_KEYWORDS = [
+  "apple", "microsoft", "nvidia", "amazon", "meta ", "tesla", "openai",
+  "ai stocks", "artificial intelligence", "big tech", "tech stocks",
+  "alphabet", "google stock", "chip stocks", "semiconductor",
+];
+
+const MARKET_INDEX_KEYWORDS = [
+  "nasdaq", "s&p 500", "s&p500", "s&p 500", "wall street", "dow jones",
+  "risk-on", "risk-off", "risk on", "risk off",
+  "selloff", "sell-off", "sell off", "market rally", "stocks rally",
+  "equities rise", "equities fall", "stock market", "equity markets",
+];
+
+const EQUITY_SENTIMENT_KEYWORDS = [
+  "earnings report", "quarterly earnings", "ipo ", "stock soar", "shares rise",
+  "shares fall", "market cap", "shareholder", "dividend", "buyback",
+];
+
+const CRYPTO_PAIRS = new Set(["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLBTC"]);
+
+function headlineMatches(headline: string, keywords: string[]): boolean {
+  const text = headline.toLowerCase();
+  return keywords.some((kw) => text.includes(kw));
+}
+
 // ─── Symbol matching ──────────────────────────────────────────────────────────
 
 function matchSymbol(
@@ -109,15 +139,40 @@ function matchSymbol(
     return { matches: true, matchType: "FOREX_GENERAL" };
   }
 
+  // ── B6.2.1: Equity / Sentiment matching ──────────────────────────────────
+  // Only applies to Crypto (and limited XAUUSD) — NOT FOREX pairs without user override.
+
+  // 6. TECH_AI_SENTIMENT: big-tech / AI news → Crypto + weak signal on XAUUSD
+  if (headlineMatches(item.headline, TECH_AI_KEYWORDS)) {
+    if (CRYPTO_PAIRS.has(symbol) || symbol === "XAUUSD") {
+      return { matches: true, matchType: "TECH_AI_SENTIMENT" };
+    }
+  }
+
+  // 7. MARKET_INDEX_SENTIMENT: Nasdaq/S&P/risk-on/risk-off → Crypto + XAUUSD
+  if (headlineMatches(item.headline, MARKET_INDEX_KEYWORDS)) {
+    if (CRYPTO_PAIRS.has(symbol) || symbol === "XAUUSD") {
+      return { matches: true, matchType: "MARKET_INDEX_SENTIMENT" };
+    }
+  }
+
+  // 8. EQUITY_RISK_SENTIMENT: general equity sentiment → Crypto only
+  if (headlineMatches(item.headline, EQUITY_SENTIMENT_KEYWORDS)) {
+    if (CRYPTO_PAIRS.has(symbol)) {
+      return { matches: true, matchType: "EQUITY_RISK_SENTIMENT" };
+    }
+  }
+
   return { matches: false, matchType: "DIRECT" };
 }
 
 // ─── Per-item verdict (time + impact + match type) ────────────────────────────
 
 function getItemVerdict(
-  item: NewsCommitteeItem,
+  item:       NewsCommitteeItem,
   ageMinutes: number,
-  matchType: NewsMatchType,
+  matchType:  NewsMatchType,
+  symbol:     string,
 ): NewsItemVerdict {
   const impact   = item.finalImpact;
   const decision = item.finalDecision;
@@ -125,7 +180,7 @@ function getItemVerdict(
 
   // Human BLOCK_REVIEW stays active up to 24h
   if (decision === "BLOCK_REVIEW" && ageMinutes < 24 * 60) {
-    // Only DIRECT / USER_OVERRIDE → BLOCK; indirect matches → WARN
+    // Only DIRECT / USER_OVERRIDE → BLOCK; all sentiment/indirect → WARN
     return matchType === "DIRECT" || matchType === "USER_OVERRIDE" ? "BLOCK" : "WARN";
   }
 
@@ -133,6 +188,45 @@ function getItemVerdict(
   if (matchType === "FOREX_GENERAL") {
     if ((impact === "HIGH" || impact === "BLOCK") && ageMinutes < 6 * 60) return "WATCH";
     if (impact === "MEDIUM" && ageMinutes < 24 * 60) return "WATCH";
+    return "PASS";
+  }
+
+  // ── B6.2.1: Equity/Sentiment caps ────────────────────────────────────────
+
+  // TECH_AI_SENTIMENT: big-tech/AI → Crypto max WARN, XAUUSD max WATCH
+  if (matchType === "TECH_AI_SENTIMENT") {
+    if (CRYPTO_PAIRS.has(symbol)) {
+      if ((impact === "HIGH" || impact === "BLOCK") && ageMinutes < 6 * 60) return "WARN";
+      if (impact === "MEDIUM" && ageMinutes < 24 * 60) return "WATCH";
+    } else if (symbol === "XAUUSD") {
+      // AI/tech news has weak correlation to gold — only WATCH if recent & medium+
+      if ((impact === "HIGH" || impact === "MEDIUM") && ageMinutes < 12 * 60) return "WATCH";
+    }
+    return "PASS";
+  }
+
+  // MARKET_INDEX_SENTIMENT: Nasdaq/S&P/risk → Crypto max WARN, XAUUSD context-aware
+  if (matchType === "MARKET_INDEX_SENTIMENT") {
+    const textLower = item.headline.toLowerCase();
+    const isRiskOff = ["selloff", "sell-off", "sell off", "crash", "plunge", "fear", "decline", "risk-off", "risk off"].some(
+      (kw) => textLower.includes(kw),
+    );
+    if (symbol === "XAUUSD") {
+      // Gold is safe haven → WARN on risk-off/selloff if recent, else WATCH
+      if (isRiskOff && (impact === "HIGH" || impact === "BLOCK") && ageMinutes < 6 * 60) return "WARN";
+      if (ageMinutes < 12 * 60) return "WATCH";
+      return "PASS";
+    }
+    if (CRYPTO_PAIRS.has(symbol)) {
+      if ((impact === "HIGH" || impact === "BLOCK") && ageMinutes < 6 * 60) return "WARN";
+      if (ageMinutes < 24 * 60) return "WATCH";
+    }
+    return "PASS"; // FOREX pairs: no effect without user override
+  }
+
+  // EQUITY_RISK_SENTIMENT: general equity → Crypto WATCH only
+  if (matchType === "EQUITY_RISK_SENTIMENT") {
+    if (CRYPTO_PAIRS.has(symbol) && ageMinutes < 24 * 60) return "WATCH";
     return "PASS";
   }
 
@@ -188,7 +282,7 @@ export function analyzeNewsProtectionCommittee(
     const { matches, matchType } = matchSymbol(symbol, item);
     if (!matches) continue;
 
-    const itemVerdict = getItemVerdict(item, ageMinutes, matchType);
+    const itemVerdict = getItemVerdict(item, ageMinutes, matchType, symbol);
     if (itemVerdict === "PASS") continue; // no threat
 
     const ageLabel = ageMinutes < 60
