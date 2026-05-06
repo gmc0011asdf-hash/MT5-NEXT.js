@@ -389,4 +389,26 @@ export default defineSchema({
     .index("by_user_createdAt",         ["userId", "createdAt"])
     .index("by_user_symbol_createdAt",  ["userId", "symbol", "createdAt"])
     .index("by_user_decisionId",        ["userId", "decisionId"]),
+
+  // ── B6.1: Finnhub news events ───────────────────────────────────────────────
+  newsEvents: defineTable({
+    provider:        v.string(),           // "finnhub"
+    providerEventId: v.string(),           // Finnhub article id (stringified)
+    category:        v.string(),           // "general" | "crypto" | "forex"
+    market:          v.string(),           // "GLOBAL" | "CRYPTO" | "MT5"
+    headline:        v.string(),
+    summary:         v.optional(v.string()),
+    source:          v.optional(v.string()),
+    url:             v.optional(v.string()),
+    image:           v.optional(v.string()),
+    related:         v.optional(v.string()),
+    publishedAt:     v.number(),           // Unix ms
+    impact:          v.string(),           // "HIGH" | "MEDIUM" | "LOW"
+    affectedSymbols: v.array(v.string()),
+    createdAt:       v.number(),
+    updatedAt:       v.number(),
+  })
+    .index("by_provider_id",           ["provider", "providerEventId"])
+    .index("by_publishedAt",           ["publishedAt"])
+    .index("by_category_publishedAt",  ["category", "publishedAt"]),
 });
