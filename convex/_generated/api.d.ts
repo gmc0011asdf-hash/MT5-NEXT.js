@@ -16,6 +16,7 @@ import type * as health from "../health.js";
 import type * as mt5Bridge from "../mt5Bridge.js";
 import type * as mt5CandlesQuery from "../mt5CandlesQuery.js";
 import type * as newsIngestion from "../newsIngestion.js";
+import type * as newsReviews from "../newsReviews.js";
 import type * as technicalIndicators from "../technicalIndicators.js";
 import type * as testEvents from "../testEvents.js";
 
@@ -34,6 +35,7 @@ declare const fullApi: ApiFromModules<{
   mt5Bridge: typeof mt5Bridge;
   mt5CandlesQuery: typeof mt5CandlesQuery;
   newsIngestion: typeof newsIngestion;
+  newsReviews: typeof newsReviews;
   technicalIndicators: typeof technicalIndicators;
   testEvents: typeof testEvents;
 }>;

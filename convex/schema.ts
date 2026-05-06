@@ -411,4 +411,31 @@ export default defineSchema({
     .index("by_provider_id",           ["provider", "providerEventId"])
     .index("by_publishedAt",           ["publishedAt"])
     .index("by_category_publishedAt",  ["category", "publishedAt"]),
+
+  // ── B6.1.1: Human review and translation layer ──────────────────────────────
+  newsReviews: defineTable({
+    newsEventId:                v.id("newsEvents"),
+    userId:                     v.string(),
+    // Translation (manual, no external API key stored)
+    translatedHeadline:         v.optional(v.string()),
+    translatedSummary:          v.optional(v.string()),
+    // Human override — can raise impact, never automatically lowers it
+    userImpactOverride:         v.optional(v.string()), // "NONE"|"LOW"|"MEDIUM"|"HIGH"|"BLOCK"
+    userAffectedSymbolsOverride: v.optional(v.array(v.string())),
+    relationshipType:           v.optional(v.string()), // "DIRECT"|"INDIRECT"|"MACRO"|"GLOBAL_RISK"|"NONE"
+    userDirectionBias:          v.optional(v.string()), // "BULLISH"|"BEARISH"|"NEUTRAL"|"UNKNOWN"
+    userConfidence:             v.optional(v.number()), // 0–100
+    userNote:                   v.optional(v.string()),
+    // Computed final values
+    finalImpact:                v.string(),  // highest of auto + user
+    finalAffectedSymbols:       v.array(v.string()),
+    finalDecision:              v.string(),  // "PASS"|"WATCH"|"WARN"|"BLOCK_REVIEW"
+    reviewedAt:                 v.number(),
+    createdAt:                  v.number(),
+    updatedAt:                  v.number(),
+  })
+    .index("by_news_user",       ["newsEventId", "userId"])
+    .index("by_user_reviewedAt", ["userId", "reviewedAt"])
+    .index("by_finalImpact",     ["finalImpact"])
+    .index("by_finalDecision",   ["finalDecision"]),
 });
