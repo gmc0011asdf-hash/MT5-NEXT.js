@@ -32,6 +32,10 @@ import {
   analyzeZones,
   type ZonesAnalysis,
 } from "@/lib/trading/mt5/zones-analysis";
+import {
+  analyzeMarketState,
+  type MarketStateAnalysis,
+} from "@/lib/trading/mt5/market-state-analysis";
 
 export const dynamic = "force-dynamic";
 
@@ -123,6 +127,7 @@ type AnalysisResult = {
   dataQuality: { symbolPropsAvailable: boolean; indicatorsAvailable: boolean };
   freshness: { candleAgeMs?: number; stale: boolean };
   indicators?: IndicatorResult;
+  marketStateAnalysis?: MarketStateAnalysis;        // B3.2 (first — guards data quality)
   marketStructure?:     MarketStructureAnalysis;   // B1
   candlestickAnalysis?: CandlestickAnalysis;        // B2
   zonesAnalysis?:       ZonesAnalysis;              // B3
@@ -401,7 +406,8 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     }
   }
 
-  // ── B1/B2/B3: fetch raw candles → market structure + candlestick + zones ──
+  // ── B3.2/B1/B2/B3: fetch raw candles → state guard → closed candles → analysis ──
+  let marketStateAnalysis: MarketStateAnalysis | undefined;
   let marketStructure:     MarketStructureAnalysis | undefined;
   let candlestickAnalysis: CandlestickAnalysis     | undefined;
   let zonesAnalysis:       ZonesAnalysis           | undefined;
@@ -413,21 +419,50 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
         timeframe: selectedTimeframe,
         limit: candleCount,
       });
-      marketStructure = analyzeMarketStructure(rawCandles);
     } catch {
-      // non-blocking
+      // non-blocking — if fetch fails, all analysis is skipped
     }
-    if (rawCandles.length >= 2) {
+
+    if (rawCandles.length >= 3) {
+      // ── B3.2: Market state — runs FIRST, provides closedCandles ──────────
+      let closedCandles: typeof rawCandles = rawCandles;
       try {
-        candlestickAnalysis = analyzeCandlestick(rawCandles, marketStructure);
+        const msa = analyzeMarketState(rawCandles, selectedTimeframe, {
+          spreadPoints: symbolProps?.spread,
+          symbolName:   symbol,
+          currentTime:  Date.now(),
+        });
+        // Separate closedCandles (internal) from the response-safe object
+        const { closedCandles: cc, ...msaForResult } = msa;
+        marketStateAnalysis = msaForResult;
+        closedCandles = cc.length > 0 ? cc : rawCandles;
+      } catch {
+        // non-blocking — use rawCandles as fallback
+      }
+
+      // ── B1: Market Structure (uses closedCandles) ─────────────────────────
+      try {
+        marketStructure = analyzeMarketStructure(closedCandles);
       } catch {
         // non-blocking
       }
-      try {
-        // direction will be resolved later, pass undefined for now (zones don't need it)
-        zonesAnalysis = analyzeZones(rawCandles, marketStructure);
-      } catch {
-        // non-blocking — zones analysis is enrichment only
+
+      // ── B2: Candlestick (uses closedCandles) ──────────────────────────────
+      if (closedCandles.length >= 2) {
+        try {
+          candlestickAnalysis = analyzeCandlestick(closedCandles, marketStructure);
+        } catch {
+          // non-blocking
+        }
+      }
+
+      // ── B3: Zones (uses closedCandles) ────────────────────────────────────
+      if (closedCandles.length >= 5) {
+        try {
+          zonesAnalysis = analyzeZones(closedCandles, marketStructure);
+        } catch {
+          // non-blocking
+        }
       }
     }
   }
@@ -666,6 +701,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       latestCandleTime: ind.latestCandleTime,
       candleAgeMs: ind.candleAgeMs,
     },
+    marketStateAnalysis,  // B3.2 — undefined if fetch/compute failed
     marketStructure,      // B1 — undefined if fetch/compute failed
     candlestickAnalysis,  // B2 — undefined if fetch/compute failed
     zonesAnalysis,        // B3 — undefined if fetch/compute failed

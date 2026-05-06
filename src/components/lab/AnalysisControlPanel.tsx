@@ -210,6 +210,46 @@ type ZonesAnalysis = {
   warnings:          string[];
 };
 
+// ── B3.2: Market State types (mirror market-state-analysis.ts, no closedCandles) ─
+type SpreadStatus = "NORMAL" | "HIGH" | "EXTREME" | "UNKNOWN";
+type MarketSessionStatus = "OPEN" | "CLOSED" | "LOW_LIQUIDITY" | "UNKNOWN";
+type MarketStateDecision = "ALLOW_ANALYSIS" | "ANALYSIS_ONLY" | "BLOCK_EXECUTION" | "BLOCK_ALL";
+type FakeCandleRisk = "LOW" | "MEDIUM" | "HIGH";
+
+type SuspiciousCandle = {
+  index:    number;
+  time:     number;
+  reason:   string;
+  severity: "WARN" | "BLOCK";
+  metrics:  { range: number; body: number; upperWick: number; lowerWick: number };
+};
+
+type MarketStateAnalysis = {
+  marketOpen:              boolean;
+  symbolTradable:          boolean;
+  dataFresh:               boolean;
+  usingClosedCandleOnly:   boolean;
+  latestCandleClosed:      boolean;
+  latestCandleTime:        number | null;
+  latestClosedCandleTime:  number | null;
+  tickFresh:               boolean;
+  tickAgeMs:               number | null;
+  candleAgeMs:             number | null;
+  spreadPoints:            number | null;
+  spreadStatus:            SpreadStatus;
+  brokerClockSkewDetected: boolean;
+  brokerClockSkewMs:       number;
+  suspiciousCandlesCount:  number;
+  suspiciousCandles:       SuspiciousCandle[];
+  fakeCandleRisk:          FakeCandleRisk;
+  marketSessionStatus:     MarketSessionStatus;
+  decision:                MarketStateDecision;
+  confidence:              number;
+  reasons:                 string[];
+  warnings:                string[];
+  blockers:                string[];
+};
+
 type AnalysisResult = {
   ok: boolean;
   readOnly: true;
@@ -231,6 +271,7 @@ type AnalysisResult = {
   dataQuality: { symbolPropsAvailable: boolean; indicatorsAvailable: boolean };
   freshness: { candleAgeMs?: number; stale: boolean };
   indicators?: IndicatorSnapshot;
+  marketStateAnalysis?: MarketStateAnalysis;        // B3.2
   marketStructure?:     MarketStructureAnalysis;   // B1
   candlestickAnalysis?: CandlestickAnalysis;        // B2
   zonesAnalysis?:       ZonesAnalysis;              // B3
@@ -444,22 +485,26 @@ type CommitteeResult = {
   reasons:       string[];
 };
 
-// أوزان اللجان — مجموعها 1.0 — B3: أضيفت لجنة المناطق والتوازن السعري
+// أوزان اللجان — مجموعها 1.0 — B3.2: أضيفت لجنة حالة السوق وجودة البيانات
 const COMMITTEE_WEIGHTS: Record<string, number> = {
-  "market-structure":         0.22,  // B1
-  "candlestick-price-action": 0.14,  // B2
-  "zones-confluence":         0.14,  // B3 — مناطق مؤسسية
-  "entry-quality":            0.14,
-  "trend":                    0.10,
-  "momentum":                 0.10,
-  "freshness":                0.08,
-  "risk":                     0.06,
-  "protection":               0.02,
-}; // مجموع: 0.22+0.14+0.14+0.14+0.10+0.10+0.08+0.06+0.02 = 1.00
-// Price Action (0.22+0.14+0.14=0.50) > EMA/MACD (0.10+0.10=0.20) ✓
+  "market-state-data-quality": 0.12,  // B3.2 — critical
+  "market-structure":          0.20,  // B1
+  "candlestick-price-action":  0.13,  // B2
+  "zones-confluence":          0.13,  // B3
+  "entry-quality":             0.12,
+  "trend":                     0.09,
+  "momentum":                  0.09,
+  "freshness":                 0.06,
+  "risk":                      0.04,
+  "protection":                0.02,
+}; // مجموع: 0.12+0.20+0.13+0.13+0.12+0.09+0.09+0.06+0.04+0.02 = 1.00
 
 // اللجان الحرجة التي تستطيع إصدار BLOCK فعّال على القرار
-const CRITICAL_COMMITTEES = new Set(["freshness", "entry-quality"]);
+const CRITICAL_COMMITTEES = new Set([
+  "freshness",
+  "entry-quality",
+  "market-state-data-quality",  // B3.2 — critical
+]);
 
 // ── 1. لجنة الاتجاه ──────────────────────────────────────────────────────────
 function buildTrendCommittee(r: AnalysisResult): CommitteeResult {
@@ -885,6 +930,70 @@ function buildCandlestickCommittee(r: AnalysisResult): CommitteeResult {
   };
 }
 
+// ── 10. لجنة حالة السوق وجودة البيانات — B3.2 ────────────────────────────────
+function buildMarketStateCommittee(r: AnalysisResult): CommitteeResult {
+  const ms = r.marketStateAnalysis;
+
+  if (!ms) {
+    return {
+      committeeId: "market-state-data-quality", committeeName: "لجنة حالة السوق وجودة البيانات",
+      verdict: "WARN", score: 30,
+      summary: "حالة السوق غير متاحة",
+      reasons: ["لم يُحسب تحليل حالة السوق — تحقق من مزامنة الشموع"],
+    };
+  }
+
+  const reasons: string[] = [...ms.reasons.slice(0, 3)];
+  let score   = 45;
+  let verdict: CommitteeResult["verdict"] = "WARN";
+
+  // ── BLOCK conditions ───────────────────────────────────────────────────────
+  if (ms.decision === "BLOCK_ALL") {
+    verdict = "BLOCK"; score = 5;
+    reasons.push("بيانات غير كافية أو تالفة");
+  } else if (ms.decision === "BLOCK_EXECUTION") {
+    verdict = "BLOCK"; score = 18;
+    if (!ms.marketOpen)          reasons.push("السوق مغلق أو جلسة منخفضة السيولة");
+    if (!ms.dataFresh)           reasons.push("بيانات قديمة — لا يُسمح بالتنفيذ");
+    if (ms.fakeCandleRisk === "HIGH") reasons.push("خطر شموع مشبوهة مرتفع");
+    if (ms.spreadStatus === "EXTREME") reasons.push("سبريد مفرط");
+  }
+
+  // ── WARN conditions ────────────────────────────────────────────────────────
+  else if (ms.decision === "ANALYSIS_ONLY") {
+    verdict = "WARN"; score = 42;
+    if (ms.usingClosedCandleOnly) reasons.push("تم تجاهل الشمعة المفتوحة — closed candle فقط ✓");
+    if (ms.fakeCandleRisk === "MEDIUM") reasons.push("شموع مشبوهة محتملة");
+    if (ms.marketSessionStatus === "LOW_LIQUIDITY") reasons.push("سيولة منخفضة");
+  }
+
+  // ── PASS conditions ───────────────────────────────────────────────────────
+  else {
+    verdict = "PASS"; score = 78;
+    if (ms.dataFresh)            reasons.push("بيانات حديثة ✓");
+    if (ms.marketOpen)           reasons.push("السوق مفتوح ✓");
+    if (ms.fakeCandleRisk === "LOW") reasons.push("لا شموع مشبوهة ✓");
+    if (ms.latestCandleClosed)   reasons.push("آخر شمعة مغلقة ✓");
+    if (ms.spreadStatus === "NORMAL") reasons.push(`سبريد طبيعي (${ms.spreadPoints} نقطة) ✓`);
+  }
+
+  // ── Adjustments ───────────────────────────────────────────────────────────
+  if (ms.spreadStatus === "HIGH")    { score -= 8;  if (verdict === "PASS") verdict = "WARN"; }
+  if (ms.brokerClockSkewDetected)    { score -= 5; }
+  if (ms.suspiciousCandlesCount > 0) { score -= ms.suspiciousCandlesCount * 4; }
+  if (!ms.latestCandleClosed)        { score -= 5; }
+
+  score = Math.max(5, Math.min(92, Math.round(score * (0.5 + ms.confidence / 200))));
+
+  const spreadPt = ms.spreadPoints != null ? `${ms.spreadPoints}pt` : "—";
+  return {
+    committeeId: "market-state-data-quality", committeeName: "لجنة حالة السوق وجودة البيانات",
+    verdict, score,
+    summary: `${ms.marketSessionStatus} | spread: ${spreadPt} | risk: ${ms.fakeCandleRisk} | ${ms.decision}`,
+    reasons: reasons.slice(0, 8),
+  };
+}
+
 // ── 9. لجنة المناطق والتوازن السعري — B3 ──────────────────────────────────────
 function buildZonesCommittee(r: AnalysisResult): CommitteeResult {
   const za = r.zonesAnalysis;
@@ -1041,6 +1150,7 @@ function buildDecisionSummary(r: AnalysisResult): DecisionSummary {
     buildRiskCommittee(r),
     buildFreshnessCommittee(r),
     buildProtectionCommittee(r),
+    buildMarketStateCommittee(r),        // B3.2 — first (data quality gate)
     buildMarketStructureCommittee(r),   // B1
     buildCandlestickCommittee(r),       // B2
     buildZonesCommittee(r),             // B3
@@ -1121,6 +1231,119 @@ function buildSaveArgs(r: AnalysisResult) {
     // userId: من ctx.auth server-side — لا يُمرَّر من الواجهة
     // readOnly: true مُجبَر server-side
   };
+}
+
+// ── MarketStateSection — B3.2 ─────────────────────────────────────────────────
+function MarketStateSection({ msa }: { msa: MarketStateAnalysis }) {
+  const decisionColor = (d: MarketStateDecision) => {
+    if (d === "ALLOW_ANALYSIS")  return "text-emerald-400";
+    if (d === "ANALYSIS_ONLY")   return "text-amber-400";
+    if (d === "BLOCK_EXECUTION") return "text-red-400";
+    return "text-red-600";
+  };
+  const riskColor = (r: FakeCandleRisk) => {
+    if (r === "LOW")    return "text-emerald-300";
+    if (r === "MEDIUM") return "text-amber-300";
+    return "text-red-300";
+  };
+  const spreadColor = (s: SpreadStatus) => {
+    if (s === "NORMAL") return "text-emerald-300";
+    if (s === "HIGH")   return "text-amber-300";
+    if (s === "EXTREME") return "text-red-300";
+    return "text-muted-foreground";
+  };
+  const sessionIcon = (s: MarketSessionStatus) =>
+    s === "OPEN" ? "✓ مفتوح" : s === "CLOSED" ? "✗ مغلق" :
+    s === "LOW_LIQUIDITY" ? "⚠ سيولة منخفضة" : "؟ غير معروف";
+
+  return (
+    <div className={`rounded-lg border p-4 space-y-3 ${
+      msa.decision === "BLOCK_ALL" || msa.decision === "BLOCK_EXECUTION"
+        ? "border-red-500/30 bg-red-500/[0.04]"
+        : msa.decision === "ANALYSIS_ONLY"
+          ? "border-amber-500/25 bg-amber-500/[0.04]"
+          : "border-emerald-500/20 bg-emerald-500/[0.04]"
+    }`}>
+      <div className="flex items-center justify-between gap-2">
+        <p className="text-sm font-bold text-foreground/90">حالة السوق وجودة البيانات — B3.2</p>
+        <span className={`text-[10px] font-semibold font-mono ${decisionColor(msa.decision)}`}>
+          {msa.decision}
+        </span>
+      </div>
+
+      {/* Key metrics */}
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+        <div className="flex flex-col gap-0.5">
+          <span className="text-[10px] text-muted-foreground">جلسة السوق</span>
+          <span className={`text-sm font-semibold ${
+            msa.marketSessionStatus === "OPEN" ? "text-emerald-400" :
+            msa.marketSessionStatus === "CLOSED" ? "text-red-400" :
+            msa.marketSessionStatus === "LOW_LIQUIDITY" ? "text-amber-400" :
+            "text-muted-foreground"
+          }`}>{sessionIcon(msa.marketSessionStatus)}</span>
+        </div>
+        <div className="flex flex-col gap-0.5">
+          <span className="text-[10px] text-muted-foreground">آخر شمعة</span>
+          <span className={`text-sm font-semibold ${msa.latestCandleClosed ? "text-emerald-300" : "text-amber-400"}`}>
+            {msa.latestCandleClosed ? "مغلقة ✓" : "قيد التكوين ⚠"}
+          </span>
+          {!msa.latestCandleClosed && msa.usingClosedCandleOnly && (
+            <span className="text-[9px] text-amber-300/70">تم تجاهلها للتحليل</span>
+          )}
+        </div>
+        <div className="flex flex-col gap-0.5">
+          <span className="text-[10px] text-muted-foreground">السبريد</span>
+          <span className={`text-sm font-semibold ${spreadColor(msa.spreadStatus)}`}>
+            {msa.spreadPoints != null ? `${msa.spreadPoints} نقطة` : "—"}
+          </span>
+          <span className={`text-[9px] ${spreadColor(msa.spreadStatus)}`}>{msa.spreadStatus}</span>
+        </div>
+        <div className="flex flex-col gap-0.5">
+          <span className="text-[10px] text-muted-foreground">خطر الشموع</span>
+          <span className={`text-sm font-semibold ${riskColor(msa.fakeCandleRisk)}`}>
+            {msa.fakeCandleRisk}
+          </span>
+          {msa.suspiciousCandlesCount > 0 && (
+            <span className="text-[9px] text-amber-300/70">{msa.suspiciousCandlesCount} مشبوهة</span>
+          )}
+        </div>
+      </div>
+
+      {/* Blockers */}
+      {msa.blockers.length > 0 && (
+        <ul className="space-y-0.5">
+          {msa.blockers.map((b, i) => (
+            <li key={i} className="text-[11px] text-red-300/90 font-medium">✗ {b}</li>
+          ))}
+        </ul>
+      )}
+
+      {/* Warnings */}
+      {msa.warnings.length > 0 && (
+        <ul className="space-y-0.5">
+          {msa.warnings.map((w, i) => (
+            <li key={i} className="text-[11px] text-amber-300/80">⚠ {w}</li>
+          ))}
+        </ul>
+      )}
+
+      {/* Reasons (only when things are good) */}
+      {msa.decision === "ALLOW_ANALYSIS" && msa.reasons.length > 0 && (
+        <ul className="space-y-0.5">
+          {msa.reasons.slice(0, 3).map((r, i) => (
+            <li key={i} className="text-[11px] text-emerald-300/70">• {r}</li>
+          ))}
+        </ul>
+      )}
+
+      {/* Clock skew */}
+      {msa.brokerClockSkewDetected && (
+        <p className="text-[10px] text-orange-400/80 font-medium">
+          ⚠ Broker clock skew: الوسيط متقدم بـ {Math.round(msa.brokerClockSkewMs / 60000)} دقيقة
+        </p>
+      )}
+    </div>
+  );
 }
 
 // ── MarketStructureSection — B1 ───────────────────────────────────────────────
@@ -1854,9 +2077,49 @@ function buildPriceActionExecutionGuard(
   const reasons:  string[] = [];
 
   const { grade, probability, committees, finalDecision } = summary;
-  const ms = result.marketStructure;
-  const cs = result.candlestickAnalysis;
+  const ms  = result.marketStructure;
+  const cs  = result.candlestickAnalysis;
   const ind = result.indicators;
+  const msa = result.marketStateAnalysis;
+
+  // ── ي) حالة السوق وجودة البيانات — B3.2 ─────────────────────────────────
+  if (msa) {
+    if (msa.decision === "BLOCK_ALL" || msa.decision === "BLOCK_EXECUTION") {
+      if (!msa.marketOpen) {
+        blockers.push("ممنوع التنفيذ: السوق مغلق أو tick غير صالح");
+      }
+      if (!msa.dataFresh) {
+        blockers.push("ممنوع التنفيذ: بيانات قديمة — أعد مزامنة الشموع");
+      }
+      if (msa.fakeCandleRisk === "HIGH") {
+        blockers.push("ممنوع التنفيذ: خطر شموع مشبوهة مرتفع");
+      }
+      if (msa.spreadStatus === "EXTREME") {
+        blockers.push(`ممنوع التنفيذ: سبريد مفرط (${msa.spreadPoints} نقطة)`);
+      }
+      // Add any engine-level blockers
+      for (const b of msa.blockers.slice(0, 2)) {
+        if (!blockers.some((existing) => existing.includes(b.substring(0, 15)))) {
+          blockers.push(b);
+        }
+      }
+    } else {
+      if (msa.fakeCandleRisk === "MEDIUM") {
+        warnings.push("شموع مشبوهة محتملة — تحقق من جودة البيانات");
+      }
+      if (!msa.latestCandleClosed && msa.usingClosedCandleOnly) {
+        warnings.push("تم تجاهل الشمعة الحالية — التحليل يستخدم آخر شمعة مغلقة");
+      }
+      if (msa.spreadStatus === "HIGH") {
+        warnings.push(`سبريد مرتفع (${msa.spreadPoints} نقطة) — راجع جودة الدخول`);
+      }
+      if (msa.decision === "ALLOW_ANALYSIS" && msa.marketOpen && msa.dataFresh) {
+        reasons.push("حالة السوق وجودة البيانات سليمة ✓");
+      }
+    }
+  } else {
+    warnings.push("حالة السوق غير محسوبة — تحقق من مزامنة الشموع");
+  }
 
   // ── أ) الدرجة ─────────────────────────────────────────────────────────────
   if (grade === "D" || grade === "C") {
@@ -3402,6 +3665,11 @@ export function AnalysisControlPanel() {
 
                 {/* تحذيرات */}
                 {result.warnings.length > 0 && <WarnList items={result.warnings} />}
+
+                {/* ── B3.2: حالة السوق وجودة البيانات ─────────────────────── */}
+                {result.marketStateAnalysis && (
+                  <MarketStateSection msa={result.marketStateAnalysis} />
+                )}
 
                 {/* ── B1: هيكل السوق ───────────────────────────────────────── */}
                 {result.marketStructure && (
