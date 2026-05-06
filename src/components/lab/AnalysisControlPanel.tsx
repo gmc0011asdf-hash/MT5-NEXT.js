@@ -210,6 +210,53 @@ type ZonesAnalysis = {
   warnings:          string[];
 };
 
+// ── B4: Fibonacci types (mirror fibonacci-analysis.ts) ───────────────────────
+type FibonacciLevel = {
+  level:                  number;
+  price:                  number;
+  type:                   "RETRACEMENT" | "EXTENSION";
+  label:                  string;
+  distanceFromCurrentPct: number;
+  nearCurrent:            boolean;
+  reason:                 string;
+};
+
+type FibonacciSwing = {
+  direction:  "BULLISH" | "BEARISH" | "UNKNOWN";
+  swingLow:   number;
+  swingHigh:  number;
+  startTime:  number;
+  endTime:    number;
+  range:      number;
+  valid:      boolean;
+  reason:     string;
+};
+
+type GoldenZone = {
+  low:                    number;
+  high:                   number;
+  active:                 boolean;
+  direction:              "BUY" | "SELL" | "NEUTRAL";
+  distanceFromCurrentPct: number;
+};
+
+type FibonacciAnalysis = {
+  bias:                          "BUY" | "SELL" | "NEUTRAL";
+  swing:                         FibonacciSwing;
+  currentPrice:                  number;
+  retracementLevels:             FibonacciLevel[];
+  extensionLevels:               FibonacciLevel[];
+  nearestLevel:                  FibonacciLevel | null;
+  goldenZone:                    GoldenZone;
+  inGoldenZone:                  boolean;
+  confluenceWithZones:           boolean;
+  confluenceWithMarketStructure: boolean;
+  confluenceScore:               number;
+  confidence:                    number;
+  reasons:                       string[];
+  warnings:                      string[];
+};
+
 // ── B3.2: Market State types (mirror market-state-analysis.ts, no closedCandles) ─
 type SpreadStatus = "NORMAL" | "HIGH" | "EXTREME" | "UNKNOWN";
 type MarketSessionStatus = "OPEN" | "CLOSED" | "LOW_LIQUIDITY" | "UNKNOWN";
@@ -275,6 +322,7 @@ type AnalysisResult = {
   marketStructure?:     MarketStructureAnalysis;   // B1
   candlestickAnalysis?: CandlestickAnalysis;        // B2
   zonesAnalysis?:       ZonesAnalysis;              // B3
+  fibonacciAnalysis?:   FibonacciAnalysis;          // B4
   reasons: string[];
   warnings: string[];
   error?: string;
@@ -485,19 +533,21 @@ type CommitteeResult = {
   reasons:       string[];
 };
 
-// أوزان اللجان — مجموعها 1.0 — B3.2: أضيفت لجنة حالة السوق وجودة البيانات
+// أوزان اللجان — مجموعها 1.0 — B4: أضيفت لجنة توافق Fibonacci
 const COMMITTEE_WEIGHTS: Record<string, number> = {
-  "market-state-data-quality": 0.12,  // B3.2 — critical
-  "market-structure":          0.20,  // B1
-  "candlestick-price-action":  0.13,  // B2
-  "zones-confluence":          0.13,  // B3
+  "market-state-data-quality": 0.11,  // B3.2 — critical
+  "market-structure":          0.18,  // B1
+  "candlestick-price-action":  0.12,  // B2
+  "zones-confluence":          0.12,  // B3
+  "fibonacci-confluence":      0.10,  // B4
   "entry-quality":             0.12,
   "trend":                     0.09,
-  "momentum":                  0.09,
-  "freshness":                 0.06,
-  "risk":                      0.04,
-  "protection":                0.02,
-}; // مجموع: 0.12+0.20+0.13+0.13+0.12+0.09+0.09+0.06+0.04+0.02 = 1.00
+  "momentum":                  0.08,
+  "freshness":                 0.04,
+  "risk":                      0.03,
+  "protection":                0.01,
+}; // مجموع: 0.11+0.18+0.12+0.12+0.10+0.12+0.09+0.08+0.04+0.03+0.01 = 1.00
+// Price Action + Zones + Fib (0.18+0.12+0.12+0.10=0.52) > EMA/MACD (0.09+0.08=0.17) ✓
 
 // اللجان الحرجة التي تستطيع إصدار BLOCK فعّال على القرار
 const CRITICAL_COMMITTEES = new Set([
@@ -1087,6 +1137,98 @@ function buildZonesCommittee(r: AnalysisResult): CommitteeResult {
   };
 }
 
+// ── 11. لجنة توافق Fibonacci — B4 ────────────────────────────────────────────
+function buildFibonacciCommittee(r: AnalysisResult): CommitteeResult {
+  const fa = r.fibonacciAnalysis;
+
+  if (!fa || fa.confidence === 0) {
+    return {
+      committeeId: "fibonacci-confluence", committeeName: "لجنة توافق Fibonacci",
+      verdict: "WARN", score: 30,
+      summary: "Fibonacci غير متاح",
+      reasons: ["لم يُحسب تحليل Fibonacci — تحقق من مزامنة الشموع"],
+    };
+  }
+
+  const reasons: string[] = [];
+  let score   = 35;
+  let verdict: CommitteeResult["verdict"] = "WARN";
+
+  const dir    = r.direction;  // "bullish" | "bearish" | undefined
+  const isBuy  = dir === "bullish";
+  const isSell = dir === "bearish";
+
+  // ── Golden Zone ───────────────────────────────────────────────────────────
+  if (fa.inGoldenZone) {
+    const gzSupports = (isBuy && fa.goldenZone.direction === "BUY") ||
+                       (isSell && fa.goldenZone.direction === "SELL");
+    if (gzSupports) {
+      score += 22; reasons.push("السعر داخل Golden Zone ويدعم القرار ✓");
+    } else {
+      score -= 8; reasons.push("السعر داخل Golden Zone لكن باتجاه مخالف");
+    }
+  } else if (fa.nearestLevel?.nearCurrent) {
+    const levelDir = fa.swing.direction;
+    const levelSupports =
+      (isBuy  && (levelDir === "BULLISH" || levelDir === "UNKNOWN")) ||
+      (isSell && (levelDir === "BEARISH" || levelDir === "UNKNOWN"));
+    if (levelSupports) {
+      score += 12; reasons.push(`السعر قريب من Fib ${fa.nearestLevel.label} ✓`);
+    } else {
+      score -= 5;  reasons.push(`السعر قريب من Fib ${fa.nearestLevel.label} لكن باتجاه مخالف`);
+    }
+  } else {
+    reasons.push("السعر ليس عند مستوى Fibonacci واضح");
+  }
+
+  // ── Confluence with B3 Zones ──────────────────────────────────────────────
+  if (fa.confluenceWithZones) {
+    score += 15; reasons.push("Fibonacci يتوافق مع منطقة B3 (Zone confluence) ✓");
+  } else if (fa.inGoldenZone) {
+    score -= 5; reasons.push("Golden Zone بدون Zone B3 داعمة — توافق جزئي");
+  }
+
+  // ── Confluence with Market Structure ──────────────────────────────────────
+  if (fa.confluenceWithMarketStructure) {
+    score += 10; reasons.push("Fibonacci يتوافق مع هيكل السوق ✓");
+  } else if (r.marketStructure?.bias) {
+    const msConflict =
+      (isBuy  && r.marketStructure.bias === "SELL") ||
+      (isSell && r.marketStructure.bias === "BUY");
+    if (msConflict) {
+      score -= 15; reasons.push("Fibonacci يعاكس هيكل السوق ⚠");
+    }
+  }
+
+  // ── BLOCK: Fib + Zone against decision ────────────────────────────────────
+  if (fa.confluenceWithZones && !fa.confluenceWithMarketStructure) {
+    const activeFibDir = fa.bias;
+    const conflict = (isBuy && activeFibDir === "SELL") || (isSell && activeFibDir === "BUY");
+    if (conflict && fa.inGoldenZone) {
+      verdict = "BLOCK"; score -= 20;
+      reasons.push("Golden Zone + Zone B3 تعارضان القرار بوضوح ✗");
+    }
+  }
+
+  // ── Range with mid Fib ────────────────────────────────────────────────────
+  if (r.marketStructure?.trendState === "RANGE" && !fa.confluenceWithZones) {
+    score -= 8; if (verdict !== "BLOCK") verdict = "WARN";
+    reasons.push("Fibonacci في سوق نطاق بدون Zone داعمة — إشارة ضعيفة");
+  }
+
+  // ── Confidence factor ─────────────────────────────────────────────────────
+  score = Math.round(score * (0.5 + fa.confidence / 200));
+  score = Math.max(5, Math.min(90, score));
+  if (verdict !== "BLOCK") verdict = score >= 60 ? "PASS" : "WARN";
+
+  return {
+    committeeId: "fibonacci-confluence", committeeName: "لجنة توافق Fibonacci",
+    verdict, score,
+    summary: `${fa.inGoldenZone ? "في Golden Zone" : `أقرب: Fib ${fa.nearestLevel?.label ?? "—"}`} | توافق: ${fa.confluenceScore}%`,
+    reasons: reasons.slice(0, 8),
+  };
+}
+
 // ── حساب الاحتمالية الموزونة من اللجان ──────────────────────────────────────
 function computeWeightedProbability(committees: CommitteeResult[]): number {
   let weightedSum = 0;
@@ -1155,6 +1297,7 @@ function buildDecisionSummary(r: AnalysisResult): DecisionSummary {
     buildMarketStructureCommittee(r),   // B1
     buildCandlestickCommittee(r),       // B2
     buildZonesCommittee(r),             // B3
+    buildFibonacciCommittee(r),         // B4
   ];
 
   const probability = computeWeightedProbability(committees);
@@ -1809,6 +1952,141 @@ function ZonesSection({ za }: { za: ZonesAnalysis }) {
   );
 }
 
+// ── FibonacciSection — B4 ─────────────────────────────────────────────────────
+function FibonacciSection({ fa }: { fa: FibonacciAnalysis }) {
+  const biasColor = (b: string) =>
+    b === "BUY" ? "text-emerald-300" : b === "SELL" ? "text-red-300" : "text-muted-foreground";
+  const swingDirColor = (d: string) =>
+    d === "BULLISH" ? "text-emerald-300" : d === "BEARISH" ? "text-red-300" : "text-sky-300";
+  const levelColor = (l: FibonacciLevel) =>
+    l.nearCurrent ? (l.level === 0.5 || l.level === 0.618 ? "text-amber-300" : "text-foreground") :
+    "text-muted-foreground/60";
+
+  const topExtension = fa.extensionLevels.slice(0, 3);
+
+  return (
+    <div className="rounded-lg border border-amber-500/20 bg-amber-500/[0.03] p-4 space-y-3">
+      <div className="flex items-center justify-between gap-2">
+        <p className="text-sm font-bold text-amber-200/90">توافق Fibonacci — B4</p>
+        <span className="text-[10px] text-muted-foreground/60 font-mono">
+          توافق: {fa.confluenceScore}% | ثقة: {fa.confidence}%
+        </span>
+      </div>
+
+      {/* Key metrics */}
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+        <div className="flex flex-col gap-0.5">
+          <span className="text-[10px] text-muted-foreground">انحياز Fibonacci</span>
+          <span className={`text-sm font-bold ${biasColor(fa.bias)}`}>{fa.bias}</span>
+        </div>
+        <div className="flex flex-col gap-0.5">
+          <span className="text-[10px] text-muted-foreground">اتجاه Swing</span>
+          <span className={`text-sm font-semibold ${swingDirColor(fa.swing.direction)}`}>
+            {fa.swing.direction === "BULLISH" ? "صاعد ↑" : fa.swing.direction === "BEARISH" ? "هابط ↓" : "غير محدد"}
+          </span>
+        </div>
+        <div className="flex flex-col gap-0.5">
+          <span className="text-[10px] text-muted-foreground">Swing Low</span>
+          <span className="text-sm font-mono text-foreground">{fa.swing.swingLow.toFixed(5)}</span>
+        </div>
+        <div className="flex flex-col gap-0.5">
+          <span className="text-[10px] text-muted-foreground">Swing High</span>
+          <span className="text-sm font-mono text-foreground">{fa.swing.swingHigh.toFixed(5)}</span>
+        </div>
+      </div>
+
+      {/* Golden Zone */}
+      <div className={`flex items-center justify-between rounded border px-3 py-2 text-[11px] ${
+        fa.inGoldenZone
+          ? "border-amber-500/50 bg-amber-500/10 text-amber-300"
+          : "border-border bg-muted/5 text-muted-foreground"
+      }`}>
+        <span className="font-semibold">
+          Golden Zone (50%–61.8%){fa.inGoldenZone ? " ✓" : ""}
+        </span>
+        <span className="font-mono">
+          {fa.goldenZone.low.toFixed(5)} — {fa.goldenZone.high.toFixed(5)}
+        </span>
+        {!fa.inGoldenZone && fa.goldenZone.distanceFromCurrentPct > 0 && (
+          <span className="text-[10px]">{fa.goldenZone.distanceFromCurrentPct.toFixed(2)}% بعيد</span>
+        )}
+      </div>
+
+      {/* Retracement levels compact */}
+      <div className="flex flex-wrap gap-1.5">
+        <span className="text-[10px] text-muted-foreground/70 w-full">مستويات التصحيح:</span>
+        {fa.retracementLevels.map((l) => (
+          <div
+            key={l.label}
+            title={`Fib ${l.label} — ${l.price.toFixed(5)} | بُعد: ${l.distanceFromCurrentPct.toFixed(2)}%`}
+            className={`flex flex-col items-center rounded border px-2 py-0.5 cursor-help ${
+              l.level === GOLDEN_LOW || l.level === GOLDEN_HIGH
+                ? "border-amber-500/40 bg-amber-500/8"
+                : "border-border bg-muted/5"
+            }`}
+          >
+            <span className={`text-[10px] font-bold font-mono ${levelColor(l)}`}>{l.label}</span>
+            <span className="text-[9px] text-muted-foreground/60 font-mono">{l.price.toFixed(5)}</span>
+            {l.nearCurrent && <span className="text-[8px] text-amber-400">◀ هنا</span>}
+          </div>
+        ))}
+      </div>
+
+      {/* Extension targets */}
+      {topExtension.length > 0 && (
+        <div className="flex flex-wrap gap-1.5">
+          <span className="text-[10px] text-muted-foreground/70 w-full">أهداف الامتداد:</span>
+          {topExtension.map((l) => (
+            <span key={l.label} className="rounded border border-sky-500/20 px-2 py-0.5 text-[10px] font-mono text-sky-300/70">
+              {l.label}: {l.price.toFixed(5)}
+            </span>
+          ))}
+        </div>
+      )}
+
+      {/* Confluence flags */}
+      <div className="flex flex-wrap gap-1.5">
+        <span className={`rounded border px-2 py-0.5 text-[10px] font-medium ${
+          fa.confluenceWithZones ? "border-emerald-500/30 text-emerald-300" : "border-border text-muted-foreground/50"
+        }`}>
+          {fa.confluenceWithZones ? "✓ توافق مع Zones B3" : "— لا توافق مع Zones"}
+        </span>
+        <span className={`rounded border px-2 py-0.5 text-[10px] font-medium ${
+          fa.confluenceWithMarketStructure ? "border-emerald-500/30 text-emerald-300" : "border-border text-muted-foreground/50"
+        }`}>
+          {fa.confluenceWithMarketStructure ? "✓ هيكل السوق يدعم" : "— هيكل غير مؤكد"}
+        </span>
+      </div>
+
+      {/* Reasons */}
+      {fa.reasons.length > 0 && (
+        <ul className="space-y-0.5">
+          {fa.reasons.slice(0, 5).map((r, i) => (
+            <li key={i} className="text-[11px] text-foreground/70">• {r}</li>
+          ))}
+        </ul>
+      )}
+
+      {/* Warnings */}
+      {fa.warnings.length > 0 && (
+        <ul className="space-y-0.5">
+          {fa.warnings.map((w, i) => (
+            <li key={i} className="text-[11px] text-amber-300/80">⚠ {w}</li>
+          ))}
+        </ul>
+      )}
+
+      <p className="text-[9px] text-muted-foreground/40 border-t border-border/30 pt-1.5 italic">
+        Fibonacci لا تعني دخولاً مباشراً — هي مستويات اهتمام تحتاج توافقاً مع المناطق والهيكل.
+      </p>
+    </div>
+  );
+}
+
+// Constants needed inside FibonacciSection
+const GOLDEN_LOW  = 0.5;
+const GOLDEN_HIGH = 0.618;
+
 // ── CommitteeSummaryPreview — A22 ────────────────────────────────────────────
 // يعرض ملخص اللجان قبل الحفظ — قراءة فقط — لا useMutation — لا تنفيذ تداول
 function CommitteeSummaryPreview({ result }: { result: AnalysisResult }) {
@@ -2345,6 +2623,35 @@ function buildPriceActionExecutionGuard(
     }
   } else {
     warnings.push("مناطق العرض والطلب غير متوفرة — سيتم تجاوز فحص B3");
+  }
+
+  // ── ك) Fibonacci — B4 ────────────────────────────────────────────────────
+  const fa = result.fibonacciAnalysis;
+  if (fa && fa.confidence > 0) {
+    const fibConflict =
+      (finalDecision === "BUY"  && fa.bias === "SELL") ||
+      (finalDecision === "SELL" && fa.bias === "BUY");
+
+    const fibSupports =
+      (finalDecision === "BUY"  && (fa.bias === "BUY"  || fa.inGoldenZone && fa.goldenZone.direction === "BUY"))  ||
+      (finalDecision === "SELL" && (fa.bias === "SELL" || fa.inGoldenZone && fa.goldenZone.direction === "SELL"));
+
+    // BLOCK: Fibonacci + Zone strongly against decision
+    if (fibConflict && fa.confluenceWithZones && fa.inGoldenZone) {
+      blockers.push("ممنوع التنفيذ: Fibonacci + Zone B3 يعارضان القرار بوضوح (Golden Zone عكسية)");
+    } else if (fibConflict) {
+      warnings.push(`Fibonacci (${fa.bias}) يعارض القرار (${finalDecision}) — مراجعة موصى بها`);
+    }
+
+    // WARN: Range + Mid + no Fib support
+    if (result.marketStructure?.trendState === "RANGE" && !fa.confluenceWithZones && !fa.inGoldenZone) {
+      warnings.push("سوق نطاق — Fibonacci لا يدعم الدخول بدون Zone داعمة");
+    }
+
+    // Positive note if Fibonacci supports
+    if (fibSupports && fa.inGoldenZone) {
+      reasons.push("Fibonacci Golden Zone يدعم القرار ✓");
+    }
   }
 
   // ── ح) هامش من آخر response ───────────────────────────────────────────────
@@ -3685,6 +3992,11 @@ export function AnalysisControlPanel() {
                 {/* ── B3: مناطق العرض والطلب والفجوات ─────────────────────── */}
                 {result.zonesAnalysis && (
                   <ZonesSection za={result.zonesAnalysis} />
+                )}
+
+                {/* ── B4: توافق Fibonacci ───────────────────────────────────── */}
+                {result.fibonacciAnalysis && (
+                  <FibonacciSection fa={result.fibonacciAnalysis} />
                 )}
 
                 {/* ── A22: ملخص اللجان قبل الحفظ ───────────────────────────── */}

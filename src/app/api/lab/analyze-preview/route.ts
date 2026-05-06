@@ -36,6 +36,10 @@ import {
   analyzeMarketState,
   type MarketStateAnalysis,
 } from "@/lib/trading/mt5/market-state-analysis";
+import {
+  analyzeFibonacci,
+  type FibonacciAnalysis,
+} from "@/lib/trading/mt5/fibonacci-analysis";
 
 export const dynamic = "force-dynamic";
 
@@ -129,6 +133,7 @@ type AnalysisResult = {
   indicators?: IndicatorResult;
   marketStateAnalysis?: MarketStateAnalysis;        // B3.2 (first — guards data quality)
   marketStructure?:     MarketStructureAnalysis;   // B1
+  fibonacciAnalysis?:   FibonacciAnalysis;          // B4
   candlestickAnalysis?: CandlestickAnalysis;        // B2
   zonesAnalysis?:       ZonesAnalysis;              // B3
   reasons: string[];
@@ -411,6 +416,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   let marketStructure:     MarketStructureAnalysis | undefined;
   let candlestickAnalysis: CandlestickAnalysis     | undefined;
   let zonesAnalysis:       ZonesAnalysis           | undefined;
+  let fibonacciAnalysis:   FibonacciAnalysis       | undefined;
   if (selectedTimeframe) {
     let rawCandles: { time: number; open: number; high: number; low: number; close: number }[] = [];
     try {
@@ -460,6 +466,17 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       if (closedCandles.length >= 5) {
         try {
           zonesAnalysis = analyzeZones(closedCandles, marketStructure);
+        } catch {
+          // non-blocking
+        }
+      }
+
+      // ── B4: Fibonacci (uses closedCandles + B1/B3 data) ───────────────────
+      if (closedCandles.length >= 5) {
+        try {
+          fibonacciAnalysis = analyzeFibonacci(closedCandles, marketStructure, zonesAnalysis, {
+            symbolName: symbol,
+          });
         } catch {
           // non-blocking
         }
@@ -702,6 +719,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       candleAgeMs: ind.candleAgeMs,
     },
     marketStateAnalysis,  // B3.2 — undefined if fetch/compute failed
+    fibonacciAnalysis,    // B4 — undefined if fetch/compute failed
     marketStructure,      // B1 — undefined if fetch/compute failed
     candlestickAnalysis,  // B2 — undefined if fetch/compute failed
     zonesAnalysis,        // B3 — undefined if fetch/compute failed

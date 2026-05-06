@@ -104,12 +104,26 @@ export function getCandlePatternExplanation(type: string): string {
   return CANDLE_PATTERN_EXPLANATIONS[type] ?? type;
 }
 
+// ─── Fibonacci (B4) ──────────────────────────────────────────────────────────
+
+export const FIBONACCI_EXPLANATIONS: Record<string, string> = {
+  Fibonacci:   "أداة تقيس مناطق التصحيح والأهداف المحتملة بناءً على آخر موجة سعرية.",
+  GoldenZone:  "منطقة بين 50% و61.8% من التصحيح، يستخدمها بعض المتداولين كمنطقة اهتمام، لكنها لا تكفي وحدها للدخول.",
+  Retracement: "تصحيح — رجوع السعر جزئياً بعد موجة قوية. مستويات 38.2% و50% و61.8% الأكثر متابعة.",
+  Extension:   "امتداد — مستويات محتملة للأهداف بعد استمرار الحركة (127.2% و161.8% و200%).",
+  "50.0%":     "منتصف الموجة — أحد أهم مستويات التصحيح وأكثرها متابعة من المتداولين.",
+  "61.8%":     "المستوى الذهبي — تصحيح 61.8% يُعدّ الأعمق ضمن Golden Zone.",
+  "38.2%":     "تصحيح طفيف — يدعم استمرار القوة الأصلية إذا وقف السعر عنده.",
+  "78.6%":     "تصحيح عميق — قد يدل على ضعف الموجة الأصلية.",
+};
+
 export function getTradingTermExplanation(term: string): string {
   const all: Record<string, string> = {
     ...STRUCTURE_POINT_EXPLANATIONS,
     ...CANDLE_PATTERN_EXPLANATIONS,
     ...ZONE_TYPE_EXPLANATIONS,
     ...PREMIUM_DISCOUNT_EXPLANATIONS,
+    ...FIBONACCI_EXPLANATIONS,
     BOS:    BOS_EXPLANATION,
     CHoCH:  CHOCH_EXPLANATION,
     ...TREND_STATE_EXPLANATIONS,
