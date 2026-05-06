@@ -160,6 +160,45 @@ type CandlestickAnalysis = {
   warnings:               string[];
 };
 
+// ── B3: Zones types (mirror zones-analysis.ts) ───────────────────────────────
+type PriceZoneType =
+  | "SUPPLY" | "DEMAND"
+  | "BULLISH_ORDER_BLOCK" | "BEARISH_ORDER_BLOCK"
+  | "BULLISH_FVG" | "BEARISH_FVG"
+  | "SUPPORT" | "RESISTANCE";
+
+type PriceZone = {
+  id:                  string;
+  type:                PriceZoneType;
+  direction:           "BUY" | "SELL" | "NEUTRAL";
+  low:                 number;
+  high:                number;
+  midpoint:            number;
+  createdAt:           number;
+  candleIndex:         number;
+  strength:            number;
+  touched:             boolean;
+  mitigated:           boolean;
+  distanceFromCurrent: number;
+  reason:              string;
+};
+
+type ZonesAnalysis = {
+  bias:              "BUY" | "SELL" | "NEUTRAL";
+  currentPrice:      number;
+  nearestZone:       PriceZone | null;
+  nearestDemand:     PriceZone | null;
+  nearestSupply:     PriceZone | null;
+  activeZones:       PriceZone[];
+  fvgZones:          PriceZone[];
+  orderBlocks:       PriceZone[];
+  inPremiumDiscount: "PREMIUM" | "DISCOUNT" | "MID" | "UNKNOWN";
+  confluenceScore:   number;
+  confidence:        number;
+  reasons:           string[];
+  warnings:          string[];
+};
+
 type AnalysisResult = {
   ok: boolean;
   readOnly: true;
@@ -183,6 +222,7 @@ type AnalysisResult = {
   indicators?: IndicatorSnapshot;
   marketStructure?:     MarketStructureAnalysis;   // B1
   candlestickAnalysis?: CandlestickAnalysis;        // B2
+  zonesAnalysis?:       ZonesAnalysis;              // B3
   reasons: string[];
   warnings: string[];
   error?: string;
@@ -393,17 +433,19 @@ type CommitteeResult = {
   reasons:       string[];
 };
 
-// أوزان اللجان — مجموعها 1.0 — B2: أضيفت لجنة الشموع والسيولة
+// أوزان اللجان — مجموعها 1.0 — B3: أضيفت لجنة المناطق والتوازن السعري
 const COMMITTEE_WEIGHTS: Record<string, number> = {
-  "trend":                    0.12,  // مخفَّض — price action أقوى
-  "momentum":                 0.12,
-  "entry-quality":            0.15,
-  "risk":                     0.08,
-  "freshness":                0.10,
-  "protection":               0.03,
-  "market-structure":         0.25,  // B1 — أعلى وزن
-  "candlestick-price-action": 0.15,  // B2 — price action مباشر
-}; // مجموع: 0.12+0.12+0.15+0.08+0.10+0.03+0.25+0.15 = 1.00
+  "market-structure":         0.22,  // B1
+  "candlestick-price-action": 0.14,  // B2
+  "zones-confluence":         0.14,  // B3 — مناطق مؤسسية
+  "entry-quality":            0.14,
+  "trend":                    0.10,
+  "momentum":                 0.10,
+  "freshness":                0.08,
+  "risk":                     0.06,
+  "protection":               0.02,
+}; // مجموع: 0.22+0.14+0.14+0.14+0.10+0.10+0.08+0.06+0.02 = 1.00
+// Price Action (0.22+0.14+0.14=0.50) > EMA/MACD (0.10+0.10=0.20) ✓
 
 // اللجان الحرجة التي تستطيع إصدار BLOCK فعّال على القرار
 const CRITICAL_COMMITTEES = new Set(["freshness", "entry-quality"]);
@@ -832,6 +874,98 @@ function buildCandlestickCommittee(r: AnalysisResult): CommitteeResult {
   };
 }
 
+// ── 9. لجنة المناطق والتوازن السعري — B3 ──────────────────────────────────────
+function buildZonesCommittee(r: AnalysisResult): CommitteeResult {
+  const za = r.zonesAnalysis;
+
+  if (!za || za.confidence === 0) {
+    return {
+      committeeId: "zones-confluence", committeeName: "لجنة المناطق والتوازن السعري",
+      verdict: "WARN", score: 25,
+      summary: "مناطق العرض والطلب غير متوفرة",
+      reasons: ["لم يُحسب تحليل المناطق — تحقق من مزامنة الشموع"],
+    };
+  }
+
+  const reasons: string[] = [];
+  let score   = 35;
+  let verdict: CommitteeResult["verdict"] = "WARN";
+
+  const dir    = r.direction;  // "bullish" | "bearish" | undefined
+  const isBuy  = dir === "bullish";
+  const isSell = dir === "bearish";
+
+  // ── Premium/Discount alignment ────────────────────────────────────────────
+  const pd = za.inPremiumDiscount;
+  if (isBuy  && pd === "DISCOUNT") { score += 18; reasons.push("الشراء في منطقة Discount ✓"); }
+  if (isSell && pd === "PREMIUM")  { score += 18; reasons.push("البيع في منطقة Premium ✓"); }
+  if (isBuy  && pd === "PREMIUM")  { score -= 15; reasons.push("⚠ الشراء في منطقة Premium — سعر مرتفع"); }
+  if (isSell && pd === "DISCOUNT") { score -= 15; reasons.push("⚠ البيع في منطقة Discount — سعر منخفض"); }
+  if (pd === "MID") {
+    score -= 8;
+    reasons.push("الدخول من منتصف النطاق — لا أفضلية واضحة");
+  }
+
+  // ── Near supporting zone ──────────────────────────────────────────────────
+  const NEAR_PCT = 0.5;
+  const nearBuyZone  = za.activeZones.find((z) => z.direction === "BUY"  && z.distanceFromCurrent <= NEAR_PCT && !z.mitigated);
+  const nearSellZone = za.activeZones.find((z) => z.direction === "SELL" && z.distanceFromCurrent <= NEAR_PCT && !z.mitigated);
+
+  if (isBuy && nearBuyZone) {
+    score += 15;
+    reasons.push(`قريب من ${nearBuyZone.type} (${nearBuyZone.distanceFromCurrent.toFixed(2)}%) — يدعم الشراء ✓`);
+  }
+  if (isSell && nearSellZone) {
+    score += 15;
+    reasons.push(`قريب من ${nearSellZone.type} (${nearSellZone.distanceFromCurrent.toFixed(2)}%) — يدعم البيع ✓`);
+  }
+
+  // ── BLOCK: price inside opposing strong zone ───────────────────────────────
+  const INSIDE_PCT = 0.15;
+  const insideSell = za.activeZones.find(
+    (z) => z.direction === "SELL" && z.distanceFromCurrent <= INSIDE_PCT && z.strength >= 65,
+  );
+  const insideBuy = za.activeZones.find(
+    (z) => z.direction === "BUY" && z.distanceFromCurrent <= INSIDE_PCT && z.strength >= 65,
+  );
+
+  if (isBuy && insideSell) {
+    verdict = "BLOCK"; score -= 25;
+    reasons.push(`⛔ الشراء داخل منطقة ${insideSell.type} قوية (strength: ${insideSell.strength})`);
+  }
+  if (isSell && insideBuy) {
+    verdict = "BLOCK"; score -= 25;
+    reasons.push(`⛔ البيع داخل منطقة ${insideBuy.type} قوية (strength: ${insideBuy.strength})`);
+  }
+
+  // ── FVG / Order Block confluence ──────────────────────────────────────────
+  const nearFVG = za.fvgZones.find((z) => {
+    const aligned = (isBuy && z.direction === "BUY") || (isSell && z.direction === "SELL");
+    return aligned && z.distanceFromCurrent <= NEAR_PCT;
+  });
+  if (nearFVG) { score += 8; reasons.push(`FVG قريبة تدعم القرار ✓`); }
+
+  const nearOB = za.orderBlocks.find((z) => {
+    const aligned = (isBuy && z.direction === "BUY") || (isSell && z.direction === "SELL");
+    return aligned && z.distanceFromCurrent <= NEAR_PCT;
+  });
+  if (nearOB) { score += 8; reasons.push(`Order Block قريب يدعم القرار ✓`); }
+
+  // ── Confluence score factor ───────────────────────────────────────────────
+  score = Math.round(score * (0.5 + za.confidence / 200));
+  score = Math.max(5, Math.min(92, score));
+  if (verdict !== "BLOCK") verdict = score >= 60 ? "PASS" : "WARN";
+
+  if (reasons.length === 0) reasons.push(`توازن سعري: ${pd}`);
+
+  return {
+    committeeId: "zones-confluence", committeeName: "لجنة المناطق والتوازن السعري",
+    verdict, score,
+    summary: `${pd} | ${za.bias} | FVG: ${za.fvgZones.length} | OB: ${za.orderBlocks.length} | ثقة: ${za.confidence}%`,
+    reasons: reasons.slice(0, 8),
+  };
+}
+
 // ── حساب الاحتمالية الموزونة من اللجان ──────────────────────────────────────
 function computeWeightedProbability(committees: CommitteeResult[]): number {
   let weightedSum = 0;
@@ -898,6 +1032,7 @@ function buildDecisionSummary(r: AnalysisResult): DecisionSummary {
     buildProtectionCommittee(r),
     buildMarketStructureCommittee(r),   // B1
     buildCandlestickCommittee(r),       // B2
+    buildZonesCommittee(r),             // B3
   ];
 
   const probability = computeWeightedProbability(committees);
@@ -1234,6 +1369,117 @@ function CandlestickSection({ cs }: { cs: CandlestickAnalysis }) {
       {cs.warnings.length > 0 && (
         <ul className="space-y-0.5">
           {cs.warnings.map((w, i) => (
+            <li key={i} className="text-[11px] text-amber-300/80">{w}</li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+// ── ZonesSection — B3 ────────────────────────────────────────────────────────
+function ZonesSection({ za }: { za: ZonesAnalysis }) {
+  const pdColor = (pd: string) => {
+    if (pd === "PREMIUM")  return "text-red-300";
+    if (pd === "DISCOUNT") return "text-emerald-300";
+    if (pd === "MID")      return "text-amber-400";
+    return "text-muted-foreground";
+  };
+  const biasColor = (b: string) => {
+    if (b === "BUY")  return "text-emerald-300";
+    if (b === "SELL") return "text-red-300";
+    return "text-muted-foreground";
+  };
+  const zoneTypeLabel: Record<string, string> = {
+    SUPPLY:                "عرض (Supply)",
+    DEMAND:                "طلب (Demand)",
+    BULLISH_ORDER_BLOCK:   "OB صاعد",
+    BEARISH_ORDER_BLOCK:   "OB هابط",
+    BULLISH_FVG:           "FVG صاعد",
+    BEARISH_FVG:           "FVG هابط",
+    SUPPORT:               "دعم",
+    RESISTANCE:            "مقاومة",
+  };
+  const zoneDir: Record<string, string> = {
+    BUY: "text-emerald-300", SELL: "text-red-300", NEUTRAL: "text-sky-300",
+  };
+
+  return (
+    <div className="rounded-lg border border-teal-500/20 bg-teal-500/[0.04] p-4 space-y-3">
+      <div className="flex items-center justify-between gap-2">
+        <p className="text-sm font-bold text-teal-200/90">مناطق العرض والطلب والفجوات — B3</p>
+        <span className="text-[10px] text-muted-foreground/60 font-mono">
+          ثقة: {za.confidence}% | توافق: {za.confluenceScore}%
+        </span>
+      </div>
+
+      {/* Key metrics */}
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+        <div className="flex flex-col gap-0.5">
+          <span className="text-[10px] text-muted-foreground">الموضع</span>
+          <span className={`text-sm font-bold ${pdColor(za.inPremiumDiscount)}`}>
+            {za.inPremiumDiscount === "PREMIUM"  ? "Premium ↑"  :
+             za.inPremiumDiscount === "DISCOUNT" ? "Discount ↓" :
+             za.inPremiumDiscount === "MID"      ? "Mid ↔"      : "غير محدد"}
+          </span>
+        </div>
+        <div className="flex flex-col gap-0.5">
+          <span className="text-[10px] text-muted-foreground">انحياز المناطق</span>
+          <span className={`text-sm font-semibold ${biasColor(za.bias)}`}>{za.bias}</span>
+        </div>
+        <div className="flex flex-col gap-0.5">
+          <span className="text-[10px] text-muted-foreground">FVG نشطة</span>
+          <span className="text-sm font-semibold text-foreground">{za.fvgZones.length}</span>
+        </div>
+        <div className="flex flex-col gap-0.5">
+          <span className="text-[10px] text-muted-foreground">Order Blocks</span>
+          <span className="text-sm font-semibold text-foreground">{za.orderBlocks.length}</span>
+        </div>
+      </div>
+
+      {/* Nearest zones */}
+      <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-2">
+        {za.nearestDemand && (
+          <div className="flex items-center justify-between rounded border border-emerald-500/25 px-2.5 py-1.5 text-[11px]">
+            <span className="text-emerald-300/80">أقرب طلب:</span>
+            <span className="font-mono text-foreground">{za.nearestDemand.midpoint.toFixed(5)}</span>
+            <span className="text-muted-foreground/60">{za.nearestDemand.distanceFromCurrent.toFixed(2)}%</span>
+          </div>
+        )}
+        {za.nearestSupply && (
+          <div className="flex items-center justify-between rounded border border-red-500/25 px-2.5 py-1.5 text-[11px]">
+            <span className="text-red-300/80">أقرب عرض:</span>
+            <span className="font-mono text-foreground">{za.nearestSupply.midpoint.toFixed(5)}</span>
+            <span className="text-muted-foreground/60">{za.nearestSupply.distanceFromCurrent.toFixed(2)}%</span>
+          </div>
+        )}
+      </div>
+
+      {/* Active zones (compact) */}
+      {za.activeZones.length > 0 && (
+        <div className="flex flex-wrap gap-1">
+          <span className="text-[10px] text-muted-foreground/70 w-full">أقرب المناطق النشطة:</span>
+          {za.activeZones.slice(0, 6).map((z) => (
+            <span key={z.id} className={`rounded border px-1.5 py-0.5 text-[10px] font-medium ${zoneDir[z.direction] ?? ""} border-current/20`}>
+              {zoneTypeLabel[z.type] ?? z.type} {z.distanceFromCurrent.toFixed(1)}%
+            </span>
+          ))}
+        </div>
+      )}
+
+      {/* Reasons */}
+      {za.reasons.length > 0 && (
+        <ul className="space-y-0.5">
+          {za.reasons.slice(0, 5).map((r, i) => (
+            <li key={i} className="text-[11px] text-foreground/70">• {r}</li>
+          ))}
+        </ul>
+      )}
+
+      {/* Warnings */}
+      {za.warnings.length > 0 && (
+        <ul className="space-y-0.5">
+          {za.warnings.map((w, i) => (
             <li key={i} className="text-[11px] text-amber-300/80">{w}</li>
           ))}
         </ul>
@@ -1684,6 +1930,60 @@ function buildPriceActionExecutionGuard(
     } else {
       reasons.push(`SL/ATR: ${(slDist / atr).toFixed(2)}× — مقبول ✓`);
     }
+  }
+
+  // ── ط) مناطق العرض والطلب — B3 ──────────────────────────────────────────────
+  const za = result.zonesAnalysis;
+  if (za && za.confidence > 0) {
+    const INSIDE_PCT = 0.15;
+
+    // BLOCK: BUY inside strong Supply
+    if (finalDecision === "BUY") {
+      const insideSupply = za.activeZones.find(
+        (z) => z.direction === "SELL" && z.distanceFromCurrent <= INSIDE_PCT && z.strength >= 65,
+      );
+      if (insideSupply) {
+        blockers.push(`ممنوع التنفيذ: الشراء داخل منطقة ${insideSupply.type} قوية (strength: ${insideSupply.strength})`);
+      }
+    }
+
+    // BLOCK: SELL inside strong Demand
+    if (finalDecision === "SELL") {
+      const insideDemand = za.activeZones.find(
+        (z) => z.direction === "BUY" && z.distanceFromCurrent <= INSIDE_PCT && z.strength >= 65,
+      );
+      if (insideDemand) {
+        blockers.push(`ممنوع التنفيذ: البيع داخل منطقة ${insideDemand.type} قوية (strength: ${insideDemand.strength})`);
+      }
+    }
+
+    // BLOCK: Market order in MID of Range
+    if (za.inPremiumDiscount === "MID" && isMarketOrder) {
+      blockers.push("ممنوع التنفيذ: أمر Market في منتصف النطاق — لا أفضلية واضحة");
+    }
+
+    // WARN: no supporting zone for the direction
+    const hasSupporting = za.activeZones.some((z) => {
+      const aligned =
+        (finalDecision === "BUY"  && z.direction === "BUY")  ||
+        (finalDecision === "SELL" && z.direction === "SELL");
+      return aligned && !z.mitigated;
+    });
+    if (!hasSupporting) {
+      warnings.push("لا توجد منطقة مؤسسية تدعم الاتجاه الحالي — توافق المناطق ضعيف");
+    } else {
+      reasons.push(`مناطق مؤسسية تدعم القرار (${za.activeZones.filter(z => (finalDecision === "BUY" ? z.direction === "BUY" : z.direction === "SELL")).length} منطقة) ✓`);
+    }
+
+    // WARN: Premium/Discount misalignment
+    if (finalDecision === "BUY" && za.inPremiumDiscount === "PREMIUM") {
+      warnings.push("الشراء في منطقة Premium — سعر مرتفع نسبياً");
+    }
+    if (finalDecision === "SELL" && za.inPremiumDiscount === "DISCOUNT") {
+      warnings.push("البيع في منطقة Discount — سعر منخفض نسبياً");
+    }
+  } else {
+    warnings.push("مناطق العرض والطلب غير متوفرة — سيتم تجاوز فحص B3");
   }
 
   // ── ح) هامش من آخر response ───────────────────────────────────────────────
@@ -3014,6 +3314,11 @@ export function AnalysisControlPanel() {
                 {/* ── B2: تحليل الشموع والسيولة ────────────────────────────── */}
                 {result.candlestickAnalysis && (
                   <CandlestickSection cs={result.candlestickAnalysis} />
+                )}
+
+                {/* ── B3: مناطق العرض والطلب والفجوات ─────────────────────── */}
+                {result.zonesAnalysis && (
+                  <ZonesSection za={result.zonesAnalysis} />
                 )}
 
                 {/* ── A22: ملخص اللجان قبل الحفظ ───────────────────────────── */}
