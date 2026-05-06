@@ -35,6 +35,17 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { institutionalCardClass } from "@/lib/ui-institutional";
+import {
+  STRUCTURE_POINT_EXPLANATIONS,
+  STRUCTURE_POINT_LABEL,
+  TREND_STATE_EXPLANATIONS,
+  BOS_EXPLANATION,
+  CHOCH_EXPLANATION,
+  CANDLE_PATTERN_EXPLANATIONS,
+  ZONE_TYPE_EXPLANATIONS,
+  PREMIUM_DISCOUNT_EXPLANATIONS,
+  GENERAL_DISCLAIMER,
+} from "@/lib/trading/shared/trading-term-explanations";
 
 // ---------------------------------------------------------------------------
 // Types (mirror the route response)
@@ -1149,8 +1160,17 @@ function MarketStructureSection({ ms }: { ms: MarketStructureAnalysis }) {
       <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
         <div className="flex flex-col gap-0.5">
           <span className="text-[10px] text-muted-foreground">حالة السوق</span>
-          <span className={`text-sm font-bold ${trendColor(ms.trendState)}`}>
+          <span
+            className={`text-sm font-bold ${trendColor(ms.trendState)}`}
+            title={TREND_STATE_EXPLANATIONS[ms.trendState]}
+          >
             {trendLabel(ms.trendState)}
+          </span>
+          <span className="text-[9px] text-muted-foreground/55 leading-tight">
+            {ms.trendState === "RANGE"      ? "تحرك بين دعم ومقاومة" :
+             ms.trendState === "TRANSITION" ? "بداية تحول محتمل" :
+             ms.trendState === "BULLISH"    ? "قمم وقيعان أعلى" :
+             ms.trendState === "BEARISH"    ? "قمم وقيعان أدنى" : ""}
           </span>
         </div>
         <div className="flex flex-col gap-0.5">
@@ -1162,59 +1182,84 @@ function MarketStructureSection({ ms }: { ms: MarketStructureAnalysis }) {
           <span className="text-sm font-mono text-foreground">
             {ms.lastSwingHigh ? ms.lastSwingHigh.price.toFixed(5) : "—"}
           </span>
+          <span className="text-[9px] text-muted-foreground/55">مقاومة محتملة</span>
         </div>
         <div className="flex flex-col gap-0.5">
           <span className="text-[10px] text-muted-foreground">آخر قاع (SL)</span>
           <span className="text-sm font-mono text-foreground">
             {ms.lastSwingLow ? ms.lastSwingLow.price.toFixed(5) : "—"}
           </span>
+          <span className="text-[9px] text-muted-foreground/55">دعم محتمل</span>
         </div>
       </div>
 
-      {/* BOS / CHoCH badges */}
+      {/* BOS / CHoCH badges with tooltips */}
       {(bosLabel || chochLabel || ms.rangeDetected) && (
-        <div className="flex flex-wrap gap-1.5">
+        <div className="flex flex-wrap gap-1.5 items-start">
           {bosLabel && (
-            <span className={`inline-flex items-center rounded border px-2 py-0.5 text-[11px] font-semibold ${
-              ms.bosDirection === "UP"
-                ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-300"
-                : "border-red-500/40 bg-red-500/10 text-red-300"
-            }`}>
-              {bosLabel}
-            </span>
+            <div className="flex flex-col gap-0.5">
+              <span
+                title={BOS_EXPLANATION}
+                className={`inline-flex items-center rounded border px-2 py-0.5 text-[11px] font-semibold cursor-help ${
+                  ms.bosDirection === "UP"
+                    ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-300"
+                    : "border-red-500/40 bg-red-500/10 text-red-300"
+                }`}
+              >
+                {bosLabel}
+              </span>
+              <span className="text-[9px] text-muted-foreground/60">كسر هيكلي مؤكد</span>
+            </div>
           )}
           {chochLabel && (
-            <span className={`inline-flex items-center rounded border px-2 py-0.5 text-[11px] font-semibold ${
-              ms.chochDirection === "UP"
-                ? "border-amber-500/40 bg-amber-500/10 text-amber-300"
-                : "border-orange-500/40 bg-orange-500/10 text-orange-300"
-            }`}>
-              {chochLabel}
-            </span>
+            <div className="flex flex-col gap-0.5">
+              <span
+                title={CHOCH_EXPLANATION}
+                className={`inline-flex items-center rounded border px-2 py-0.5 text-[11px] font-semibold cursor-help ${
+                  ms.chochDirection === "UP"
+                    ? "border-amber-500/40 bg-amber-500/10 text-amber-300"
+                    : "border-orange-500/40 bg-orange-500/10 text-orange-300"
+                }`}
+              >
+                {chochLabel}
+              </span>
+              <span className="text-[9px] text-muted-foreground/60">تغير سلوك السعر</span>
+            </div>
           )}
           {ms.rangeDetected && (
-            <span className="inline-flex items-center rounded border border-sky-500/30 bg-sky-500/10 px-2 py-0.5 text-[11px] font-medium text-sky-300">
-              نطاق {ms.rangeHigh?.toFixed(5)} — {ms.rangeLow?.toFixed(5)}
-            </span>
+            <div className="flex flex-col gap-0.5">
+              <span className="inline-flex items-center rounded border border-sky-500/30 bg-sky-500/10 px-2 py-0.5 text-[11px] font-medium text-sky-300">
+                نطاق {ms.rangeHigh?.toFixed(5)} — {ms.rangeLow?.toFixed(5)}
+              </span>
+              <span className="text-[9px] text-muted-foreground/60">الدخول من المنتصف أضعف</span>
+            </div>
           )}
         </div>
       )}
 
-      {/* Structure points summary */}
+      {/* Structure points — مع اسم كامل وtooltip */}
       {ms.structurePoints.length > 0 && (() => {
         const recent = ms.structurePoints.slice(-6);
         return (
-          <div className="flex flex-wrap gap-1">
+          <div className="flex flex-wrap gap-1.5">
             <span className="text-[10px] text-muted-foreground/70 w-full">آخر نقاط الهيكل:</span>
             {recent.map((p, i) => (
-              <span key={i} className={`rounded border px-1.5 py-0.5 text-[10px] font-mono font-semibold ${
-                p.type === "HH" ? "border-emerald-500/30 text-emerald-400" :
-                p.type === "HL" ? "border-emerald-500/20 text-emerald-300/70" :
-                p.type === "LH" ? "border-red-500/20 text-red-300/70" :
-                                  "border-red-500/30 text-red-400"
-              }`}>
-                {p.type}
-              </span>
+              <div key={i} className="flex flex-col items-center gap-0.5">
+                <span
+                  title={STRUCTURE_POINT_EXPLANATIONS[p.type]}
+                  className={`rounded border px-2 py-0.5 text-[10px] font-mono font-bold cursor-help ${
+                    p.type === "HH" ? "border-emerald-500/30 text-emerald-400" :
+                    p.type === "HL" ? "border-emerald-500/20 text-emerald-300/70" :
+                    p.type === "LH" ? "border-red-500/20 text-red-300/70" :
+                                      "border-red-500/30 text-red-400"
+                  }`}
+                >
+                  {p.type}
+                </span>
+                <span className="text-[8px] text-muted-foreground/50 text-center leading-tight max-w-[52px]">
+                  {STRUCTURE_POINT_LABEL[p.type] ?? p.type}
+                </span>
+              </div>
             ))}
           </div>
         );
@@ -1237,6 +1282,11 @@ function MarketStructureSection({ ms }: { ms: MarketStructureAnalysis }) {
           ))}
         </ul>
       )}
+
+      {/* B3.1: ملاحظة عامة */}
+      <p className="text-[9px] text-muted-foreground/40 border-t border-border/30 pt-1.5 italic">
+        {GENERAL_DISCLAIMER}
+      </p>
     </div>
   );
 }
@@ -1298,17 +1348,23 @@ function CandlestickSection({ cs }: { cs: CandlestickAnalysis }) {
           <span className="text-[10px] text-muted-foreground">جودة الشمعة</span>
           <span className={`text-sm font-semibold ${qualityColor(cs.quality)}`}>{cs.quality}</span>
         </div>
-        <div className="flex flex-col gap-0.5">
-          <span className="text-[10px] text-muted-foreground">Liquidity Sweep</span>
+        <div className="flex flex-col gap-0.5" title="سحب السيولة — السعر يكسر مستوى مؤقتاً ثم يعود. قد يكون كسراً وهمياً.">
+          <span className="text-[10px] text-muted-foreground cursor-help">سحب السيولة</span>
           <span className={`text-sm font-semibold ${cs.liquiditySweepDetected ? "text-orange-400" : "text-muted-foreground/50"}`}>
             {cs.liquiditySweepDetected ? "مكتشف ⚠" : "لا"}
           </span>
+          {cs.liquiditySweepDetected && (
+            <span className="text-[9px] text-orange-400/60">كسر مؤقت ثم عودة</span>
+          )}
         </div>
-        <div className="flex flex-col gap-0.5">
-          <span className="text-[10px] text-muted-foreground">Fake Breakout</span>
+        <div className="flex flex-col gap-0.5" title="الكسر الوهمي — السعر يخترق مستوى ثم يفشل في الثبات فوقه/تحته.">
+          <span className="text-[10px] text-muted-foreground cursor-help">الكسر الوهمي</span>
           <span className={`text-sm font-semibold ${cs.fakeoutDetected ? "text-red-400" : "text-muted-foreground/50"}`}>
             {cs.fakeoutDetected ? "مكتشف ⚠" : "لا"}
           </span>
+          {cs.fakeoutDetected && (
+            <span className="text-[9px] text-red-400/60">اختراق بلا ثبات</span>
+          )}
         </div>
       </div>
 
@@ -1324,23 +1380,34 @@ function CandlestickSection({ cs }: { cs: CandlestickAnalysis }) {
         </div>
       )}
 
-      {/* Top pattern */}
+      {/* Top pattern with Arabic explanation */}
       {topPattern && (
-        <div className={`flex items-center justify-between rounded border px-2.5 py-1.5 text-[11px] border-border bg-muted/10`}>
-          <span className="text-muted-foreground">أهم نمط:</span>
-          <span className={`font-semibold ${patternDir[topPattern.direction] ?? ""}`}>
-            {patternLabel[topPattern.type] ?? topPattern.type}
-          </span>
-          <span className="text-muted-foreground/60 font-mono">قوة: {topPattern.strength}</span>
+        <div className="rounded border border-border bg-muted/10 px-2.5 py-2 space-y-0.5">
+          <div className="flex items-center justify-between text-[11px]">
+            <span className="text-muted-foreground">أهم نمط:</span>
+            <span className={`font-semibold ${patternDir[topPattern.direction] ?? ""}`}>
+              {patternLabel[topPattern.type] ?? topPattern.type}
+            </span>
+            <span className="text-muted-foreground/60 font-mono">قوة: {topPattern.strength}</span>
+          </div>
+          {CANDLE_PATTERN_EXPLANATIONS[topPattern.type] && (
+            <p className="text-[9px] text-muted-foreground/60 italic leading-tight">
+              {CANDLE_PATTERN_EXPLANATIONS[topPattern.type]}
+            </p>
+          )}
         </div>
       )}
 
-      {/* All patterns (compact) */}
+      {/* All patterns (compact with tooltips) */}
       {cs.patterns.length > 0 && (
         <div className="flex flex-wrap gap-1">
           <span className="text-[10px] text-muted-foreground/70 w-full">الأنماط المكتشفة:</span>
           {cs.patterns.slice(-8).map((p, i) => (
-            <span key={i} className={`rounded border px-1.5 py-0.5 text-[10px] font-medium ${patternDir[p.direction] ?? ""} border-current/20`}>
+            <span
+              key={i}
+              title={CANDLE_PATTERN_EXPLANATIONS[p.type] ?? p.type}
+              className={`rounded border px-1.5 py-0.5 text-[10px] font-medium cursor-help ${patternDir[p.direction] ?? ""} border-current/20`}
+            >
               {patternLabel[p.type] ?? p.type}
             </span>
           ))}
@@ -1373,6 +1440,11 @@ function CandlestickSection({ cs }: { cs: CandlestickAnalysis }) {
           ))}
         </ul>
       )}
+
+      {/* B3.1: ملاحظة عامة */}
+      <p className="text-[9px] text-muted-foreground/40 border-t border-border/30 pt-1.5 italic">
+        {GENERAL_DISCLAIMER}
+      </p>
     </div>
   );
 }
@@ -1415,25 +1487,41 @@ function ZonesSection({ za }: { za: ZonesAnalysis }) {
 
       {/* Key metrics */}
       <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-        <div className="flex flex-col gap-0.5">
-          <span className="text-[10px] text-muted-foreground">الموضع</span>
+        <div
+          className="flex flex-col gap-0.5 cursor-help"
+          title={PREMIUM_DISCOUNT_EXPLANATIONS[za.inPremiumDiscount] ?? ""}
+        >
+          <span className="text-[10px] text-muted-foreground">الموضع في النطاق</span>
           <span className={`text-sm font-bold ${pdColor(za.inPremiumDiscount)}`}>
             {za.inPremiumDiscount === "PREMIUM"  ? "Premium ↑"  :
              za.inPremiumDiscount === "DISCOUNT" ? "Discount ↓" :
              za.inPremiumDiscount === "MID"      ? "Mid ↔"      : "غير محدد"}
+          </span>
+          <span className="text-[9px] text-muted-foreground/55 leading-tight">
+            {za.inPremiumDiscount === "PREMIUM"  ? "أفضل للبيع" :
+             za.inPremiumDiscount === "DISCOUNT" ? "أفضل للشراء" :
+             za.inPremiumDiscount === "MID"      ? "دخول ضعيف" : ""}
           </span>
         </div>
         <div className="flex flex-col gap-0.5">
           <span className="text-[10px] text-muted-foreground">انحياز المناطق</span>
           <span className={`text-sm font-semibold ${biasColor(za.bias)}`}>{za.bias}</span>
         </div>
-        <div className="flex flex-col gap-0.5">
+        <div
+          className="flex flex-col gap-0.5 cursor-help"
+          title="الفجوة السعرية / Imbalance — منطقة اندفاع سريع لم يحصل فيها تداول متوازن. قد يعود السعر لملئها."
+        >
           <span className="text-[10px] text-muted-foreground">FVG نشطة</span>
           <span className="text-sm font-semibold text-foreground">{za.fvgZones.length}</span>
+          <span className="text-[9px] text-muted-foreground/55">فجوات Imbalance</span>
         </div>
-        <div className="flex flex-col gap-0.5">
+        <div
+          className="flex flex-col gap-0.5 cursor-help"
+          title="Order Block — آخر شمعة عكسية قبل اندفاع قوي. منطقة اهتمام مؤسسي محتملة."
+        >
           <span className="text-[10px] text-muted-foreground">Order Blocks</span>
           <span className="text-sm font-semibold text-foreground">{za.orderBlocks.length}</span>
+          <span className="text-[9px] text-muted-foreground/55">مناطق مؤسسية</span>
         </div>
       </div>
 
@@ -1455,12 +1543,16 @@ function ZonesSection({ za }: { za: ZonesAnalysis }) {
         )}
       </div>
 
-      {/* Active zones (compact) */}
+      {/* Active zones (compact with tooltips) */}
       {za.activeZones.length > 0 && (
         <div className="flex flex-wrap gap-1">
           <span className="text-[10px] text-muted-foreground/70 w-full">أقرب المناطق النشطة:</span>
           {za.activeZones.slice(0, 6).map((z) => (
-            <span key={z.id} className={`rounded border px-1.5 py-0.5 text-[10px] font-medium ${zoneDir[z.direction] ?? ""} border-current/20`}>
+            <span
+              key={z.id}
+              title={ZONE_TYPE_EXPLANATIONS[z.type] ?? z.type}
+              className={`rounded border px-1.5 py-0.5 text-[10px] font-medium cursor-help ${zoneDir[z.direction] ?? ""} border-current/20`}
+            >
               {zoneTypeLabel[z.type] ?? z.type} {z.distanceFromCurrent.toFixed(1)}%
             </span>
           ))}
@@ -1484,6 +1576,11 @@ function ZonesSection({ za }: { za: ZonesAnalysis }) {
           ))}
         </ul>
       )}
+
+      {/* B3.1: ملاحظة عامة */}
+      <p className="text-[9px] text-muted-foreground/40 border-t border-border/30 pt-1.5 italic">
+        {GENERAL_DISCLAIMER}
+      </p>
     </div>
   );
 }
