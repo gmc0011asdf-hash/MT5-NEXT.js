@@ -53,6 +53,7 @@ export type FibonacciAnalysis = {
   retracementLevels:           FibonacciLevel[];
   extensionLevels:             FibonacciLevel[];
   nearestLevel:                FibonacciLevel | null;
+  nearestRetracementLevels:    FibonacciLevel[];  // top 2 by proximity (for display markers)
   goldenZone:                  GoldenZone;
   inGoldenZone:                boolean;
   confluenceWithZones:         boolean;
@@ -77,7 +78,9 @@ function atr14(candles: OHLCCandle[]): number {
   return sum / period;
 }
 
-// ─── Proximity check ──────────────────────────────────────────────────────────
+// ─── Proximity check (UI marker — strict) ────────────────────────────────────
+// nearCurrent is only true for the tightest proximity.
+// Use level.distanceFromCurrentPct directly for wider confluence checks.
 
 function isNearCurrent(
   levelPrice: number,
@@ -89,9 +92,9 @@ function isNearCurrent(
   const distanceAbs = Math.abs(currentPrice - levelPrice);
   const distancePct = distanceAbs / currentPrice * 100;
 
-  const isXAU      = symbol.includes("XAU") || symbol.includes("GOLD");
-  const pctLimit   = isXAU ? 0.25 : 0.15;
-  const atrLimit   = atr > 0 ? atr * 0.3 : Infinity;
+  const isXAU    = symbol.includes("XAU") || symbol.includes("GOLD");
+  const pctLimit = isXAU ? 0.08 : 0.03;        // strict UI threshold
+  const atrLimit = atr > 0 ? atr * 0.15 : Infinity;  // 0.15×ATR max
 
   return { near: distancePct <= pctLimit || distanceAbs <= atrLimit, distancePct };
 }
@@ -273,14 +276,18 @@ function computeGoldenZone(
 
 // ─── Zone confluence check ────────────────────────────────────────────────────
 
-const CONFLUENCE_PCT = 0.5; // zone must be within 0.5% of a Fib level
+// Zone confluence uses a wider proximity than the strict UI marker:
+// Fib level is "near enough for confluence" if within 0.3% of current price.
+const CONFLUENCE_FIBO_RANGE_PCT = 0.3;
+const CONFLUENCE_ZONE_MATCH_PCT = 0.5; // zone must be within 0.5% of a near Fib level
 
 function checkZoneConfluence(
   levels:    FibonacciLevel[],
   za:        ZonesAnalysis,
   direction: "bullish" | "bearish" | undefined,
 ): boolean {
-  const nearLevels = levels.filter((l) => l.nearCurrent);
+  // Use wider distance threshold (not the strict nearCurrent)
+  const nearLevels = levels.filter((l) => l.distanceFromCurrentPct <= CONFLUENCE_FIBO_RANGE_PCT);
   if (nearLevels.length === 0) return false;
 
   return za.activeZones.some((zone) => {
@@ -290,7 +297,7 @@ function checkZoneConfluence(
       direction === undefined;
     if (!aligned) return false;
     return nearLevels.some(
-      (l) => Math.abs(zone.midpoint - l.price) / l.price * 100 <= CONFLUENCE_PCT,
+      (l) => Math.abs(zone.midpoint - l.price) / l.price * 100 <= CONFLUENCE_ZONE_MATCH_PCT,
     );
   });
 }
@@ -318,6 +325,7 @@ export function analyzeFibonacci(
       currentPrice,
       retracementLevels: [], extensionLevels: [],
       nearestLevel: null,
+      nearestRetracementLevels: [],
       goldenZone: { low: 0, high: 0, active: false, direction: "NEUTRAL", distanceFromCurrentPct: 0 },
       inGoldenZone: false,
       confluenceWithZones: false, confluenceWithMarketStructure: false,
@@ -340,11 +348,11 @@ export function analyzeFibonacci(
   const retracementLevels = computeRetracementLevels(swing, currentPrice, atr, symbol);
   const extensionLevels   = computeExtensionLevels(swing, currentPrice, atr, symbol);
 
-  // ── Nearest level ─────────────────────────────────────────────────────────
-  const allLevels = [...retracementLevels, ...extensionLevels];
-  const nearestLevel = allLevels
-    .filter((l) => l.type === "RETRACEMENT") // nearest retracement is most actionable
-    .sort((a, b) => a.distanceFromCurrentPct - b.distanceFromCurrentPct)[0] ?? null;
+  // ── Nearest levels ────────────────────────────────────────────────────────
+  const sortedRetracement = [...retracementLevels]
+    .sort((a, b) => a.distanceFromCurrentPct - b.distanceFromCurrentPct);
+  const nearestLevel               = sortedRetracement[0] ?? null;
+  const nearestRetracementLevels   = sortedRetracement.slice(0, 2);
 
   // ── Golden zone ───────────────────────────────────────────────────────────
   const goldenZone = computeGoldenZone(swing, currentPrice);
@@ -381,7 +389,7 @@ export function analyzeFibonacci(
     warnings.push("السعر ليس عند مستوى Fibonacci واضح — لا توافق قوي");
   }
   if (swing.direction === "UNKNOWN") {
-    warnings.push("اتجاه Swing غير محدد — استخدام احتياطي من آخر 50 شمعة");
+    warnings.push("اتجاه Swing غير محدد — Fibonacci للمراقبة فقط، لا يكفي للدخول وحده");
   }
   if (ms?.trendState === "RANGE" && !confluenceWithZones) {
     warnings.push("السوق في نطاق — Fibonacci وحده لا يكفي بدون Zone داعمة");
@@ -423,6 +431,7 @@ export function analyzeFibonacci(
     currentPrice,
     retracementLevels,
     extensionLevels,
+    nearestRetracementLevels,
     nearestLevel,
     goldenZone,
     inGoldenZone,

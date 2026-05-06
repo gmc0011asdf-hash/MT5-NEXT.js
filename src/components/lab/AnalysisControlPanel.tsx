@@ -247,6 +247,7 @@ type FibonacciAnalysis = {
   retracementLevels:             FibonacciLevel[];
   extensionLevels:               FibonacciLevel[];
   nearestLevel:                  FibonacciLevel | null;
+  nearestRetracementLevels:      FibonacciLevel[];
   goldenZone:                    GoldenZone;
   inGoldenZone:                  boolean;
   confluenceWithZones:           boolean;
@@ -1158,27 +1159,41 @@ function buildFibonacciCommittee(r: AnalysisResult): CommitteeResult {
   const isBuy  = dir === "bullish";
   const isSell = dir === "bearish";
 
+  // ── Swing UNKNOWN → cap at WARN, max score 45 ────────────────────────────
+  const swingUnknown = fa.swing.direction === "UNKNOWN";
+  if (swingUnknown) {
+    reasons.push("Fibonacci للمراقبة فقط — اتجاه Swing غير مؤكد");
+    // Will cap score and verdict at end
+  }
+
   // ── Golden Zone ───────────────────────────────────────────────────────────
   if (fa.inGoldenZone) {
     const gzSupports = (isBuy && fa.goldenZone.direction === "BUY") ||
                        (isSell && fa.goldenZone.direction === "SELL");
-    if (gzSupports) {
+    if (gzSupports && !swingUnknown) {
       score += 22; reasons.push("السعر داخل Golden Zone ويدعم القرار ✓");
+    } else if (gzSupports && swingUnknown) {
+      score += 8;  reasons.push("Golden Zone — للمراقبة (Swing غير مؤكد)");
     } else {
       score -= 8; reasons.push("السعر داخل Golden Zone لكن باتجاه مخالف");
     }
-  } else if (fa.nearestLevel?.nearCurrent) {
-    const levelDir = fa.swing.direction;
-    const levelSupports =
-      (isBuy  && (levelDir === "BULLISH" || levelDir === "UNKNOWN")) ||
-      (isSell && (levelDir === "BEARISH" || levelDir === "UNKNOWN"));
-    if (levelSupports) {
-      score += 12; reasons.push(`السعر قريب من Fib ${fa.nearestLevel.label} ✓`);
-    } else {
-      score -= 5;  reasons.push(`السعر قريب من Fib ${fa.nearestLevel.label} لكن باتجاه مخالف`);
-    }
   } else {
-    reasons.push("السعر ليس عند مستوى Fibonacci واضح");
+    // Use nearest retracement proximity (wider than strict nearCurrent)
+    const nearPct = fa.nearestRetracementLevels[0]?.distanceFromCurrentPct ?? Infinity;
+    if (nearPct < 0.25) {
+      const nearLabel = fa.nearestRetracementLevels[0]!.label;
+      const levelDir = fa.swing.direction;
+      const levelSupports =
+        (isBuy  && (levelDir === "BULLISH")) ||
+        (isSell && (levelDir === "BEARISH"));
+      if (levelSupports) {
+        score += 10; reasons.push(`السعر قريب من Fib ${nearLabel} ✓`);
+      } else if (!swingUnknown) {
+        score -= 5;  reasons.push(`Fib ${nearLabel} قريب لكن الاتجاه غير متوافق`);
+      }
+    } else {
+      reasons.push("السعر ليس عند مستوى Fibonacci قريب");
+    }
   }
 
   // ── Confluence with B3 Zones ──────────────────────────────────────────────
@@ -1216,8 +1231,22 @@ function buildFibonacciCommittee(r: AnalysisResult): CommitteeResult {
     reasons.push("Fibonacci في سوق نطاق بدون Zone داعمة — إشارة ضعيفة");
   }
 
+  // ── RANGE without zone confluence → cap at WARN ───────────────────────────
+  if (r.marketStructure?.trendState === "RANGE" && !fa.confluenceWithZones) {
+    if (verdict !== "BLOCK") verdict = "WARN";
+    score = Math.min(score, 48);
+    reasons.push("Fibonacci في سوق نطاق بدون Zone داعمة — لا يكفي للدخول");
+  }
+
   // ── Confidence factor ─────────────────────────────────────────────────────
   score = Math.round(score * (0.5 + fa.confidence / 200));
+
+  // ── Swing UNKNOWN cap: max score 45, max verdict WARN ────────────────────
+  if (swingUnknown) {
+    score   = Math.min(score, 45);
+    verdict = verdict === "BLOCK" ? "BLOCK" : "WARN";
+  }
+
   score = Math.max(5, Math.min(90, score));
   if (verdict !== "BLOCK") verdict = score >= 60 ? "PASS" : "WARN";
 
@@ -2012,25 +2041,49 @@ function FibonacciSection({ fa }: { fa: FibonacciAnalysis }) {
         )}
       </div>
 
-      {/* Retracement levels compact */}
-      <div className="flex flex-wrap gap-1.5">
-        <span className="text-[10px] text-muted-foreground/70 w-full">مستويات التصحيح:</span>
-        {fa.retracementLevels.map((l) => (
-          <div
-            key={l.label}
-            title={`Fib ${l.label} — ${l.price.toFixed(5)} | بُعد: ${l.distanceFromCurrentPct.toFixed(2)}%`}
-            className={`flex flex-col items-center rounded border px-2 py-0.5 cursor-help ${
-              l.level === GOLDEN_LOW || l.level === GOLDEN_HIGH
-                ? "border-amber-500/40 bg-amber-500/8"
-                : "border-border bg-muted/5"
-            }`}
-          >
-            <span className={`text-[10px] font-bold font-mono ${levelColor(l)}`}>{l.label}</span>
-            <span className="text-[9px] text-muted-foreground/60 font-mono">{l.price.toFixed(5)}</span>
-            {l.nearCurrent && <span className="text-[8px] text-amber-400">◀ هنا</span>}
+      {/* Swing UNKNOWN notice */}
+      {fa.swing.direction === "UNKNOWN" && (
+        <div className="rounded border border-amber-500/30 bg-amber-500/8 px-2.5 py-1.5 text-[11px] text-amber-300/90">
+          ⚠ Swing غير مؤكد — Fibonacci للمراقبة فقط، لا يكفي للدخول وحده
+        </div>
+      )}
+
+      {/* Retracement levels — rank-based markers (only closest 1-2 get labels) */}
+      {(() => {
+        const closestLabel  = fa.nearestRetracementLevels[0]?.label;
+        const secondPct     = fa.nearestRetracementLevels[1]?.distanceFromCurrentPct ?? Infinity;
+        const secondLabel   = secondPct < 0.5 ? fa.nearestRetracementLevels[1]?.label : null;
+        const anyNear       = fa.nearestRetracementLevels.some((l) => l.nearCurrent);
+
+        return (
+          <div className="flex flex-wrap gap-1.5">
+            <span className="text-[10px] text-muted-foreground/70 w-full">
+              مستويات التصحيح:
+              {!anyNear && <span className="text-muted-foreground/45 ms-1">(لا يوجد مستوى قريب جداً)</span>}
+            </span>
+            {fa.retracementLevels.map((l) => {
+              const isClosest = l.label === closestLabel;
+              const isSecond  = l.label === secondLabel;
+              return (
+                <div
+                  key={l.label}
+                  title={`Fib ${l.label} — ${l.price.toFixed(5)} | بُعد: ${l.distanceFromCurrentPct.toFixed(2)}%`}
+                  className={`flex flex-col items-center rounded border px-2 py-0.5 cursor-help ${
+                    l.level === GOLDEN_LOW || l.level === GOLDEN_HIGH
+                      ? "border-amber-500/40 bg-amber-500/8"
+                      : "border-border bg-muted/5"
+                  }`}
+                >
+                  <span className={`text-[10px] font-bold font-mono ${levelColor(l)}`}>{l.label}</span>
+                  <span className="text-[9px] text-muted-foreground/60 font-mono">{l.price.toFixed(5)}</span>
+                  {isClosest && <span className="text-[8px] text-amber-400 font-semibold">الأقرب</span>}
+                  {!isClosest && isSecond && <span className="text-[8px] text-amber-300/60">قريب</span>}
+                </div>
+              );
+            })}
           </div>
-        ))}
-      </div>
+        );
+      })()}
 
       {/* Extension targets */}
       {topExtension.length > 0 && (
@@ -2641,6 +2694,11 @@ function buildPriceActionExecutionGuard(
       blockers.push("ممنوع التنفيذ: Fibonacci + Zone B3 يعارضان القرار بوضوح (Golden Zone عكسية)");
     } else if (fibConflict) {
       warnings.push(`Fibonacci (${fa.bias}) يعارض القرار (${finalDecision}) — مراجعة موصى بها`);
+    }
+
+    // WARN: swing UNKNOWN
+    if (fa.swing.direction === "UNKNOWN") {
+      warnings.push("Fibonacci للمراقبة فقط — اتجاه Swing غير مؤكد، لا يُعتمد عليه للدخول");
     }
 
     // WARN: Range + Mid + no Fib support
