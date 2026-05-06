@@ -240,6 +240,30 @@ type GoldenZone = {
   distanceFromCurrentPct: number;
 };
 
+// ── B5: Multi-Timeframe Consensus types (mirror multi-timeframe-consensus.ts) ─
+type TFBias = "bullish" | "bearish" | "neutral" | "unknown";
+
+type TimeframeSummary = {
+  timeframe:   string;
+  trendBias:   TFBias;
+  available:   boolean;
+  candleCount: number | undefined;
+  isEntry:     boolean;
+};
+
+type MultiTimeframeConsensus = {
+  timeframeSummaries:    TimeframeSummary[];
+  dominantTimeframe:     string | null;
+  higherTimeframeBias:   "bullish" | "bearish" | "neutral" | "mixed" | "unknown";
+  entryTimeframeBias:    TFBias;
+  alignmentScore:        number;
+  verdict:               "PASS" | "WARN" | "BLOCK";
+  bias:                  "BULLISH" | "BEARISH" | "NEUTRAL" | "MIXED";
+  reasons:               string[];
+  warnings:              string[];
+  blockers:              string[];
+};
+
 type FibonacciAnalysis = {
   bias:                          "BUY" | "SELL" | "NEUTRAL";
   swing:                         FibonacciSwing;
@@ -323,7 +347,8 @@ type AnalysisResult = {
   marketStructure?:     MarketStructureAnalysis;   // B1
   candlestickAnalysis?: CandlestickAnalysis;        // B2
   zonesAnalysis?:       ZonesAnalysis;              // B3
-  fibonacciAnalysis?:   FibonacciAnalysis;          // B4
+  fibonacciAnalysis?:        FibonacciAnalysis;          // B4
+  multiTimeframeConsensus?:  MultiTimeframeConsensus;   // B5
   reasons: string[];
   warnings: string[];
   error?: string;
@@ -536,19 +561,20 @@ type CommitteeResult = {
 
 // أوزان اللجان — مجموعها 1.0 — B4: أضيفت لجنة توافق Fibonacci
 const COMMITTEE_WEIGHTS: Record<string, number> = {
-  "market-state-data-quality": 0.11,  // B3.2 — critical
-  "market-structure":          0.18,  // B1
-  "candlestick-price-action":  0.12,  // B2
-  "zones-confluence":          0.12,  // B3
-  "fibonacci-confluence":      0.10,  // B4
-  "entry-quality":             0.12,
-  "trend":                     0.09,
-  "momentum":                  0.08,
-  "freshness":                 0.04,
-  "risk":                      0.03,
-  "protection":                0.01,
-}; // مجموع: 0.11+0.18+0.12+0.12+0.10+0.12+0.09+0.08+0.04+0.03+0.01 = 1.00
-// Price Action + Zones + Fib (0.18+0.12+0.12+0.10=0.52) > EMA/MACD (0.09+0.08=0.17) ✓
+  "market-state-data-quality":  0.10,  // B3.2 — critical
+  "market-structure":           0.16,  // B1
+  "candlestick-price-action":   0.11,  // B2
+  "zones-confluence":           0.11,  // B3
+  "fibonacci-confluence":       0.09,  // B4
+  "multi-timeframe-consensus":  0.10,  // B5 — context alignment
+  "entry-quality":              0.11,
+  "trend":                      0.08,
+  "momentum":                   0.07,
+  "freshness":                  0.04,
+  "risk":                       0.02,
+  "protection":                 0.01,
+}; // مجموع: 0.10+0.16+0.11+0.11+0.09+0.10+0.11+0.08+0.07+0.04+0.02+0.01 = 1.00
+// Price Action + Zones + Fib + MTF (0.16+0.11+0.11+0.09+0.10=0.57) > EMA/MACD (0.08+0.07=0.15) ✓
 
 // اللجان الحرجة التي تستطيع إصدار BLOCK فعّال على القرار
 const CRITICAL_COMMITTEES = new Set([
@@ -1258,6 +1284,54 @@ function buildFibonacciCommittee(r: AnalysisResult): CommitteeResult {
   };
 }
 
+// ── 12. لجنة توافق الفريمات — B5 ─────────────────────────────────────────────
+function buildMTFCommittee(r: AnalysisResult): CommitteeResult {
+  const mtf = r.multiTimeframeConsensus;
+
+  if (!mtf) {
+    return {
+      committeeId: "multi-timeframe-consensus", committeeName: "لجنة توافق الفريمات",
+      verdict: "WARN", score: 30,
+      summary: "توافق الفريمات غير متاح",
+      reasons: ["لم يُحسب توافق الفريمات — تحقق من مزامنة H4/H1/M30/M15"],
+    };
+  }
+
+  const reasons: string[] = [...mtf.reasons.slice(0, 3)];
+  let score   = 35;
+  let verdict: CommitteeResult["verdict"] = "WARN";
+
+  // ── Map MTF verdict directly ────────────────────────────────────────────
+  if (mtf.verdict === "BLOCK") {
+    verdict = "BLOCK"; score = 12;
+    for (const b of mtf.blockers.slice(0, 2)) reasons.push(`⛔ ${b}`);
+  } else if (mtf.verdict === "PASS") {
+    verdict = "PASS";
+    score   = mtf.alignmentScore >= 80 ? 78 :
+              mtf.alignmentScore >= 60 ? 65 : 52;
+  } else {
+    verdict = "WARN";
+    score   = mtf.alignmentScore >= 50 ? 42 : 28;
+    for (const w of mtf.warnings.slice(0, 2)) reasons.push(`⚠ ${w}`);
+  }
+
+  // ── Bonus for full alignment ────────────────────────────────────────────
+  if (mtf.higherTimeframeBias === "bullish" && r.direction === "bullish") {
+    score = Math.min(score + 10, 90);
+  } else if (mtf.higherTimeframeBias === "bearish" && r.direction === "bearish") {
+    score = Math.min(score + 10, 90);
+  }
+
+  score = Math.max(5, Math.min(90, score));
+
+  return {
+    committeeId: "multi-timeframe-consensus", committeeName: "لجنة توافق الفريمات",
+    verdict, score,
+    summary: `${mtf.higherTimeframeBias} | توافق: ${mtf.alignmentScore}% | ${mtf.verdict}`,
+    reasons: reasons.slice(0, 8),
+  };
+}
+
 // ── حساب الاحتمالية الموزونة من اللجان ──────────────────────────────────────
 function computeWeightedProbability(committees: CommitteeResult[]): number {
   let weightedSum = 0;
@@ -1327,6 +1401,7 @@ function buildDecisionSummary(r: AnalysisResult): DecisionSummary {
     buildCandlestickCommittee(r),       // B2
     buildZonesCommittee(r),             // B3
     buildFibonacciCommittee(r),         // B4
+    buildMTFCommittee(r),               // B5
   ];
 
   const probability = computeWeightedProbability(committees);
@@ -2140,6 +2215,110 @@ function FibonacciSection({ fa }: { fa: FibonacciAnalysis }) {
 const GOLDEN_LOW  = 0.5;
 const GOLDEN_HIGH = 0.618;
 
+// ── MTFSection — B5 ──────────────────────────────────────────────────────────
+function MTFSection({ mtf }: { mtf: MultiTimeframeConsensus }) {
+  const verdictColor = (v: string) =>
+    v === "PASS" ? "text-emerald-300" : v === "WARN" ? "text-amber-300" : "text-red-300";
+  const biasIcon = (b: TFBias) =>
+    b === "bullish" ? "↑" : b === "bearish" ? "↓" : b === "neutral" ? "↔" : "—";
+  const biasColor = (b: TFBias) =>
+    b === "bullish" ? "text-emerald-300" : b === "bearish" ? "text-red-300" :
+    b === "neutral" ? "text-sky-300" : "text-muted-foreground/50";
+
+  return (
+    <div className={`rounded-lg border p-4 space-y-3 ${
+      mtf.verdict === "BLOCK" ? "border-red-500/30 bg-red-500/[0.04]" :
+      mtf.verdict === "WARN"  ? "border-amber-500/25 bg-amber-500/[0.04]" :
+                                "border-indigo-500/25 bg-indigo-500/[0.04]"
+    }`}>
+      <div className="flex items-center justify-between gap-2">
+        <p className="text-sm font-bold text-indigo-200/90">توافق الفريمات — B5</p>
+        <div className="flex items-center gap-2">
+          <span className="text-[10px] text-muted-foreground/60 font-mono">
+            توافق: {mtf.alignmentScore}%
+          </span>
+          <span className={`text-[11px] font-bold ${verdictColor(mtf.verdict)}`}>
+            {mtf.verdict}
+          </span>
+        </div>
+      </div>
+
+      {/* Timeframe bias grid */}
+      <div className="grid grid-cols-4 gap-1.5">
+        {mtf.timeframeSummaries.map((s) => (
+          <div
+            key={s.timeframe}
+            className={`flex flex-col items-center rounded border py-1.5 px-1 text-center ${
+              s.isEntry ? "border-indigo-500/40 bg-indigo-500/10" : "border-border bg-muted/5"
+            }`}
+          >
+            <span className="text-[10px] text-muted-foreground font-mono">{s.timeframe}</span>
+            <span className={`text-base font-bold ${biasColor(s.trendBias)}`}>
+              {biasIcon(s.trendBias)}
+            </span>
+            <span className={`text-[9px] ${biasColor(s.trendBias)}`}>
+              {s.trendBias === "bullish" ? "صاعد" :
+               s.trendBias === "bearish" ? "هابط" :
+               s.trendBias === "neutral" ? "محايد" : "—"}
+            </span>
+            {s.isEntry && <span className="text-[8px] text-indigo-400/70 mt-0.5">دخول</span>}
+          </div>
+        ))}
+      </div>
+
+      {/* Key info row */}
+      <div className="grid grid-cols-2 gap-2">
+        <div className="flex flex-col gap-0.5">
+          <span className="text-[10px] text-muted-foreground">الفريم المتحكم</span>
+          <span className="text-sm font-semibold font-mono text-foreground">
+            {mtf.dominantTimeframe ?? "غير محدد"}
+          </span>
+        </div>
+        <div className="flex flex-col gap-0.5">
+          <span className="text-[10px] text-muted-foreground">انحياز السياق (H4/H1)</span>
+          <span className={`text-sm font-semibold ${biasColor(mtf.higherTimeframeBias as TFBias)}`}>
+            {mtf.higherTimeframeBias === "bullish" ? "↑ صاعد" :
+             mtf.higherTimeframeBias === "bearish" ? "↓ هابط" :
+             mtf.higherTimeframeBias === "mixed"   ? "⚡ متعارض" :
+             mtf.higherTimeframeBias === "neutral" ? "↔ محايد" : "غير متاح"}
+          </span>
+        </div>
+      </div>
+
+      {/* Blockers */}
+      {mtf.blockers.length > 0 && (
+        <ul className="space-y-0.5">
+          {mtf.blockers.map((b, i) => (
+            <li key={i} className="text-[11px] text-red-300/90 font-medium">✗ {b}</li>
+          ))}
+        </ul>
+      )}
+
+      {/* Warnings */}
+      {mtf.warnings.length > 0 && (
+        <ul className="space-y-0.5">
+          {mtf.warnings.map((w, i) => (
+            <li key={i} className="text-[11px] text-amber-300/80">⚠ {w}</li>
+          ))}
+        </ul>
+      )}
+
+      {/* Reasons (PASS only) */}
+      {mtf.verdict !== "BLOCK" && mtf.reasons.length > 0 && (
+        <ul className="space-y-0.5">
+          {mtf.reasons.slice(0, 3).map((r, i) => (
+            <li key={i} className="text-[11px] text-foreground/70">• {r}</li>
+          ))}
+        </ul>
+      )}
+
+      <p className="text-[9px] text-muted-foreground/40 border-t border-border/30 pt-1.5 italic">
+        B5: H4 يمثل السياق الكبير — H1 يمثل الهيكل — M30 تأكيد — M15 توقيت الدخول.
+      </p>
+    </div>
+  );
+}
+
 // ── CommitteeSummaryPreview — A22 ────────────────────────────────────────────
 // يعرض ملخص اللجان قبل الحفظ — قراءة فقط — لا useMutation — لا تنفيذ تداول
 function CommitteeSummaryPreview({ result }: { result: AnalysisResult }) {
@@ -2710,6 +2889,24 @@ function buildPriceActionExecutionGuard(
     if (fibSupports && fa.inGoldenZone) {
       reasons.push("Fibonacci Golden Zone يدعم القرار ✓");
     }
+  }
+
+  // ── ل) توافق الفريمات — B5 ────────────────────────────────────────────────
+  const mtf = result.multiTimeframeConsensus;
+  if (mtf) {
+    if (mtf.verdict === "BLOCK") {
+      for (const b of mtf.blockers.slice(0, 2)) {
+        blockers.push(`ممنوع التنفيذ (توافق الفريمات): ${b}`);
+      }
+    } else if (mtf.verdict === "WARN") {
+      for (const w of mtf.warnings.slice(0, 2)) {
+        warnings.push(w);
+      }
+    } else {
+      reasons.push(`توافق الفريمات ${mtf.alignmentScore}% يدعم القرار ✓`);
+    }
+  } else {
+    warnings.push("توافق الفريمات غير محسوب — تحقق من مزامنة H4/H1/M30/M15");
   }
 
   // ── ح) هامش من آخر response ───────────────────────────────────────────────
@@ -4055,6 +4252,11 @@ export function AnalysisControlPanel() {
                 {/* ── B4: توافق Fibonacci ───────────────────────────────────── */}
                 {result.fibonacciAnalysis && (
                   <FibonacciSection fa={result.fibonacciAnalysis} />
+                )}
+
+                {/* ── B5: توافق الفريمات ────────────────────────────────────── */}
+                {result.multiTimeframeConsensus && (
+                  <MTFSection mtf={result.multiTimeframeConsensus} />
                 )}
 
                 {/* ── A22: ملخص اللجان قبل الحفظ ───────────────────────────── */}

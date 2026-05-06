@@ -40,6 +40,10 @@ import {
   analyzeFibonacci,
   type FibonacciAnalysis,
 } from "@/lib/trading/mt5/fibonacci-analysis";
+import {
+  analyzeMultiTimeframeConsensus,
+  type MultiTimeframeConsensus,
+} from "@/lib/trading/mt5/multi-timeframe-consensus";
 
 export const dynamic = "force-dynamic";
 
@@ -131,9 +135,10 @@ type AnalysisResult = {
   dataQuality: { symbolPropsAvailable: boolean; indicatorsAvailable: boolean };
   freshness: { candleAgeMs?: number; stale: boolean };
   indicators?: IndicatorResult;
-  marketStateAnalysis?: MarketStateAnalysis;        // B3.2 (first — guards data quality)
-  marketStructure?:     MarketStructureAnalysis;   // B1
-  fibonacciAnalysis?:   FibonacciAnalysis;          // B4
+  marketStateAnalysis?:      MarketStateAnalysis;        // B3.2 (first — guards data quality)
+  marketStructure?:          MarketStructureAnalysis;   // B1
+  fibonacciAnalysis?:        FibonacciAnalysis;          // B4
+  multiTimeframeConsensus?:  MultiTimeframeConsensus;   // B5
   candlestickAnalysis?: CandlestickAnalysis;        // B2
   zonesAnalysis?:       ZonesAnalysis;              // B3
   reasons: string[];
@@ -414,9 +419,10 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   // ── B3.2/B1/B2/B3: fetch raw candles → state guard → closed candles → analysis ──
   let marketStateAnalysis: MarketStateAnalysis | undefined;
   let marketStructure:     MarketStructureAnalysis | undefined;
-  let candlestickAnalysis: CandlestickAnalysis     | undefined;
-  let zonesAnalysis:       ZonesAnalysis           | undefined;
-  let fibonacciAnalysis:   FibonacciAnalysis       | undefined;
+  let candlestickAnalysis:      CandlestickAnalysis      | undefined;
+  let zonesAnalysis:            ZonesAnalysis            | undefined;
+  let fibonacciAnalysis:        FibonacciAnalysis        | undefined;
+  let multiTimeframeConsensus:  MultiTimeframeConsensus  | undefined;
   if (selectedTimeframe) {
     let rawCandles: { time: number; open: number; high: number; low: number; close: number }[] = [];
     try {
@@ -482,6 +488,39 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
         }
       }
     }
+  }
+
+  // ── B5: Multi-Timeframe Consensus ────────────────────────────────────────
+  // Fetch any MTF timeframes not already in indicatorResults, then run consensus.
+  try {
+    const MTF_TFS = ["M15", "M30", "H1", "H4"] as const;
+    const mtfIndicators: Record<string, { status: string; trendBias?: string; candleCount?: number }> = {
+      ...indicatorResults,
+    };
+    const missing = MTF_TFS.filter((tf) => !mtfIndicators[tf] || mtfIndicators[tf]!.status !== "ok");
+    if (missing.length > 0) {
+      await Promise.all(
+        missing.map(async (tf) => {
+          try {
+            const res = await client.query(api.technicalIndicators.computeIndicatorsForSymbol, {
+              symbol,
+              timeframe: tf,
+              candleCount: 200,
+            });
+            const r = res as { status: string; trendBias?: string; candleCount?: number };
+            if (r.status === "ok") mtfIndicators[tf] = r;
+          } catch {
+            // non-blocking — leave missing
+          }
+        }),
+      );
+    }
+    multiTimeframeConsensus = analyzeMultiTimeframeConsensus(
+      mtfIndicators,
+      selectedTimeframe ?? manualTimeframe ?? "M15",
+    );
+  } catch {
+    // non-blocking
   }
 
   // ── build reasons and warnings ────────────────────────────────────────────
@@ -719,7 +758,8 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       candleAgeMs: ind.candleAgeMs,
     },
     marketStateAnalysis,  // B3.2 — undefined if fetch/compute failed
-    fibonacciAnalysis,    // B4 — undefined if fetch/compute failed
+    fibonacciAnalysis,           // B4 — undefined if fetch/compute failed
+    multiTimeframeConsensus,     // B5 — undefined if fetch/compute failed
     marketStructure,      // B1 — undefined if fetch/compute failed
     candlestickAnalysis,  // B2 — undefined if fetch/compute failed
     zonesAnalysis,        // B3 — undefined if fetch/compute failed

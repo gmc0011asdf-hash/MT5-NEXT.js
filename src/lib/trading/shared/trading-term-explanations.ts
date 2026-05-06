@@ -119,6 +119,17 @@ export const FIBONACCI_EXPLANATIONS: Record<string, string> = {
   "78.6%":     "تصحيح عميق — قد يدل على ضعف الموجة الأصلية.",
 };
 
+// ─── Multi-Timeframe (B5) ─────────────────────────────────────────────────────
+
+export const MTF_EXPLANATIONS: Record<string, string> = {
+  MultiTimeframeConsensus: "توافق الفريمات — يقارن H4/H1/M30/M15 لمنع الدخول ضد الاتجاه الأكبر.",
+  HigherTimeframeBias: "انحياز الفريم الأعلى — H4 وH1 هما المرجعان للسياق العام قبل توقيت الدخول على M15.",
+  EntryTimeframe: "فريم الدخول — الفريم الذي يُحدَّد منه توقيت الصفقة (عادةً M15 أو M30).",
+  DominantTimeframe: "الفريم المتحكم — أعلى فريم متاح بانحياز واضح (صاعد أو هابط).",
+  TimeframeConflict: "تعارض الفريمات — عندما يعطي فريم أعلى اتجاهاً معاكساً لفريم الدخول. يُفضي إلى WARN أو BLOCK.",
+  TimeframeAlignment: "توافق الفريمات — عندما تتفق H4/H1 مع اتجاه الدخول على M15، مما يعزز ثقة الإشارة.",
+};
+
 export function getTradingTermExplanation(term: string): string {
   const all: Record<string, string> = {
     ...STRUCTURE_POINT_EXPLANATIONS,
@@ -126,6 +137,7 @@ export function getTradingTermExplanation(term: string): string {
     ...ZONE_TYPE_EXPLANATIONS,
     ...PREMIUM_DISCOUNT_EXPLANATIONS,
     ...FIBONACCI_EXPLANATIONS,
+    ...MTF_EXPLANATIONS,
     BOS:    BOS_EXPLANATION,
     CHoCH:  CHOCH_EXPLANATION,
     ...TREND_STATE_EXPLANATIONS,
