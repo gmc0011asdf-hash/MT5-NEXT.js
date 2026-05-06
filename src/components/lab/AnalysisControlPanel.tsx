@@ -230,12 +230,88 @@ function statusColor(status: string): string {
 }
 
 function statusLabel(status: string): string {
-  if (status === "opportunity") return "فرصة متاحة ✓";
+  if (status === "opportunity") return "إشارة تقنية رُصدت";
   if (status === "stale_data") return "بيانات قديمة ⚠";
   if (status === "wait") return "انتظار — لا فرصة واضحة";
   if (status === "rejected") return "مرفوض";
   if (status === "insufficient_data") return "بيانات غير كافية";
   return status;
+}
+
+// ── B2.2: AnalysisDisplayStatus — حالة التحليل المنفصلة عن حالة التنفيذ ───────
+type AnalysisDisplayStatus = {
+  label:       string;
+  tone:        "success" | "warning" | "danger" | "neutral";
+  description: string;
+};
+
+function deriveAnalysisDisplayStatus(
+  result:  AnalysisResult,
+  summary: DecisionSummary | null,
+  guard:   PriceActionExecutionGuard | null,
+): AnalysisDisplayStatus {
+  // حارس التنفيذ يُقدَّم على كل شيء
+  if (guard && !guard.allowed) {
+    const firstBlocker = guard.blockers[0] ?? "حارس جودة التنفيذ رفض الصفقة";
+    return {
+      label:       "إشارة متضاربة — ممنوعة من التنفيذ",
+      tone:        "danger",
+      description: firstBlocker,
+    };
+  }
+
+  if (!summary) {
+    if (result.status === "opportunity") {
+      return { label: "إشارة تقنية — لم يُحسب الحارس", tone: "warning", description: "جارٍ التحقق من جودة الإشارة" };
+    }
+    if (result.status === "wait") {
+      return { label: "لا توجد فرصة واضحة", tone: "neutral", description: "انتظر إشارة أوضح" };
+    }
+    return { label: "بيانات غير كافية", tone: "neutral", description: "تحقق من مزامنة الشموع" };
+  }
+
+  const { grade, probability, finalDecision, committees } = summary;
+  const warnCount = committees.filter((c) => c.verdict === "WARN").length;
+
+  if (finalDecision === "HOLD" || finalDecision === "BLOCK") {
+    return {
+      label:       "لا توجد فرصة تنفيذ حالياً",
+      tone:        "neutral",
+      description: finalDecision === "BLOCK"
+        ? "أُغلقت الفرصة بسبب لجنة حرجة BLOCK"
+        : "انتظر إشارة أقوى — القرار: انتظار",
+    };
+  }
+
+  if ((grade === "A+" || grade === "A") && probability >= 68 && warnCount <= 1) {
+    return {
+      label:       "إشارة قوية قابلة للتنفيذ التجريبي",
+      tone:        "success",
+      description: `درجة ${grade} | احتمال ${probability}% | ${warnCount} تحذير`,
+    };
+  }
+
+  if (grade === "B" && probability >= 60) {
+    return {
+      label:       "إشارة قابلة للمراجعة",
+      tone:        "warning",
+      description: `درجة ${grade} | احتمال ${probability}% | ${warnCount} تحذير — راجع التحذيرات قبل التنفيذ`,
+    };
+  }
+
+  if (guard?.status === "WARN") {
+    return {
+      label:       "إشارة مع تحذيرات — مراجعة مطلوبة",
+      tone:        "warning",
+      description: `درجة ${grade} | احتمال ${probability}% | ${guard.warnings.length} تحذيرات تنفيذ`,
+    };
+  }
+
+  return {
+    label:       "إشارة ضعيفة أو متضاربة",
+    tone:        "danger",
+    description: `درجة ${grade} | احتمال ${probability}% — لا يستوفي شروط التنفيذ التجريبي`,
+  };
 }
 
 function directionLabel(dir?: string): string {
@@ -1778,21 +1854,43 @@ function TradePreviewPanel({ result }: { result: AnalysisResult }) {
   return (
     <div className="rounded-lg border border-border bg-card p-4 space-y-4">
 
-      {/* Header */}
+      {/* B2.2: Header — يعكس حالة الحارس بوضوح */}
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <p className="text-sm font-bold text-foreground">
+        <p className={`text-sm font-bold ${priceActionGuard.status === "BLOCK" ? "text-red-300" : "text-foreground"}`}>
           مراجعة أمر التداول — Demo Preview
+          {priceActionGuard.status === "BLOCK" && <span className="ms-1">— محظور ✗</span>}
         </p>
-        <span className="inline-flex items-center rounded-full border border-amber-500/20 bg-amber-500/10 px-2.5 py-0.5 text-xs font-medium text-amber-300">
-          Preview فقط — لا يُرسل أمر حقيقي
+        <span className={`inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-medium ${
+          priceActionGuard.status === "BLOCK"
+            ? "border-red-500/30 bg-red-500/10 text-red-300"
+            : priceActionGuard.status === "WARN"
+              ? "border-amber-500/20 bg-amber-500/10 text-amber-300"
+              : "border-emerald-500/20 bg-emerald-500/10 text-emerald-300"
+        }`}>
+          {priceActionGuard.status === "BLOCK"
+            ? "ممنوع التنفيذ ✗"
+            : priceActionGuard.status === "WARN"
+              ? "تحذيرات تنفيذ ⚠"
+              : "جاهز للمراجعة ✓"}
         </span>
       </div>
 
       {/* Allowed → تفاصيل الأمر */}
       {preview.allowed ? (
         <>
-          <div className="rounded-md border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-300">
-            ✓ الشروط متحققة — يمكن مراجعة الأرقام أدناه قبل أي قرار مستقبلي
+          {/* B2.2: banner — حالة شروط التنفيذ */}
+          <div className={`rounded-md border px-3 py-2 text-xs ${
+            priceActionGuard.status === "BLOCK"
+              ? "border-red-500/30 bg-red-500/10 text-red-300"
+              : priceActionGuard.status === "WARN"
+                ? "border-amber-500/30 bg-amber-500/10 text-amber-300"
+                : "border-emerald-500/30 bg-emerald-500/10 text-emerald-300"
+          }`}>
+            {priceActionGuard.status === "BLOCK"
+              ? "✗ ممنوع التنفيذ — حارس جودة التنفيذ رفض الصفقة"
+              : priceActionGuard.status === "WARN"
+                ? "⚠ الشروط الأساسية متحققة لكن توجد تحذيرات — راجع حارس الجودة أدناه"
+                : "✓ شروط التنفيذ والتحليل متوافقة — يمكن فتح المراجعة التجريبية"}
           </div>
 
           {/* بيانات الأمر */}
@@ -2772,10 +2870,28 @@ export function AnalysisControlPanel() {
             ) : (
               <div className="flex flex-col gap-5">
 
-                {/* حالة الفرصة */}
+                {/* B2.2: حالة التحليل (منفصلة عن حالة التنفيذ) */}
                 <div className="flex flex-wrap gap-4">
                   <Stat label="الزوج" value={result.symbol} />
-                  <Stat label="حالة الفرصة" value={<span className={statusColor(result.status)}>{statusLabel(result.status)}</span>} />
+                  {/* حالة التحليل — تأخذ في الحسبان guard + summary معاً */}
+                  {(() => {
+                    const s  = buildDecisionSummary(result);
+                    const p  = buildTradeOrderPreview(result, s);
+                    const g  = buildPriceActionExecutionGuard(result, s, p, null);
+                    const ds = deriveAnalysisDisplayStatus(result, s, g);
+                    const toneClass =
+                      ds.tone === "success" ? "text-emerald-400" :
+                      ds.tone === "warning" ? "text-amber-400"   :
+                      ds.tone === "danger"  ? "text-red-400"     :
+                                              "text-sky-400";
+                    return (
+                      <div className="flex flex-col gap-0.5">
+                        <span className="text-xs text-muted-foreground">حالة التحليل</span>
+                        <span className={`text-sm font-semibold ${toneClass}`}>{ds.label}</span>
+                        <span className="text-[10px] text-muted-foreground/65 leading-tight max-w-[280px]">{ds.description}</span>
+                      </div>
+                    );
+                  })()}
                   <Stat label="الفريم المختار" value={result.selectedTimeframe ?? "—"} />
                   <Stat label="الاتجاه" value={directionLabel(result.direction)} />
                 </div>
