@@ -94,6 +94,16 @@ const EQUITY_SENTIMENT_KEYWORDS = [
   "shares fall", "market cap", "shareholder", "dividend", "buyback",
 ];
 
+// B6.2.2: MACRO_USD requires EITHER "USD" in affectedSymbols OR specific macro keywords in headline.
+// Prevents equity/tech headlines from matching EURUSD/GBPUSD via the generic "GLOBAL" tag.
+const MACRO_USD_KEYWORDS = [
+  "fed ", "federal reserve", "fomc", "cpi ", "inflation", "interest rate",
+  "rate cut", "rate hike", "nfp", "nonfarm payroll", "jobs report", "unemployment",
+  "powell", "dollar index", " dollar ", " usd ", "treasury yield", "bond yield",
+  "yield curve", "recession", " gdp", "central bank", "monetary policy",
+  "balance sheet", "quantitative", "tapering",
+];
+
 const CRYPTO_PAIRS = new Set(["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLBTC"]);
 
 function headlineMatches(headline: string, keywords: string[]): boolean {
@@ -120,10 +130,17 @@ function matchSymbol(
     return { matches: true, matchType: "DIRECT" };
   }
 
-  // 3. MACRO_USD: any USD pair + news affects USD or GLOBAL
+  // 3. MACRO_USD: USD pair + news explicitly about USD/macro economy
+  // B6.2.2: GLOBAL alone is not sufficient — requires "USD" in affectedSymbols OR
+  // specific macro-economic keywords in the headline to prevent equity/tech news leaking onto EURUSD.
   const isUSDPair = symbol.includes("USD");
-  if (isUSDPair && (fa.includes("USD") || fa.includes("GLOBAL"))) {
-    return { matches: true, matchType: "MACRO_USD" };
+  if (isUSDPair) {
+    const hasMacroContext =
+      fa.includes("USD") ||
+      headlineMatches(item.headline, MACRO_USD_KEYWORDS);
+    if (hasMacroContext) {
+      return { matches: true, matchType: "MACRO_USD" };
+    }
   }
 
   // 4. MACRO_RISK: XAUUSD + global risk news
