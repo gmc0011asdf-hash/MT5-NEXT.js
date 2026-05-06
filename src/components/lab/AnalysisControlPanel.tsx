@@ -111,6 +111,55 @@ type MarketStructureAnalysis = {
   warnings:        string[];
 };
 
+// ── B2: Candlestick types (mirror candlestick-analysis.ts) ──────────────────
+type CandlePatternType =
+  | "BULLISH_ENGULFING" | "BEARISH_ENGULFING"
+  | "PIN_BAR_BULLISH"   | "PIN_BAR_BEARISH"
+  | "DOJI" | "STRONG_BULLISH_CLOSE" | "STRONG_BEARISH_CLOSE"
+  | "INSIDE_BAR"
+  | "LIQUIDITY_SWEEP_HIGH" | "LIQUIDITY_SWEEP_LOW"
+  | "FAKE_BREAKOUT_UP"     | "FAKE_BREAKOUT_DOWN";
+
+type CandlePattern = {
+  type:        CandlePatternType;
+  direction:   "BUY" | "SELL" | "NEUTRAL";
+  strength:    number;
+  candleIndex: number;
+  time:        number;
+  price:       number;
+  reason:      string;
+};
+
+type LatestCandleQuality = {
+  bodySize:         number;
+  upperWick:        number;
+  lowerWick:        number;
+  candleRange:      number;
+  bodyToRangeRatio: number;
+  wickToBodyRatio:  number;
+  isBullish:        boolean;
+};
+
+type WickRejection = {
+  detected:  boolean;
+  direction: "BUY" | "SELL" | null;
+  ratio:     number;
+  reason:    string;
+};
+
+type CandlestickAnalysis = {
+  bias:                   "BUY" | "SELL" | "NEUTRAL";
+  quality:                "STRONG" | "NORMAL" | "WEAK" | "SUSPICIOUS";
+  patterns:               CandlePattern[];
+  latestCandleQuality:    LatestCandleQuality | null;
+  wickRejection:          WickRejection;
+  fakeoutDetected:        boolean;
+  liquiditySweepDetected: boolean;
+  confidence:             number;
+  reasons:                string[];
+  warnings:               string[];
+};
+
 type AnalysisResult = {
   ok: boolean;
   readOnly: true;
@@ -132,7 +181,8 @@ type AnalysisResult = {
   dataQuality: { symbolPropsAvailable: boolean; indicatorsAvailable: boolean };
   freshness: { candleAgeMs?: number; stale: boolean };
   indicators?: IndicatorSnapshot;
-  marketStructure?: MarketStructureAnalysis;  // B1
+  marketStructure?:     MarketStructureAnalysis;   // B1
+  candlestickAnalysis?: CandlestickAnalysis;        // B2
   reasons: string[];
   warnings: string[];
   error?: string;
@@ -267,16 +317,17 @@ type CommitteeResult = {
   reasons:       string[];
 };
 
-// أوزان اللجان — مجموعها 1.0 — B1: أضيفت لجنة هيكل السوق
+// أوزان اللجان — مجموعها 1.0 — B2: أضيفت لجنة الشموع والسيولة
 const COMMITTEE_WEIGHTS: Record<string, number> = {
-  "trend":            0.15,   // مخفَّض — market-structure تأخذ جزءاً من دوره
-  "momentum":         0.15,
-  "entry-quality":    0.18,
-  "risk":             0.10,
-  "freshness":        0.12,
-  "protection":       0.05,
-  "market-structure": 0.25,   // B1 — أعلى وزن — price action حقيقي
-};
+  "trend":                    0.12,  // مخفَّض — price action أقوى
+  "momentum":                 0.12,
+  "entry-quality":            0.15,
+  "risk":                     0.08,
+  "freshness":                0.10,
+  "protection":               0.03,
+  "market-structure":         0.25,  // B1 — أعلى وزن
+  "candlestick-price-action": 0.15,  // B2 — price action مباشر
+}; // مجموع: 0.12+0.12+0.15+0.08+0.10+0.03+0.25+0.15 = 1.00
 
 // اللجان الحرجة التي تستطيع إصدار BLOCK فعّال على القرار
 const CRITICAL_COMMITTEES = new Set(["freshness", "entry-quality"]);
@@ -591,6 +642,120 @@ function buildMarketStructureCommittee(r: AnalysisResult): CommitteeResult {
   };
 }
 
+// ── 8. لجنة الشموع والسيولة — B2 ─────────────────────────────────────────────
+function buildCandlestickCommittee(r: AnalysisResult): CommitteeResult {
+  const cs = r.candlestickAnalysis;
+
+  if (!cs || cs.confidence === 0) {
+    return {
+      committeeId: "candlestick-price-action", committeeName: "لجنة الشموع والسيولة",
+      verdict: "WARN", score: 25,
+      summary: "تحليل الشموع غير متوفر",
+      reasons: ["لم يُحسب تحليل Candlestick — تحقق من مزامنة الشموع"],
+    };
+  }
+
+  const reasons: string[] = [];
+  let score = 35;
+  let verdict: CommitteeResult["verdict"] = "WARN";
+
+  // ── انحياز الشموع مع القرار ────────────────────────────────────────────────
+  const csMatchesBuy  = cs.bias === "BUY"  && r.direction === "bullish";
+  const csMatchesSell = cs.bias === "SELL" && r.direction === "bearish";
+  const csConflict    =
+    (cs.bias === "BUY"  && r.direction === "bearish") ||
+    (cs.bias === "SELL" && r.direction === "bullish");
+
+  if (csMatchesBuy || csMatchesSell) {
+    score += 20;
+    reasons.push(`انحياز الشموع (${cs.bias}) يتوافق مع القرار ✓`);
+  } else if (csConflict) {
+    score -= 15;
+    reasons.push(`⚠ انحياز الشموع (${cs.bias}) عكس القرار (${r.direction})`);
+  } else {
+    reasons.push("انحياز الشموع محايد");
+  }
+
+  // ── أنماط قوية تدعم أو تعارض ──────────────────────────────────────────────
+  const strongBuyPatterns  = cs.patterns.filter((p) => p.direction === "BUY"  && p.strength >= 75);
+  const strongSellPatterns = cs.patterns.filter((p) => p.direction === "SELL" && p.strength >= 75);
+
+  if ((r.direction === "bullish" && strongBuyPatterns.length > 0)) {
+    score += 12;
+    reasons.push(`${strongBuyPatterns.length} نمط شرائي قوي`);
+  }
+  if ((r.direction === "bearish" && strongSellPatterns.length > 0)) {
+    score += 12;
+    reasons.push(`${strongSellPatterns.length} نمط بيعي قوي`);
+  }
+  // Strong reversal AGAINST direction
+  const reversal = r.direction === "bullish" ? strongSellPatterns : strongBuyPatterns;
+  if (reversal.length > 0) {
+    score -= 18;
+    reasons.push(`⚠ ${reversal.length} نمط انعكاسي قوي ضد القرار`);
+  }
+
+  // ── Liquidity Sweep يدعم أو يعارض ─────────────────────────────────────────
+  if (cs.liquiditySweepDetected) {
+    const sweepBuy  = cs.patterns.some((p) => p.type === "LIQUIDITY_SWEEP_LOW");
+    const sweepSell = cs.patterns.some((p) => p.type === "LIQUIDITY_SWEEP_HIGH");
+    if ((sweepBuy && r.direction === "bullish") || (sweepSell && r.direction === "bearish")) {
+      score += 12;
+      reasons.push("سحب سيولة يدعم القرار ✓");
+    } else if ((sweepSell && r.direction === "bullish") || (sweepBuy && r.direction === "bearish")) {
+      score -= 12;
+      reasons.push("⚠ سحب سيولة ضد اتجاه القرار");
+    }
+  }
+
+  // ── Fakeout ────────────────────────────────────────────────────────────────
+  if (cs.fakeoutDetected) {
+    const fakeUp   = cs.patterns.some((p) => p.type === "FAKE_BREAKOUT_UP");
+    const fakeDown = cs.patterns.some((p) => p.type === "FAKE_BREAKOUT_DOWN");
+    if ((fakeUp && r.direction === "bearish") || (fakeDown && r.direction === "bullish")) {
+      score += 10;
+      reasons.push("Fakeout يدعم القرار (كسر وهمي عكس اتجاه الانعكاس) ✓");
+    } else if ((fakeUp && r.direction === "bullish") || (fakeDown && r.direction === "bearish")) {
+      score -= 15;
+      reasons.push("⚠ Fakeout ضد القرار — خطر انعكاس");
+    }
+  }
+
+  // ── BLOCK: Fakeout + Strong reversal معاً ─────────────────────────────────
+  const blockCondition =
+    cs.fakeoutDetected &&
+    reversal.length > 0 &&
+    csConflict;
+
+  if (blockCondition) {
+    verdict = "BLOCK";
+    reasons.push("حظر: Fakeout + نمط انعكاسي قوي ضد القرار");
+  }
+
+  // ── الجودة ────────────────────────────────────────────────────────────────
+  if (cs.quality === "STRONG") { score += 8; }
+  else if (cs.quality === "WEAK") { score -= 5; }
+  else if (cs.quality === "SUSPICIOUS") { score -= 8; verdict = verdict === "BLOCK" ? "BLOCK" : "WARN"; }
+
+  // ── Doji / Inside Bar → WARN ───────────────────────────────────────────────
+  const hasNeutral = cs.patterns.some((p) => p.type === "DOJI" || p.type === "INSIDE_BAR");
+  if (hasNeutral && verdict !== "BLOCK") {
+    verdict = "WARN";
+    score -= 5;
+    reasons.push("Doji أو Inside Bar — تردد في السوق");
+  }
+
+  score = Math.max(5, Math.min(90, Math.round(score * (0.5 + cs.confidence / 200))));
+  if (verdict !== "BLOCK") verdict = score >= 60 ? "PASS" : "WARN";
+
+  return {
+    committeeId: "candlestick-price-action", committeeName: "لجنة الشموع والسيولة",
+    verdict, score,
+    summary: `${cs.bias} | ${cs.quality} | ثقة: ${cs.confidence}% | أنماط: ${cs.patterns.length}`,
+    reasons: reasons.slice(0, 8),
+  };
+}
+
 // ── حساب الاحتمالية الموزونة من اللجان ──────────────────────────────────────
 function computeWeightedProbability(committees: CommitteeResult[]): number {
   let weightedSum = 0;
@@ -645,7 +810,8 @@ function buildDecisionSummary(r: AnalysisResult): DecisionSummary {
     buildRiskCommittee(r),
     buildFreshnessCommittee(r),
     buildProtectionCommittee(r),
-    buildMarketStructureCommittee(r),  // B1
+    buildMarketStructureCommittee(r),   // B1
+    buildCandlestickCommittee(r),       // B2
   ];
 
   const probability = computeWeightedProbability(committees);
@@ -847,6 +1013,142 @@ function MarketStructureSection({ ms }: { ms: MarketStructureAnalysis }) {
         <ul className="space-y-0.5">
           {ms.warnings.map((w, i) => (
             <li key={i} className="text-[11px] text-amber-300/80">⚠ {w}</li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+// ── CandlestickSection — B2 ───────────────────────────────────────────────────
+// يعرض تحليل الشموع والسيولة — قراءة فقط — لا تنفيذ تداول
+function CandlestickSection({ cs }: { cs: CandlestickAnalysis }) {
+  const biasColor = (b: string) => {
+    if (b === "BUY")  return "text-emerald-300";
+    if (b === "SELL") return "text-red-300";
+    return "text-muted-foreground";
+  };
+  const qualityColor = (q: string) => {
+    if (q === "STRONG")     return "text-emerald-400";
+    if (q === "NORMAL")     return "text-foreground";
+    if (q === "WEAK")       return "text-amber-400";
+    if (q === "SUSPICIOUS") return "text-orange-400";
+    return "text-muted-foreground";
+  };
+  const patternLabel: Record<string, string> = {
+    BULLISH_ENGULFING:    "Bullish Engulfing ↑",
+    BEARISH_ENGULFING:    "Bearish Engulfing ↓",
+    PIN_BAR_BULLISH:      "Pin Bar صاعد ↑",
+    PIN_BAR_BEARISH:      "Pin Bar هابط ↓",
+    DOJI:                 "Doji ↔",
+    STRONG_BULLISH_CLOSE: "إغلاق صاعد قوي ↑",
+    STRONG_BEARISH_CLOSE: "إغلاق هابط قوي ↓",
+    INSIDE_BAR:           "Inside Bar ↔",
+    LIQUIDITY_SWEEP_HIGH: "Sweep High ↓",
+    LIQUIDITY_SWEEP_LOW:  "Sweep Low ↑",
+    FAKE_BREAKOUT_UP:     "Fakeout Up ↓",
+    FAKE_BREAKOUT_DOWN:   "Fakeout Down ↑",
+  };
+  const patternDir: Record<string, string> = {
+    BUY: "text-emerald-300", SELL: "text-red-300", NEUTRAL: "text-sky-300",
+  };
+
+  // Top significant pattern (strongest, last candles)
+  const topPattern = cs.patterns
+    .filter((p) => p.direction !== "NEUTRAL")
+    .sort((a, b) => b.strength - a.strength)[0];
+
+  return (
+    <div className="rounded-lg border border-violet-500/20 bg-violet-500/[0.04] p-4 space-y-3">
+      <div className="flex items-center justify-between gap-2">
+        <p className="text-sm font-bold text-violet-200/90">تحليل الشموع والسيولة — B2</p>
+        <span className="text-[10px] text-muted-foreground/60 font-mono">
+          ثقة: {cs.confidence}% | أنماط: {cs.patterns.length}
+        </span>
+      </div>
+
+      {/* Key metrics */}
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+        <div className="flex flex-col gap-0.5">
+          <span className="text-[10px] text-muted-foreground">الانحياز</span>
+          <span className={`text-sm font-bold ${biasColor(cs.bias)}`}>{cs.bias}</span>
+        </div>
+        <div className="flex flex-col gap-0.5">
+          <span className="text-[10px] text-muted-foreground">جودة الشمعة</span>
+          <span className={`text-sm font-semibold ${qualityColor(cs.quality)}`}>{cs.quality}</span>
+        </div>
+        <div className="flex flex-col gap-0.5">
+          <span className="text-[10px] text-muted-foreground">Liquidity Sweep</span>
+          <span className={`text-sm font-semibold ${cs.liquiditySweepDetected ? "text-orange-400" : "text-muted-foreground/50"}`}>
+            {cs.liquiditySweepDetected ? "مكتشف ⚠" : "لا"}
+          </span>
+        </div>
+        <div className="flex flex-col gap-0.5">
+          <span className="text-[10px] text-muted-foreground">Fake Breakout</span>
+          <span className={`text-sm font-semibold ${cs.fakeoutDetected ? "text-red-400" : "text-muted-foreground/50"}`}>
+            {cs.fakeoutDetected ? "مكتشف ⚠" : "لا"}
+          </span>
+        </div>
+      </div>
+
+      {/* Wick rejection */}
+      {cs.wickRejection.detected && (
+        <div className={`flex items-center gap-2 rounded border px-2.5 py-1.5 text-[11px] ${
+          cs.wickRejection.direction === "BUY"
+            ? "border-emerald-500/30 bg-emerald-500/8 text-emerald-300"
+            : "border-red-500/30 bg-red-500/8 text-red-300"
+        }`}>
+          <span className="font-semibold">رفض الذيل:</span>
+          <span>{cs.wickRejection.reason}</span>
+        </div>
+      )}
+
+      {/* Top pattern */}
+      {topPattern && (
+        <div className={`flex items-center justify-between rounded border px-2.5 py-1.5 text-[11px] border-border bg-muted/10`}>
+          <span className="text-muted-foreground">أهم نمط:</span>
+          <span className={`font-semibold ${patternDir[topPattern.direction] ?? ""}`}>
+            {patternLabel[topPattern.type] ?? topPattern.type}
+          </span>
+          <span className="text-muted-foreground/60 font-mono">قوة: {topPattern.strength}</span>
+        </div>
+      )}
+
+      {/* All patterns (compact) */}
+      {cs.patterns.length > 0 && (
+        <div className="flex flex-wrap gap-1">
+          <span className="text-[10px] text-muted-foreground/70 w-full">الأنماط المكتشفة:</span>
+          {cs.patterns.slice(-8).map((p, i) => (
+            <span key={i} className={`rounded border px-1.5 py-0.5 text-[10px] font-medium ${patternDir[p.direction] ?? ""} border-current/20`}>
+              {patternLabel[p.type] ?? p.type}
+            </span>
+          ))}
+        </div>
+      )}
+
+      {/* Latest candle metrics */}
+      {cs.latestCandleQuality && (
+        <div className="grid grid-cols-3 gap-x-3 gap-y-0.5 text-[10px] text-muted-foreground/70 font-mono">
+          <span>جسم: {(cs.latestCandleQuality.bodyToRangeRatio * 100).toFixed(0)}%</span>
+          <span>ذيل ↑: {cs.latestCandleQuality.upperWick.toFixed(5)}</span>
+          <span>ذيل ↓: {cs.latestCandleQuality.lowerWick.toFixed(5)}</span>
+        </div>
+      )}
+
+      {/* Reasons */}
+      {cs.reasons.length > 0 && (
+        <ul className="space-y-0.5">
+          {cs.reasons.slice(0, 5).map((r, i) => (
+            <li key={i} className="text-[11px] text-foreground/70">• {r}</li>
+          ))}
+        </ul>
+      )}
+
+      {/* Warnings */}
+      {cs.warnings.length > 0 && (
+        <ul className="space-y-0.5">
+          {cs.warnings.map((w, i) => (
+            <li key={i} className="text-[11px] text-amber-300/80">{w}</li>
           ))}
         </ul>
       )}
@@ -2298,6 +2600,11 @@ export function AnalysisControlPanel() {
                 {/* ── B1: هيكل السوق ───────────────────────────────────────── */}
                 {result.marketStructure && (
                   <MarketStructureSection ms={result.marketStructure} />
+                )}
+
+                {/* ── B2: تحليل الشموع والسيولة ────────────────────────────── */}
+                {result.candlestickAnalysis && (
+                  <CandlestickSection cs={result.candlestickAnalysis} />
                 )}
 
                 {/* ── A22: ملخص اللجان قبل الحفظ ───────────────────────────── */}

@@ -24,6 +24,10 @@ import {
   analyzeMarketStructure,
   type MarketStructureAnalysis,
 } from "@/lib/trading/mt5/market-structure";
+import {
+  analyzeCandlestick,
+  type CandlestickAnalysis,
+} from "@/lib/trading/mt5/candlestick-analysis";
 
 export const dynamic = "force-dynamic";
 
@@ -115,7 +119,8 @@ type AnalysisResult = {
   dataQuality: { symbolPropsAvailable: boolean; indicatorsAvailable: boolean };
   freshness: { candleAgeMs?: number; stale: boolean };
   indicators?: IndicatorResult;
-  marketStructure?: MarketStructureAnalysis;  // B1
+  marketStructure?:     MarketStructureAnalysis;   // B1
+  candlestickAnalysis?: CandlestickAnalysis;        // B2
   reasons: string[];
   warnings: string[];
 };
@@ -391,11 +396,13 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     }
   }
 
-  // ── B1: fetch raw candles and compute market structure ───────────────────
-  let marketStructure: MarketStructureAnalysis | undefined;
+  // ── B1/B2: fetch raw candles → market structure + candlestick analysis ──
+  let marketStructure:     MarketStructureAnalysis | undefined;
+  let candlestickAnalysis: CandlestickAnalysis     | undefined;
   if (selectedTimeframe) {
+    let rawCandles: { time: number; open: number; high: number; low: number; close: number }[] = [];
     try {
-      const rawCandles = await client.query(api.mt5CandlesQuery.getCandlesForStructure, {
+      rawCandles = await client.query(api.mt5CandlesQuery.getCandlesForStructure, {
         symbol,
         timeframe: selectedTimeframe,
         limit: candleCount,
@@ -403,6 +410,13 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       marketStructure = analyzeMarketStructure(rawCandles);
     } catch {
       // non-blocking — market structure enriches analysis but is not required
+    }
+    if (rawCandles.length >= 2) {
+      try {
+        candlestickAnalysis = analyzeCandlestick(rawCandles, marketStructure);
+      } catch {
+        // non-blocking — candlestick analysis is enrichment only
+      }
     }
   }
 
@@ -640,7 +654,8 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       latestCandleTime: ind.latestCandleTime,
       candleAgeMs: ind.candleAgeMs,
     },
-    marketStructure,  // B1 — undefined if fetch/compute failed
+    marketStructure,      // B1 — undefined if fetch/compute failed
+    candlestickAnalysis,  // B2 — undefined if fetch/compute failed
     reasons,
     warnings,
   };
