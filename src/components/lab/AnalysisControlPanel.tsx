@@ -3949,7 +3949,13 @@ function getMissingFields(r: AnalysisResult | null): string[] {
 // Component
 // ---------------------------------------------------------------------------
 
-export function AnalysisControlPanel() {
+export function AnalysisControlPanel({
+  lockedSymbol,
+  mode = "general",
+}: {
+  lockedSymbol?: string;
+  mode?: "general" | "gold";
+} = {}) {
   // ── Convex auth + enabled-lab-symbols ──────────────────────────────────
   const { isLoading: authLoading, isAuthenticated } = useConvexAuth();
   const canQuery = !authLoading && isAuthenticated;
@@ -3982,7 +3988,7 @@ export function AnalysisControlPanel() {
   const saveDecision = useMutation(api.decisionJournal.saveAnalysisDecision);
 
   // ── form state ─────────────────────────────────────────────────────────
-  const [symbol, setSymbol] = useState<string>("");
+  const [symbol, setSymbol] = useState<string>(lockedSymbol ?? "");
   const [timeframeMode, setTimeframeMode] = useState<"manual" | "auto">("manual");
   const [manualTF, setManualTF] = useState<TF>("M15");
   const [candidateTFs, setCandidateTFs] = useState<Set<TF>>(new Set(["M15", "H1", "H4"]));
@@ -4005,8 +4011,13 @@ export function AnalysisControlPanel() {
   const [savedDuplicate, setSavedDuplicate] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
 
-  // Auto-select: when allowedSymbols loads/changes, keep selection valid
+  // Auto-select: when allowedSymbols loads/changes, keep selection valid.
+  // When lockedSymbol is set, always keep it as the selected symbol.
   useEffect(() => {
+    if (lockedSymbol) {
+      setSymbol(lockedSymbol);
+      return;
+    }
     if (allowedSymbols.length === 0) {
       setSymbol("");
       return;
@@ -4014,10 +4025,19 @@ export function AnalysisControlPanel() {
     if (!allowedSymbols.includes(symbol)) {
       setSymbol(allowedSymbols[0]!);
     }
-  }, [allowedSymbols]); // intentionally omit `symbol` to avoid loop
+  }, [allowedSymbols, lockedSymbol]); // intentionally omit `symbol` to avoid loop
 
-  const noAllowedSymbols = !symbolsLoading && allowedSymbols.length === 0;
-  const canAnalyze = !busy && symbol !== "" && allowedSymbols.includes(symbol);
+  const lockedSymbolMissing =
+    !!lockedSymbol &&
+    !symbolsLoading &&
+    !allowedSymbols.includes(lockedSymbol) &&
+    !localStorageSymbols.includes(lockedSymbol);
+
+  const noAllowedSymbols = !symbolsLoading && !lockedSymbol && allowedSymbols.length === 0;
+  const canAnalyze =
+    !busy &&
+    symbol !== "" &&
+    (lockedSymbol ? !lockedSymbolMissing : allowedSymbols.includes(symbol));
 
   // A16: save-readiness
   const missingFields = getMissingFields(result);
@@ -4155,11 +4175,13 @@ export function AnalysisControlPanel() {
         </CardHeader>
         <CardContent className="px-4 py-4 md:px-6">
 
-          {noAllowedSymbols && (
+          {(noAllowedSymbols || lockedSymbolMissing) && (
             <div className="mb-4 rounded-md border border-amber-500/20 bg-amber-500/5 px-4 py-3 text-sm text-amber-200/90">
-              {!authLoading && !isAuthenticated
-                ? "لا توجد أزواج محلية — اختر أزواجًا من الإعدادات (لا تتطلب تسجيل دخول)"
-                : "لا توجد أزواج مفعّلة للتحليل — فعّل الأزواج من الإعدادات"}
+              {lockedSymbolMissing
+                ? `${lockedSymbol} غير مفعّل في Market Watch أو الإعدادات — أضفه أولاً لبدء التحليل`
+                : !authLoading && !isAuthenticated
+                  ? "لا توجد أزواج محلية — اختر أزواجًا من الإعدادات (لا تتطلب تسجيل دخول)"
+                  : "لا توجد أزواج مفعّلة للتحليل — فعّل الأزواج من الإعدادات"}
             </div>
           )}
 
@@ -4168,7 +4190,12 @@ export function AnalysisControlPanel() {
             {/* الزوج */}
             <div className="flex flex-col gap-1">
               <label className="text-sm font-medium text-muted-foreground">الزوج</label>
-              {symbolsLoading ? (
+              {lockedSymbol ? (
+                <div className="flex items-center gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 h-10">
+                  <span className="font-bold text-amber-200 tabular-nums text-sm">{lockedSymbol}</span>
+                  <span className="text-[10px] text-amber-400/60 border border-amber-500/20 rounded px-1 py-0.5">مقيّد</span>
+                </div>
+              ) : symbolsLoading ? (
                 <p className="text-xs text-muted-foreground py-2">جاري تحميل الأزواج…</p>
               ) : (
                 <Select
