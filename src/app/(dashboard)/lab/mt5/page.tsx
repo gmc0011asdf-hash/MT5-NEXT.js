@@ -1,28 +1,33 @@
 "use client";
 
 /**
- * /lab/mt5 — المختبر المؤسسي — Gold Institutional Mode
- * Stage 5A: تحليل الفرصة عبر AnalysisControlPanel — قراءة فقط.
+ * /lab/mt5 — MT5 General Lab — المختبر العام
+ * مختبر التحليل العام لجميع الرموز المفعّلة في Market Watch.
+ * للذهب فقط: راجع /gold — Gold Command Center.
  * لا تنفيذ تداول — لا order_send — لا mutations هنا.
  */
 
 import { AnalysisControlPanel } from "@/components/lab/AnalysisControlPanel";
-import { GoldStatusCard } from "@/components/lab/GoldStatusCard";
 
 export default function LabPage() {
   return (
     <div className="mx-auto flex max-w-7xl flex-col gap-6">
 
       <div>
-        <h2 className="page-title">المختبر المؤسسي — وضع الذهب</h2>
+        <h2 className="page-title">MT5 General Lab</h2>
         <p className="label-secondary mt-1">
-          تحليل XAUUSD المؤسسي — قراءة فقط — لا يتم تنفيذ أي تداول.
+          مختبر تحليل عام لجميع رموز MT5 المفعّلة — قراءة فقط — لا يتم تنفيذ أي تداول.
+        </p>
+        <p className="mt-1 text-xs text-muted-foreground/60">
+          للتحليل المؤسسي على XAUUSD:{" "}
+          <a href="/gold" className="text-amber-300 underline underline-offset-2 hover:text-amber-200">
+            Gold Command Center ←
+          </a>
         </p>
       </div>
 
       {/* Gold Institutional Mode — حالة الذهب ومحرك القرار */}
       <GoldStatusCard />
-
 
       {/* Stage 5A: لوحة تحليل الفرصة */}
       <AnalysisControlPanel />
