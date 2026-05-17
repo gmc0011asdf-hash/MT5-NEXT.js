@@ -1,7 +1,28 @@
 # TASKS — نظام الملك الهندسي للتداول العالمي
 
 > Format: Stage | Task | Files | Risk | Test | Manual check | Done criteria  
-> Updated: 2026-04-28
+> Updated: 2026-05-17 (تحديث ما بعد المراجعة الأمنية - بدء مرحلة Fix-0)
+
+---
+
+## Security & Fixes Roadmap (مراحل الإصلاح الأمنية والتنظيمية)
+
+بناءً على التقرير التقني الشامل، تم إيقاف تقدم خارطة الطريق مؤقتاً لتنفيذ الإصلاحات التالية:
+
+### Fix-0 — Environment & Context Stabilization
+- [✅] **إنشاء `.env.local.example`**: توثيق المتغيرات المطلوبة.
+- [✅] **تحديث التوثيق**: تحديث `PROJECT_CONTEXT.md` و `TASKS.md`.
+
+### Fix-1 — Security Hotfixes
+- [⏳] **مصادقة البروكسي**: إضافة `Clerk Auth` لمسارات `api/mt5-readonly`.
+- [⏳] **عزل البيانات**: تأمين `userId` filtering في جميع جداول Convex و Queries.
+
+### Fix-2 — Database Maintenance
+- [⏳] **نمو غير محدود**: إضافة Convex Cron Jobs لتنظيف `mt5AccountSnapshots` و `mt5MarketTicks`.
+
+### Fix-3 — Frontend Polish
+- [⏳] **استكمال النواقص**: إكمال `Decision Journal Placeholder` و `OKX Placeholder`.
+- [⏳] **RTL Fixes**: حل المشاكل البصرية الطفيفة في الواجهة.
 
 ---
 

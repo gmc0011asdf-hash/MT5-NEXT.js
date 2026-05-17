@@ -101,7 +101,12 @@ export default function SettingsPage() {
   const syncSnapshotMutation = useMutation(api.mt5Bridge.syncReadOnlySnapshotFromLocalService);
   const updateSymbolMutation = useMutation(api.mt5Bridge.updateMySymbolSetting);
 
-  const mt5Symbols = useQuery(api.coreQueries.getMyMt5SymbolsWithSettings, canUseConvex ? {} : "skip");
+  // Fix-2: getMyMt5SymbolsWithSettings is heavy (reads ~500 symbol docs) — make it lazy
+  const [cloudSymbolsRequested, setCloudSymbolsRequested] = useState(false);
+  const mt5Symbols = useQuery(
+    api.coreQueries.getMyMt5SymbolsWithSettings,
+    canUseConvex && cloudSymbolsRequested ? {} : "skip",
+  );
   const auditEvents = useQuery(api.coreQueries.getMyAuditEvents, canUseConvex ? {} : "skip");
   const mt5Summary = useQuery(api.coreQueries.getMyMt5ReadOnlySummary, canUseConvex ? {} : "skip");
   const governance = useQuery(api.coreQueries.getMyGovernanceState, canUseConvex ? {} : "skip");
@@ -123,6 +128,26 @@ export default function SettingsPage() {
 
   useEffect(() => {
     setDemoSettings(loadDemoSettings());
+  }, []);
+
+  // ── Local symbols fallback (when Convex auth is unavailable) ───────────────
+  const LOCAL_SYMBOLS_KEY = "mt5:selectedAnalysisSymbols";
+  type LocalSymbolRow = { name: string; description?: string };
+  const [localApiSymbols, setLocalApiSymbols] = useState<LocalSymbolRow[]>([]);
+  const [localApiLoading, setLocalApiLoading] = useState(false);
+  const [localApiError, setLocalApiError] = useState<string | null>(null);
+  const [localSelectedSymbols, setLocalSelectedSymbols] = useState<Set<string>>(new Set());
+
+  useEffect(() => {
+    try {
+      const stored = localStorage.getItem(LOCAL_SYMBOLS_KEY);
+      if (stored) {
+        const parsed = JSON.parse(stored) as unknown;
+        if (Array.isArray(parsed)) {
+          setLocalSelectedSymbols(new Set(parsed.filter((s): s is string => typeof s === "string")));
+        }
+      }
+    } catch { /* ignore */ }
   }, []);
 
   const filteredSymbols = useMemo(() => {
@@ -256,6 +281,38 @@ export default function SettingsPage() {
     setDemoSettings((prev) => {
       const next = { ...prev, [key]: value };
       saveDemoSettings(next);
+      return next;
+    });
+  }
+
+  async function fetchSymbolsLocally() {
+    setLocalApiLoading(true);
+    setLocalApiError(null);
+    try {
+      const res = await fetch("/api/mt5-readonly/symbols?visibleOnly=true", { cache: "no-store" });
+      const payload = (await res.json()) as Record<string, unknown>;
+      if (!res.ok || payload.connected === false) {
+        setLocalApiError(typeof payload.error === "string" ? payload.error : "فشل جلب الرموز من الخدمة المحلية.");
+        return;
+      }
+      const list = dedupeSymbolsByName(Array.isArray(payload.symbols) ? payload.symbols : []);
+      setLocalApiSymbols(
+        list
+          .map((r) => ({ name: String(r.name ?? ""), description: r.description != null ? String(r.description) : undefined }))
+          .filter((r) => r.name.length > 0),
+      );
+    } catch {
+      setLocalApiError("فشل الاتصال بخدمة MT5 المحلية.");
+    } finally {
+      setLocalApiLoading(false);
+    }
+  }
+
+  function toggleLocalSymbol(name: string) {
+    setLocalSelectedSymbols((prev) => {
+      const next = new Set(prev);
+      if (next.has(name)) { next.delete(name); } else { next.add(name); }
+      try { localStorage.setItem(LOCAL_SYMBOLS_KEY, JSON.stringify([...next])); } catch { /* ignore */ }
       return next;
     });
   }
@@ -463,23 +520,51 @@ export default function SettingsPage() {
       </Section>
 
       <Section title="إعدادات الرموز والأزواج (Symbols)">
-        <p className="rounded-xl border border-amber-500/20 bg-amber-500/5 px-3 py-2 text-amber-100/90 text-xs leading-relaxed mb-4">
+        <p className="rounded-xl border border-amber-500/20 bg-amber-500/5 px-3 py-2 text-amber-100/90 text-xs leading-relaxed mb-2">
           تظهر هنا فقط الرموز المعروضة في Market Watch داخل MT5. لإضافة رمز جديد، أظهره أولًا في MT5 ثم أعد المزامنة.
         </p>
+        <p className="rounded-xl border border-zinc-500/20 bg-zinc-500/5 px-3 py-2 text-zinc-300/80 text-xs mb-4">
+          Convex usage guard: الرموز السحابية لا تُحمَّل تلقائياً — اضغط &quot;تحميل&quot; أو &quot;مزامنة&quot; عند الحاجة.
+        </p>
         <div className="flex flex-wrap items-center gap-3 mb-4">
-          <Button
-            type="button"
-            variant="outline"
-            disabled={!canUseConvex || syncBusy}
-            onClick={() => void syncPairsFromMt5()}
-          >
-            {syncBusy ? "جاري المزامنة…" : "مزامنة الرموز الظاهرة في MT5"}
-          </Button>
+          {canUseConvex ? (
+            <div className="flex flex-wrap gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                disabled={syncBusy}
+                onClick={() => { setCloudSymbolsRequested(true); void syncPairsFromMt5(); }}
+              >
+                {syncBusy ? "جاري المزامنة…" : "مزامنة الرموز وحفظها في السحابة"}
+              </Button>
+              {!cloudSymbolsRequested && (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  onClick={() => setCloudSymbolsRequested(true)}
+                >
+                  تحميل الرموز من السحابة فقط
+                </Button>
+              )}
+            </div>
+          ) : (
+            <Button
+              type="button"
+              variant="outline"
+              disabled={localApiLoading}
+              onClick={() => void fetchSymbolsLocally()}
+            >
+              {localApiLoading ? "جاري الجلب…" : "جلب الرموز من MT5 المحلي"}
+            </Button>
+          )}
           {syncProgress ? (
             <span className="text-muted-foreground text-xs leading-snug tabular-nums">{syncProgress}</span>
           ) : null}
           {syncMessage ? (
             <span className="text-muted-foreground text-xs leading-snug">{syncMessage}</span>
+          ) : null}
+          {localApiError ? (
+            <span className="text-rose-300/90 text-xs leading-snug">{localApiError}</span>
           ) : null}
         </div>
 
@@ -498,7 +583,72 @@ export default function SettingsPage() {
         </div>
 
         {!canUseConvex && !isConvexAuthLoading ? (
-          <p className="text-muted-foreground text-sm">سجّل الدخول لمزامنة الأزواج من الخدمة المحلية.</p>
+          <div className="space-y-3">
+            <div className="rounded-xl border border-amber-500/20 bg-amber-500/5 px-3 py-2 text-amber-200/90 text-sm">
+              الحفظ السحابي غير متاح حاليًا — يمكن استخدام الاختيار المحلي مؤقتًا.
+            </div>
+            {localApiSymbols.length > 0 && !localApiSymbols.some((s) => s.name === "XAUUSD") && (
+              <div className="rounded-xl border border-rose-500/20 bg-rose-500/5 px-3 py-2 text-rose-200/90 text-sm">
+                XAUUSD غير ظاهر في Market Watch — فعّله من MT5 ثم أعد المزامنة.
+              </div>
+            )}
+            {localApiSymbols.some((s) => s.name === "XAUUSD") && (
+              <div className="rounded-xl border border-amber-400/30 bg-amber-400/10 px-3 py-2 text-amber-100 text-sm font-medium">
+                ✓ XAUUSD ظاهر في Market Watch
+              </div>
+            )}
+            {localApiSymbols.length === 0 ? (
+              <p className="text-muted-foreground text-sm">
+                اضغط &quot;جلب الرموز من MT5 المحلي&quot; لعرض الأزواج المتاحة.
+              </p>
+            ) : (
+              <div className="space-y-2">
+                <div className="overflow-x-auto rounded-xl border border-amber-500/10">
+                  <Table>
+                    <TableHeader>
+                      <TableRow className="border-amber-500/10 hover:bg-transparent">
+                        <TableHead className="text-foreground">الرمز</TableHead>
+                        <TableHead className="text-foreground">الوصف</TableHead>
+                        <TableHead className="text-foreground">للمختبر (محلي)</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {localApiSymbols.slice(0, DISPLAY_ROW_CAP).map((row) => (
+                        <TableRow
+                          key={row.name}
+                          className={`border-border/60 ${row.name === "XAUUSD" ? "bg-amber-500/5" : ""}`}
+                        >
+                          <TableCell className={`font-medium tabular-nums ${row.name === "XAUUSD" ? "text-amber-300" : "text-amber-100/90"}`}>
+                            {row.name === "XAUUSD" && <span className="ml-1">★</span>}
+                            {row.name}
+                          </TableCell>
+                          <TableCell className="max-w-[200px] text-muted-foreground text-xs">
+                            {row.description ?? "—"}
+                          </TableCell>
+                          <TableCell>
+                            <SymbolToggleSwitch
+                              checked={localSelectedSymbols.has(row.name)}
+                              label={`اختيار ${row.name} للمختبر محلياً`}
+                              onToggle={() => toggleLocalSymbol(row.name)}
+                            />
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
+                {localSelectedSymbols.size > 0 && (
+                  <p className="text-xs text-muted-foreground">
+                    الأزواج المختارة محلياً ({localSelectedSymbols.size}): {[...localSelectedSymbols].join(" · ")}
+                  </p>
+                )}
+              </div>
+            )}
+          </div>
+        ) : !cloudSymbolsRequested ? (
+          <p className="text-muted-foreground text-sm">
+            اضغط &quot;تحميل الرموز من السحابة فقط&quot; لعرض الأزواج المخزنة — أو &quot;مزامنة&quot; للتحديث.
+          </p>
         ) : isConvexAuthLoading || mt5Symbols === undefined ? (
           <p className="text-muted-foreground text-sm">جاري تحميل بيانات الأزواج…</p>
         ) : mt5Symbols.length === 0 ? (

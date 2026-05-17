@@ -3960,7 +3960,23 @@ export function AnalysisControlPanel() {
     canQuery ? {} : "skip",
   );
   const symbolsLoading = canQuery && enabledSymbols === undefined;
-  const allowedSymbols: string[] = enabledSymbols ?? [];
+
+  // Fallback: read from localStorage when Convex auth is unavailable
+  const [localStorageSymbols, setLocalStorageSymbols] = useState<string[]>([]);
+  useEffect(() => {
+    if (canQuery) return;
+    try {
+      const stored = localStorage.getItem("mt5:selectedAnalysisSymbols");
+      if (stored) {
+        const parsed = JSON.parse(stored) as unknown;
+        if (Array.isArray(parsed)) {
+          setLocalStorageSymbols(parsed.filter((s): s is string => typeof s === "string"));
+        }
+      }
+    } catch { /* ignore */ }
+  }, [canQuery]);
+
+  const allowedSymbols: string[] = enabledSymbols ?? (canQuery ? [] : localStorageSymbols);
 
   // ── A16: save mutation — لا تنفيذ تداول ────────────────────────────────
   const saveDecision = useMutation(api.decisionJournal.saveAnalysisDecision);
@@ -4141,7 +4157,9 @@ export function AnalysisControlPanel() {
 
           {noAllowedSymbols && (
             <div className="mb-4 rounded-md border border-amber-500/20 bg-amber-500/5 px-4 py-3 text-sm text-amber-200/90">
-              لا توجد أزواج مفعّلة للتحليل — فعّل الأزواج من الإعدادات
+              {!authLoading && !isAuthenticated
+                ? "لا توجد أزواج محلية — اختر أزواجًا من الإعدادات (لا تتطلب تسجيل دخول)"
+                : "لا توجد أزواج مفعّلة للتحليل — فعّل الأزواج من الإعدادات"}
             </div>
           )}
 

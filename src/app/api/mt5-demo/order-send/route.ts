@@ -19,11 +19,26 @@ import { NextRequest, NextResponse } from "next/server";
 
 export const dynamic = "force-dynamic";
 
-const MT5_SERVICE_BASE  = process.env.MT5_SERVICE_URL ?? "http://127.0.0.1:8010";
-const DEMO_ORDER_URL    = `${MT5_SERVICE_BASE}/demo/order-send`;
-const FETCH_TIMEOUT_MS  = 12_000;
+const MT5_SERVICE_BASE         = process.env.MT5_SERVICE_URL ?? "http://127.0.0.1:8010";
+const DEMO_ORDER_URL           = `${MT5_SERVICE_BASE}/demo/order-send`;
+const FETCH_TIMEOUT_MS         = 12_000;
+const DEMO_EXECUTION_ENABLED   = process.env.MT5_DEMO_EXECUTION_ENABLED === "true";
 
 export async function POST(request: NextRequest): Promise<NextResponse> {
+  // ── Guard: demo execution is disabled by default ───────────────────────────
+  if (!DEMO_EXECUTION_ENABLED) {
+    return NextResponse.json(
+      {
+        ok: false,
+        accepted: false,
+        error: "Demo execution disabled — يجب تفعيل MT5_DEMO_EXECUTION_ENABLED=true للسماح بالتنفيذ التجريبي",
+        demoOnly: true,
+        read_only_mode: true,
+      },
+      { status: 403 },
+    );
+  }
+
   // ── Parse body ────────────────────────────────────────────────────────────
   let body: Record<string, unknown>;
   try {
