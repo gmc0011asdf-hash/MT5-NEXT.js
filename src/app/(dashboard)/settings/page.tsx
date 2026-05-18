@@ -20,6 +20,7 @@ import { api } from "../../../../convex/_generated/api";
 import {
   type DemoExecutionSettings,
   type ExecutionMode,
+  type ExecutionPolicy,
   DEFAULT_DEMO_SETTINGS,
   EXECUTION_MODE_LABELS,
   loadDemoSettings,
@@ -907,6 +908,42 @@ export default function SettingsPage() {
           />
         </div>
 
+        {/* سياسة التنفيذ */}
+        <div className="space-y-2">
+          <label className="text-xs font-medium text-muted-foreground">سياسة التنفيذ</label>
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+            {(["STRICT", "EXPERIMENTAL"] as ExecutionPolicy[]).map((policy) => (
+              <button
+                key={policy}
+                type="button"
+                onClick={() => updateDemoSetting("executionPolicy", policy)}
+                className={`rounded-lg border px-4 py-3 text-right transition-colors ${
+                  demoSettings.executionPolicy === policy
+                    ? policy === "STRICT"
+                      ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-200"
+                      : "border-violet-500/40 bg-violet-500/10 text-violet-200"
+                    : "border-border/40 bg-card/30 text-muted-foreground hover:border-border/70"
+                }`}
+              >
+                <p className="text-sm font-bold">
+                  {policy === "STRICT" ? "تنفيذ صارم" : "تجارب تنفيذ محكومة"}
+                </p>
+                <p className="text-[10px] mt-0.5 leading-tight opacity-80">
+                  {policy === "STRICT"
+                    ? "أي BLOCK من الحراس يمنع التنفيذ — افتراضي"
+                    : "يسمح بتجاوز Soft Blocks — Hard Blocks محفوظة دائماً"}
+                </p>
+              </button>
+            ))}
+          </div>
+          {demoSettings.executionPolicy === "EXPERIMENTAL" && (
+            <p className="text-[10px] text-violet-300/70 leading-relaxed">
+              ⚠ وضع التجارب: يسمح بتنفيذ إشارات ضعيفة (درجة C، احتمال منخفض، WARN كثيرة) —
+              Hard Blocks (Kill Switch، Spread، Tick، SL، TP، RR &lt; 1.0) لا تُتجاوز أبداً.
+            </p>
+          )}
+        </div>
+
         {/* ملخص الإعدادات */}
         <div className="rounded-lg border border-border bg-muted/5 px-4 py-3 text-xs text-muted-foreground space-y-1">
           <p className="font-semibold text-foreground/80 mb-1.5">ملخص الإعدادات الحالية</p>
@@ -914,6 +951,7 @@ export default function SettingsPage() {
           <p>Kill Switch: <span className={demoSettings.killSwitchEnabled ? "text-red-300" : "text-emerald-300"}>{demoSettings.killSwitchEnabled ? "مفعّل" : "معطّل"}</span></p>
           <p>مراجعة التنفيذ مؤكدة: <span className={demoSettings.isConfirmedDemo ? "text-emerald-300" : "text-amber-300"}>{demoSettings.isConfirmedDemo ? "نعم ✓" : "لا ✗"}</span></p>
           <p>حد المخاطرة: <span className="text-foreground">${demoSettings.maxRiskUsdPerTrade} — RR ≥ {demoSettings.minRewardRiskRatio} — سبريد ≤ {demoSettings.maxSpreadPoints} pts</span></p>
+          <p>سياسة التنفيذ: <span className={demoSettings.executionPolicy === "EXPERIMENTAL" ? "text-violet-300" : "text-emerald-300/80"}>{demoSettings.executionPolicy === "EXPERIMENTAL" ? "تجارب محكومة" : "صارم"}</span></p>
           <p className="text-[10px] text-muted-foreground/50 pt-1">الإعدادات تُخزَّن محلياً فقط — لا ترسل لأي سيرفر — لا تنفيذ في A25</p>
         </div>
       </Section>
