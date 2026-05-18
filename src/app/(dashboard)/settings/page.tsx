@@ -107,7 +107,8 @@ export default function SettingsPage() {
     api.coreQueries.getMyMt5SymbolsWithSettings,
     canUseConvex && cloudSymbolsRequested ? {} : "skip",
   );
-  const auditEvents = useQuery(api.coreQueries.getMyAuditEvents, canUseConvex ? {} : "skip");
+  const [showAuditLog, setShowAuditLog] = useState(false);
+  const auditEvents = useQuery(api.coreQueries.getMyAuditEvents, showAuditLog && canUseConvex ? {} : "skip");
   const mt5Summary = useQuery(api.coreQueries.getMyMt5ReadOnlySummary, canUseConvex ? {} : "skip");
   const governance = useQuery(api.coreQueries.getMyGovernanceState, canUseConvex ? {} : "skip");
 
@@ -957,6 +958,16 @@ export default function SettingsPage() {
         </p>
         {!canUseConvex && !isConvexAuthLoading ? (
           <p className="text-muted-foreground text-sm">سجّل الدخول لعرض سجل التدقيق.</p>
+        ) : !showAuditLog ? (
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="border-amber-500/25 bg-amber-500/5 text-amber-100 hover:bg-amber-500/10"
+            onClick={() => setShowAuditLog(true)}
+          >
+            تحميل سجل التدقيق
+          </Button>
         ) : isConvexAuthLoading || auditEvents === undefined ? (
           <p className="text-muted-foreground text-sm">جاري تحميل سجل التدقيق…</p>
         ) : auditEvents.length === 0 ? (
@@ -974,7 +985,7 @@ export default function SettingsPage() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {auditEvents.slice(0, 50).map((row) => (
+                {auditEvents.slice(0, 20).map((row) => (
                   <TableRow key={row._id} className="border-border/60">
                     <TableCell className="whitespace-nowrap text-muted-foreground text-xs tabular-nums">
                       {new Date(row.createdAt).toLocaleString("ar-SA", { hour12: false })}
