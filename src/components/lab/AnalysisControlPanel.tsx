@@ -48,6 +48,17 @@ import {
   PREMIUM_DISCOUNT_EXPLANATIONS,
   GENERAL_DISCLAIMER,
 } from "@/lib/trading/shared/trading-term-explanations";
+import {
+  buildGoldRecommendation,
+  type GoldRecommendation,
+} from "@/lib/gold/gold-recommendation-engine";
+import { SystemRecommendationCard } from "@/components/lab/SystemRecommendationCard";
+import {
+  buildGoldTradePlans,
+  type GoldTradePlansResult,
+} from "@/lib/gold/gold-trade-plans-engine";
+import { GoldTradePlansCard }    from "@/components/lab/GoldTradePlansCard";
+import { GoldTradePlanSelector } from "@/components/lab/GoldTradePlanSelector";
 
 // ---------------------------------------------------------------------------
 // Types (mirror the route response)
@@ -3135,7 +3146,17 @@ function buildPriceActionExecutionGuard(
 
 // ── TradePreviewPanel — A23/A24/A25/A26.1/A26.2 ──────────────────────────────
 // A26.2: زر إرسال Demo مفعّل داخل الـ modal فقط بعد checkbox — لا real execution
-function TradePreviewPanel({ result, mode = "general" }: { result: AnalysisResult; mode?: "general" | "gold" }) {
+function TradePreviewPanel({
+  result,
+  mode = "general",
+  accountEquity,
+  accountFreeMargin,
+}: {
+  result:            AnalysisResult;
+  mode?:             "general" | "gold";
+  accountEquity?:    number | null;
+  accountFreeMargin?: number | null;
+}) {
   // A25: load demo execution settings from localStorage (lazy init — no flash)
   const [settings] = useState<DemoExecutionSettings>(loadDemoSettings);
   // A26.1: state for review modal
@@ -3250,6 +3271,72 @@ function TradePreviewPanel({ result, mode = "general" }: { result: AnalysisResul
     if (preview.takeProfit === null || preview.takeProfit === undefined)       goldBlockedReasons.push("الهدف غير محدد");
     if ((preview.rrRatio ?? 0) < settings.minRewardRiskRatio)                 goldBlockedReasons.push(`نسبة RR (${preview.rrRatio?.toFixed(2) ?? "?"}) أقل من الحد (${settings.minRewardRiskRatio})`);
   }
+
+  // ── Gold Recommendation Engine v1 ────────────────────────────────────────
+  const goldRec = useMemo((): GoldRecommendation | null => {
+    if (mode !== "gold") return null;
+    return buildGoldRecommendation({
+      analysisStatus:      result.status,
+      direction:           result.direction,
+      riskUsd:             result.riskUsd,
+      riskPercentOfEquity: result.riskPercentOfEquity,
+      grade:               summary.grade,
+      probability:         summary.probability,
+      finalDecision:       summary.finalDecision,
+      anyBlock:            summary.anyBlock,
+      criticalBlockCount:  summary.criticalBlocks.length,
+      committees:          summary.committees.map((c) => ({
+        committeeId:   c.committeeId,
+        committeeName: c.committeeName,
+        verdict:       c.verdict,
+        score:         c.score,
+        summary:       c.summary,
+      })),
+      guardStatus:     priceActionGuard.status,
+      guardBlockers:   priceActionGuard.blockers,
+      guardWarnings:   priceActionGuard.warnings,
+      rrRatio:         preview.rrRatio,
+      estimatedLot:    preview.estimatedLot,
+      previewAllowed:  preview.allowed,
+      executionMode:   settings.executionMode,
+      killSwitchEnabled: settings.killSwitchEnabled,
+      executionGateOpen: canOpenGoldModal,
+    });
+  }, [mode, result, summary, priceActionGuard, preview, settings, canOpenGoldModal]);
+
+  // ── Gold Trade Plans Engine v2 ────────────────────────────────────────────
+  const goldPlans = useMemo((): GoldTradePlansResult | null => {
+    if (mode !== "gold") return null;
+    return buildGoldTradePlans({
+      analysisStatus:       result.status,
+      direction:            result.direction,
+      entry:                result.entry,
+      currentBid:           result.currentBid,
+      currentAsk:           result.currentAsk,
+      riskUsd:              result.riskUsd,
+      atr14:                result.indicators?.atr14,
+      grade:                summary.grade,
+      probability:          summary.probability,
+      anyBlock:             summary.anyBlock,
+      criticalBlockCount:   summary.criticalBlocks.length,
+      currentSpreadPoints:  result.currentSpreadPoints,
+      maxSpreadPoints:      settings.maxSpreadPoints,
+      minRewardRiskRatio:   settings.minRewardRiskRatio,
+      // Risk Manager — equity priority: MT5 direct → freeMargin → derived
+      equity:               accountEquity ?? undefined,
+      freeMargin:           accountFreeMargin ?? undefined,
+      riskPercentOfEquity:  result.riskPercentOfEquity,
+      manualLot:            preview.estimatedLot,
+      // Multi-Timeframe context
+      mtf: result.multiTimeframeConsensus ? {
+        higherTimeframeBias: result.multiTimeframeConsensus.higherTimeframeBias,
+        entryTimeframeBias:  result.multiTimeframeConsensus.entryTimeframeBias,
+        alignmentScore:      result.multiTimeframeConsensus.alignmentScore,
+        verdict:             result.multiTimeframeConsensus.verdict,
+        timeframeSummaries:  result.multiTimeframeConsensus.timeframeSummaries,
+      } : undefined,
+    });
+  }, [mode, result, summary, settings, accountEquity, accountFreeMargin, preview.estimatedLot]);
 
   // Gold gate: send handler — precheck → send → record
   async function handleGoldSendToMT5() {
@@ -3458,6 +3545,19 @@ function TradePreviewPanel({ result, mode = "general" }: { result: AnalysisResul
         <div className="rounded-md border border-amber-500/30 bg-amber-500/8 px-3 py-2 text-xs text-amber-200/80">
           تنفيذ عبر MT5 — يتطلب موافقة جميع اللجان والحراس والتأكيد اليدوي — محكوم بقواعد الحوكمة والمخاطر.
         </div>
+      )}
+
+      {/* ── توصية النظام — Gold Recommendation Engine v1 ─────────────────── */}
+      {mode === "gold" && goldRec && (
+        <SystemRecommendationCard recommendation={goldRec} />
+      )}
+
+      {/* ── خطط التداول المقترحة — Gold Trade Plans Engine v1 ────────────── */}
+      {mode === "gold" && goldPlans && (
+        <>
+          <GoldTradePlansCard  plans={goldPlans} />
+          <GoldTradePlanSelector plans={goldPlans} />
+        </>
       )}
 
       {/* Allowed → تفاصيل الأمر */}
@@ -4481,6 +4581,10 @@ export function AnalysisControlPanel({
   const [result, setResult] = useState<AnalysisResult | null>(null);
   const [fetchError, setFetchError] = useState<string | null>(null);
 
+  // ── account equity from MT5 (fetched on analyze) ─────────────────────────
+  const [accountEquity,     setAccountEquity]     = useState<number | null>(null);
+  const [accountFreeMargin, setAccountFreeMargin] = useState<number | null>(null);
+
   // ── async state — حفظ (A16) ────────────────────────────────────────────
   const [saving, setSaving] = useState(false);
   const [savedDecisionId, setSavedDecisionId] = useState<string | null>(null);
@@ -4571,17 +4675,24 @@ export function AnalysisControlPanel({
         riskUsd,
       };
 
-      // التحليل وجلب السعر الحالي يعملان بالتوازي — tick best-effort
-      const [analysisSettled, tickSettled] = await Promise.allSettled([
-        fetch("/api/lab/analyze-preview", {
-          method:  "POST",
-          headers: { "Content-Type": "application/json" },
-          body:    JSON.stringify(analysisBody),
-        }).then((r) => r.json() as Promise<AnalysisResult>),
-        fetch("/api/mt5-readonly/snapshot", { cache: "no-store" })
-          .then((r) => r.json() as Promise<{ ok: boolean; snapshot?: { ticks?: TickData[] } }>)
-          .catch(() => null),
-      ]);
+      // التحليل وجلب السعر الحالي والـ equity يعملان بالتوازي — best-effort
+      const analysisProm = fetch("/api/lab/analyze-preview", {
+        method:  "POST",
+        headers: { "Content-Type": "application/json" },
+        body:    JSON.stringify(analysisBody),
+      }).then((r) => r.json() as Promise<AnalysisResult>);
+
+      const tickProm = fetch("/api/mt5-readonly/snapshot", { cache: "no-store" })
+        .then((r) => r.json() as Promise<{ ok: boolean; snapshot?: { ticks?: TickData[] } } | null>)
+        .catch((): null => null);
+
+      const connProm = fetch("/api/mt5-readonly/connection-status", { cache: "no-store" })
+        .then((r) => r.json() as Promise<Record<string, unknown> | null>)
+        .catch((): null => null);
+
+      const [analysisSettled, tickSettled, connSettled] = await Promise.allSettled([
+        analysisProm, tickProm, connProm,
+      ] as const);
 
       if (analysisSettled.status === "rejected") {
         throw new Error(String(analysisSettled.reason));
@@ -4589,22 +4700,27 @@ export function AnalysisControlPanel({
       const json: AnalysisResult = analysisSettled.value;
 
       // ── A24: دمج live tick إذا كان متاحاً ────────────────────────────────
-      // لا نمنع setResult إذا فشل tick — best-effort فقط
-      if (
-        tickSettled.status === "fulfilled" &&
-        tickSettled.value?.ok &&
-        Array.isArray(tickSettled.value.snapshot?.ticks)
-      ) {
-        const tick = tickSettled.value.snapshot!.ticks!.find(
-          (t) => t.symbol === symbol.trim().toUpperCase(),
-        );
-        if (tick && typeof tick.bid === "number" && typeof tick.ask === "number") {
-          json.currentBid           = tick.bid;
-          json.currentAsk           = tick.ask;
-          json.currentSpread        = typeof tick.spread       === "number" ? tick.spread       : undefined;
-          json.currentSpreadPoints  = typeof tick.spread_points === "number" ? tick.spread_points : undefined;
-          json.currentPriceSource   = "mt5-live-tick";
+      if (tickSettled.status === "fulfilled" && tickSettled.value) {
+        const tickData = tickSettled.value as { ok: boolean; snapshot?: { ticks?: TickData[] } };
+        if (tickData.ok && Array.isArray(tickData.snapshot?.ticks)) {
+          const tick = tickData.snapshot!.ticks!.find(
+            (t: TickData) => t.symbol === symbol.trim().toUpperCase(),
+          );
+          if (tick && typeof tick.bid === "number" && typeof tick.ask === "number") {
+            json.currentBid           = tick.bid;
+            json.currentAsk           = tick.ask;
+            json.currentSpread        = typeof tick.spread        === "number" ? tick.spread        : undefined;
+            json.currentSpreadPoints  = typeof tick.spread_points  === "number" ? tick.spread_points  : undefined;
+            json.currentPriceSource   = "mt5-live-tick";
+          }
         }
+      }
+
+      // ── Equity from MT5 connection-status — best-effort ────────────────────
+      if (connSettled.status === "fulfilled" && connSettled.value) {
+        const cd = connSettled.value as Record<string, unknown>;
+        setAccountEquity(     typeof cd.equity      === "number" && (cd.equity      as number) > 0 ? (cd.equity      as number) : null);
+        setAccountFreeMargin( typeof cd.free_margin  === "number" && (cd.free_margin  as number) > 0 ? (cd.free_margin  as number) : null);
       }
 
       setResult(json);
@@ -4978,7 +5094,12 @@ export function AnalysisControlPanel({
                 <CommitteeSummaryPreview result={result} />
 
                 {/* ── A23: مراجعة أمر التداول Demo Preview ─────────────────── */}
-                <TradePreviewPanel result={result} mode={mode} />
+                <TradePreviewPanel
+                  result={result}
+                  mode={mode}
+                  accountEquity={accountEquity}
+                  accountFreeMargin={accountFreeMargin}
+                />
 
                 {/* ── Debug: معلومات التوقيت والمصدر ─────────────────────────── */}
                 <details className="rounded border border-border/30 px-3 py-2 text-[10px] text-muted-foreground/55">
