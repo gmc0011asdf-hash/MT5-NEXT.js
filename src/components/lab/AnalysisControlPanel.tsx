@@ -2976,9 +2976,12 @@ function buildPriceActionExecutionGuard(
     }
   }
 
-  // ── ز) SL مقابل ATR ───────────────────────────────────────────────────────
-  if (result.entry !== undefined && result.stopLoss !== undefined && ind?.atr14) {
-    const slDist = Math.abs(result.entry - result.stopLoss);
+  // ── ز) SL مقابل ATR — يستخدم preview (effectivePreview) لا result المباشر ──
+  // هذا يضمن أن الخطة المهنية المختارة (ATR-based SL) لا تُوقِف الحارس
+  const guardEntry = preview.entry ?? result.entry;
+  const guardSL    = preview.stopLoss ?? result.stopLoss;
+  if (guardEntry !== undefined && guardSL !== undefined && ind?.atr14) {
+    const slDist = Math.abs(guardEntry - guardSL);
     const atr    = ind.atr14;
     const isXAU  = result.symbol.includes("XAU") || result.symbol.includes("GOLD");
 
@@ -3526,9 +3529,9 @@ function TradePreviewPanel({
         accountMode:     "DEMO_ONLY",
         decisionId:      undefined,
         symbol:          result.symbol,
-        orderType:       preview.orderType,
-        direction:       result.direction ?? undefined,
-        requestedLot:    manualLot > 0 ? manualLot : preview.estimatedLot,
+        orderType:       effectivePreview.orderType,
+        direction:       effectivePreview.direction ?? undefined,
+        requestedLot:    manualLot > 0 ? manualLot : effectivePreview.estimatedLot,
         status:          attemptStatus,
         ok:              attemptData?.ok ?? false,
         accepted:        attemptData?.accepted,
@@ -3604,9 +3607,9 @@ function TradePreviewPanel({
         accountMode:     "DEMO_ONLY",
         decisionId:      undefined,
         symbol:          result.symbol,
-        orderType:       preview.orderType,
-        direction:       result.direction ?? undefined,
-        requestedLot:    manualLot > 0 ? manualLot : preview.estimatedLot,
+        orderType:       effectivePreview.orderType,
+        direction:       effectivePreview.direction ?? undefined,
+        requestedLot:    manualLot > 0 ? manualLot : effectivePreview.estimatedLot,
         status:          attemptStatus,
         ok:              attemptData?.ok ?? false,
         accepted:        attemptData?.accepted,
@@ -3679,8 +3682,8 @@ function TradePreviewPanel({
         </>
       )}
 
-      {/* Allowed → تفاصيل الأمر */}
-      {preview.allowed ? (
+      {/* Allowed → تفاصيل الأمر — يستخدم effectivePreview (خطة مهنية أو أصلية) */}
+      {effectivePreview.allowed ? (
         <>
           {/* B2.2: banner — حالة شروط التنفيذ */}
           <div className={`rounded-md border px-3 py-2 text-xs ${
@@ -3713,64 +3716,69 @@ function TradePreviewPanel({
             </div>
           )}
 
-          {/* بيانات الأمر */}
+          {/* بيانات الأمر — من effectivePreview */}
           {mode === "gold" && (
-            <p className="text-[10px] font-semibold text-amber-400/70 uppercase tracking-wider">
-              خطة تنفيذ المنصة — بعد موافقة اللجان
-            </p>
+            <div className="flex items-center justify-between gap-2">
+              <p className="text-[10px] font-semibold text-amber-400/70 uppercase tracking-wider">
+                خطة تنفيذ المنصة — بعد موافقة اللجان
+              </p>
+              <span className="text-[9px] text-muted-foreground/60 border border-border/20 rounded px-1.5 py-0.5">
+                {selectedGoldPlan ? `خطة مهنية: ${selectedGoldPlan.planType === "CONSERVATIVE" ? "محافظة" : selectedGoldPlan.planType === "BALANCED" ? "متوازنة" : "هجومية"}` : "خطة تحليل أولية"}
+              </span>
+            </div>
           )}
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
             <div className="flex flex-col gap-0.5">
               <span className="text-xs text-muted-foreground">نوع الأمر</span>
               <span className="text-sm font-semibold text-foreground">
-                {ORDER_TYPE_LABEL[preview.orderType]}
+                {ORDER_TYPE_LABEL[effectivePreview.orderType]}
               </span>
             </div>
             <div className="flex flex-col gap-0.5">
               <span className="text-xs text-muted-foreground">الرمز</span>
-              <span className="text-sm font-mono font-bold text-foreground">{preview.symbol}</span>
+              <span className="text-sm font-mono font-bold text-foreground">{effectivePreview.symbol}</span>
             </div>
             <div className="flex flex-col gap-0.5">
               <span className="text-xs text-muted-foreground">الاتجاه</span>
               <span className={`text-sm font-bold ${
-                preview.direction === "bullish" ? "text-emerald-300" : "text-red-300"
+                effectivePreview.direction === "bullish" ? "text-emerald-300" : "text-red-300"
               }`}>
-                {preview.direction === "bullish" ? "شراء ↑" : "بيع ↓"}
+                {effectivePreview.direction === "bullish" ? "شراء ↑" : "بيع ↓"}
               </span>
               {mode === "gold" && (
                 <span className="text-[10px] text-amber-400/70">
-                  {preview.direction === "bullish" ? "BUY MT5" : "SELL MT5"}
+                  {effectivePreview.direction === "bullish" ? "BUY MT5" : "SELL MT5"}
                 </span>
               )}
             </div>
             <div className="flex flex-col gap-0.5">
               <span className="text-xs text-muted-foreground">اللوت</span>
               <span className="text-sm font-mono font-bold text-foreground">
-                {preview.estimatedLot?.toFixed(2) ?? "—"}
+                {effectivePreview.estimatedLot?.toFixed(2) ?? "—"}
               </span>
             </div>
             <div className="flex flex-col gap-0.5">
               <span className="text-xs text-muted-foreground">سعر الدخول</span>
               <span className="text-sm font-mono text-foreground">
-                {preview.entry?.toFixed(5) ?? "—"}
+                {effectivePreview.entry?.toFixed(5) ?? "—"}
               </span>
             </div>
             <div className="flex flex-col gap-0.5">
               <span className="text-xs text-muted-foreground">وقف الخسارة</span>
               <span className="text-sm font-mono text-red-300">
-                {preview.stopLoss?.toFixed(5) ?? "—"}
+                {effectivePreview.stopLoss?.toFixed(5) ?? "—"}
               </span>
             </div>
             <div className="flex flex-col gap-0.5">
               <span className="text-xs text-muted-foreground">الهدف</span>
               <span className="text-sm font-mono text-emerald-300">
-                {preview.takeProfit?.toFixed(5) ?? "—"}
+                {effectivePreview.takeProfit?.toFixed(5) ?? "—"}
               </span>
             </div>
             <div className="flex flex-col gap-0.5">
               <span className="text-xs text-muted-foreground">RR / مخاطرة</span>
               <span className="text-sm font-mono text-foreground">
-                {preview.rrRatio?.toFixed(2) ?? "—"} : 1 — ${preview.riskUsd}
+                {effectivePreview.rrRatio?.toFixed(2) ?? "—"} : 1 — ${effectivePreview.riskUsd}
               </span>
             </div>
           </div>
@@ -4113,10 +4121,10 @@ function TradePreviewPanel({
                       <p className="text-xs font-semibold text-amber-200/90">تعديل اللوت قبل الإرسال</p>
                       <button
                         type="button"
-                        onClick={() => setManualLot(preview.estimatedLot ?? 0.01)}
+                        onClick={() => setManualLot(effectivePreview.estimatedLot ?? 0.01)}
                         className="text-[10px] text-amber-300/70 hover:text-amber-300 underline underline-offset-2"
                       >
-                        إعادة للمحسوب ({(preview.estimatedLot ?? 0.01).toFixed(2)})
+                        إعادة للمحسوب ({(effectivePreview.estimatedLot ?? 0.01).toFixed(2)})
                       </button>
                     </div>
                     <input
@@ -4137,7 +4145,7 @@ function TradePreviewPanel({
                     {manualLotInvalid && (
                       <p className="text-xs text-red-400">⚠ اللوت اليدوي غير صالح — يجب أن يكون أكبر من 0</p>
                     )}
-                    {!manualLotInvalid && manualLot !== (preview.estimatedLot ?? 0.01) && (
+                    {!manualLotInvalid && manualLot !== (effectivePreview.estimatedLot ?? 0.01) && (
                       <p className="text-[10px] text-amber-300/70">
                         ⚠ اللوت معدّل يدوياً — لا يغيّر قرار اللجان، للتنفيذ فقط.
                       </p>
@@ -4311,7 +4319,7 @@ function TradePreviewPanel({
             غير جاهز للتنفيذ — اللجان لم توافق أو الشروط غير مستوفاة
           </div>
           <ul className="space-y-1.5">
-            {preview.blockedReasons.map((reason, i) => (
+            {effectivePreview.blockedReasons.map((reason, i) => (
               <li key={i} className="flex items-start gap-1.5 text-xs text-muted-foreground">
                 <span className="text-red-400 shrink-0 mt-0.5">✗</span>
                 {reason}
@@ -4383,15 +4391,15 @@ function TradePreviewPanel({
             {/* Trade details */}
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
               {[
-                { label: "الرمز",         val: preview.symbol,                                                                       cls: "font-mono font-bold text-amber-200" },
-                { label: "الاتجاه",       val: preview.direction === "bullish" ? "شراء — BUY" : "بيع — SELL",                        cls: preview.direction === "bullish" ? "text-emerald-300 font-bold" : "text-red-300 font-bold" },
-                { label: "نوع التنفيذ",   val: ORDER_TYPE_LABEL[preview.orderType as OrderTypePreview] ?? preview.orderType,         cls: "" },
-                { label: "سعر الدخول",   val: preview.entry?.toFixed(5) ?? "—",                                                     cls: "font-mono" },
-                { label: "وقف الخسارة",  val: preview.stopLoss?.toFixed(5) ?? "—",                                                  cls: "font-mono text-red-300" },
-                { label: "الهدف",         val: preview.takeProfit?.toFixed(5) ?? "—",                                                cls: "font-mono text-emerald-300" },
-                { label: "اللوت",         val: (manualLot > 0 ? manualLot : (preview.estimatedLot ?? 0.01)).toFixed(2),              cls: "font-mono font-bold" },
-                { label: "المخاطرة",      val: `$${preview.riskUsd}`,                                                               cls: "" },
-                { label: "نسبة RR",       val: `${preview.rrRatio?.toFixed(2) ?? "—"} : 1`,                                         cls: "" },
+                { label: "الرمز",         val: effectivePreview.symbol,                                                                       cls: "font-mono font-bold text-amber-200" },
+                { label: "الاتجاه",       val: effectivePreview.direction === "bullish" ? "شراء — BUY" : "بيع — SELL",                        cls: effectivePreview.direction === "bullish" ? "text-emerald-300 font-bold" : "text-red-300 font-bold" },
+                { label: "نوع التنفيذ",   val: ORDER_TYPE_LABEL[effectivePreview.orderType as OrderTypePreview] ?? effectivePreview.orderType, cls: "" },
+                { label: "سعر الدخول",   val: effectivePreview.entry?.toFixed(5) ?? "—",                                                     cls: "font-mono" },
+                { label: "وقف الخسارة",  val: effectivePreview.stopLoss?.toFixed(5) ?? "—",                                                  cls: "font-mono text-red-300" },
+                { label: "الهدف",         val: effectivePreview.takeProfit?.toFixed(5) ?? "—",                                                cls: "font-mono text-emerald-300" },
+                { label: "اللوت",         val: (manualLot > 0 ? manualLot : (effectivePreview.estimatedLot ?? 0.01)).toFixed(2),              cls: "font-mono font-bold" },
+                { label: "المخاطرة",      val: `$${effectivePreview.riskUsd}`,                                                               cls: "" },
+                { label: "نسبة RR",       val: `${effectivePreview.rrRatio?.toFixed(2) ?? "—"} : 1`,                                         cls: "" },
                 { label: "Bid الحالي",    val: result.currentBid?.toFixed(5) ?? "—",                                                cls: "font-mono text-red-300" },
                 { label: "Ask الحالي",    val: result.currentAsk?.toFixed(5) ?? "—",                                                cls: "font-mono text-emerald-300" },
                 { label: "السبريد",       val: result.currentSpreadPoints !== undefined ? `${result.currentSpreadPoints} pts` : "—", cls: "" },
