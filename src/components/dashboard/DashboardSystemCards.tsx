@@ -77,7 +77,7 @@ export function DashboardSystemCards() {
         </Alert>
       ) : null}
       <p className="text-muted-foreground text-xs">
-        قراءة فقط — لا توجد أوامر تنفيذ من هذه الواجهة.
+        التنفيذ يتم فقط بعد موافقة القواعد واللجان.
       </p>
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
         <Card className={institutionalCardClass("p-4")}>

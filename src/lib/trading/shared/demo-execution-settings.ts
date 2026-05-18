@@ -13,16 +13,42 @@
 export type ExecutionMode = "READ_ONLY" | "DEMO_PREVIEW" | "DEMO_ARMED";
 
 export const EXECUTION_MODE_LABELS: Record<ExecutionMode, string> = {
-  READ_ONLY:    "قراءة فقط — التنفيذ مغلق",
-  DEMO_PREVIEW: "معاينة Demo — جاهز للمراجعة",
-  DEMO_ARMED:   "Demo مسلّح — جاهز للتفعيل في A26",
+  READ_ONLY:    "تنفيذ MT5 مغلق من الإعدادات",
+  DEMO_PREVIEW: "معاينة تنفيذ المنصة — جاهز للمراجعة",
+  DEMO_ARMED:   "MT5 مفعّل — جاهز للمراجعة النهائية",
 };
 
 export const EXECUTION_BUTTON_TEXT: Record<ExecutionMode, string> = {
-  READ_ONLY:    "التنفيذ مغلق من الإعدادات",
-  DEMO_PREVIEW: "جاهز للمراجعة — التنفيذ غير مفعل بعد",
-  DEMO_ARMED:   "تنفيذ Demo — سيُفعّل في A26",
+  READ_ONLY:    "تنفيذ MT5 مغلق من إعدادات النظام",
+  DEMO_PREVIEW: "جاهز للمراجعة — بانتظار تفعيل التنفيذ",
+  DEMO_ARMED:   "تنفيذ عبر MT5 — بانتظار المراجعة النهائية",
 };
+
+// ─── System Execution Mode — يعكس وضع النظام الحاكم لا نوع الحساب ────────────
+
+export type SystemExecutionMode =
+  | "READ_ONLY"
+  | "EXECUTION_LOCKED"
+  | "READY_FOR_REVIEW"
+  | "BLOCKED_BY_GOVERNANCE";
+
+export const SYSTEM_EXECUTION_MODE_LABELS: Record<SystemExecutionMode, string> = {
+  READ_ONLY:            "مغلق — التنفيذ محظور",
+  EXECUTION_LOCKED:     "مقفل — Kill Switch أو READ_ONLY",
+  READY_FOR_REVIEW:     "جاهز للمراجعة النهائية",
+  BLOCKED_BY_GOVERNANCE: "محظور — قواعد الحوكمة",
+};
+
+export function resolveSystemExecutionMode(
+  executionMode: ExecutionMode,
+  killSwitchOn: boolean,
+  governanceBlock: boolean,
+): SystemExecutionMode {
+  if (governanceBlock)                             return "BLOCKED_BY_GOVERNANCE";
+  if (killSwitchOn || executionMode === "READ_ONLY") return "EXECUTION_LOCKED";
+  if (executionMode === "DEMO_PREVIEW")            return "READY_FOR_REVIEW";
+  return "READY_FOR_REVIEW";
+}
 
 // ─── Settings Type ────────────────────────────────────────────────────────────
 
@@ -70,7 +96,8 @@ export type ExecutionEligibility = {
 
 export type ExecutionRequestPreview = {
   platform:                   "MT5";
-  accountMode:                "DEMO_ONLY";
+  accountMode:                "DEMO_ONLY";  // internal API contract — not user-facing
+  systemMode:                 SystemExecutionMode;
   symbol:                     string;
   orderType:                  string;             // e.g. "BUY_MARKET_PREVIEW"
   direction:                  "bullish" | "bearish" | null;

@@ -223,7 +223,7 @@ export function GoldStatusCard() {
           {/* Footer */}
           <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border/40 pt-2">
             <div className="flex flex-wrap items-center gap-2 text-[10px] text-muted-foreground">
-              <span>مصدر البيانات: MT5 محلي — قراءة فقط</span>
+              <span>مصدر البيانات: MT5 محلي — تنفيذ محكوم</span>
               {fetchedAt && (
                 <span className="tabular-nums">
                   آخر تحديث: {fetchedAt.toLocaleTimeString("ar-SA", { hour12: false })}
@@ -243,9 +243,9 @@ export function GoldStatusCard() {
         </>
       )}
 
-      {/* Read-only notice */}
+      {/* MT5 Governance notice */}
       <p className="text-[10px] text-muted-foreground/50 text-left" dir="ltr">
-        READ-ONLY · لا تنفيذ تداول · تحليل معلوماتي فقط
+        MT5 EXECUTION GOVERNED · التحليل والقرار قبل التنفيذ
       </p>
     </div>
   );

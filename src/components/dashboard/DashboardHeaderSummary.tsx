@@ -40,9 +40,9 @@ export function DashboardHeaderSummary() {
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <StatusBadge variant="neutral">قراءة فقط</StatusBadge>
+          <StatusBadge variant="neutral">محكوم بالقواعد</StatusBadge>
           <Badge variant="outline" className="border-amber-500/25 bg-amber-500/10 text-amber-100">
-            Demo Mode
+            MT5 Governed
           </Badge>
           <Badge variant="outline" className="border-amber-500/20 text-muted-foreground">
             Pending معطّل

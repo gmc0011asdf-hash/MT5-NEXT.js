@@ -20,7 +20,7 @@ const CONFIG: Record<
     icon: RefreshCw,
     iconClass: "text-amber-400/80",
     title: "لم تتم المزامنة بعد",
-    body: "MT5 متصل لكن لم يتم جلب البيانات — اضغط مزامنة MT5 المحلي للقراءة فقط.",
+    body: "MT5 متصل لكن لم يتم جلب البيانات — اضغط مزامنة MT5 المحلي للتحليل.",
   },
   no_data: {
     icon: AlertTriangle,

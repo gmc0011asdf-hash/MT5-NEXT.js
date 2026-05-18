@@ -22,6 +22,8 @@ import {
   EXECUTION_BUTTON_TEXT,
   DEFAULT_DEMO_SETTINGS,
   loadDemoSettings,
+  resolveSystemExecutionMode,
+  SYSTEM_EXECUTION_MODE_LABELS,
 } from "@/lib/trading/shared/demo-execution-settings";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -3119,7 +3121,7 @@ function buildPriceActionExecutionGuard(
 
 // ── TradePreviewPanel — A23/A24/A25/A26.1/A26.2 ──────────────────────────────
 // A26.2: زر إرسال Demo مفعّل داخل الـ modal فقط بعد checkbox — لا real execution
-function TradePreviewPanel({ result }: { result: AnalysisResult }) {
+function TradePreviewPanel({ result, mode = "general" }: { result: AnalysisResult; mode?: "general" | "gold" }) {
   // A25: load demo execution settings from localStorage (lazy init — no flash)
   const [settings] = useState<DemoExecutionSettings>(loadDemoSettings);
   // A26.1: state for review modal
@@ -3170,6 +3172,164 @@ function TradePreviewPanel({ result }: { result: AnalysisResult }) {
   // A26.2/A26.5.1: يمكن الإرسال فقط بعد checkbox + جميع الشروط + manualLot صالح
   const manualLotInvalid = !(manualLot > 0);
   const canSend = canOpenReview && userConfirmed && !ordering && !manualLotInvalid;
+
+  // ── Gold Execution Gate state ─────────────────────────────────────────────
+  const [showGoldModal,      setShowGoldModal]      = useState(false);
+  const [goldUserConfirmed,  setGoldUserConfirmed]  = useState(false);
+  const [goldOrdering,       setGoldOrdering]       = useState(false);
+  const [goldOrderResult,    setGoldOrderResult]    = useState<DemoOrderResult | null>(null);
+  const [goldOrderError,     setGoldOrderError]     = useState<string | null>(null);
+  const [goldPrecheckFailed, setGoldPrecheckFailed] = useState<string[]>([]);
+
+  // Gold gate: زر يُفتح عند استيفاء الشروط الفنية قبل تأكيد المستخدم
+  const canOpenGoldModal =
+    mode === "gold" &&
+    preview.allowed &&
+    priceActionGuard.status !== "BLOCK" &&
+    !settings.killSwitchEnabled &&
+    settings.executionMode !== "READ_ONLY" &&
+    settings.isConfirmedDemo &&
+    eligibility.spreadOk &&
+    result.currentPriceSource === "mt5-live-tick" &&
+    (preview.estimatedLot ?? 0) > 0 &&
+    preview.stopLoss  !== null && preview.stopLoss  !== undefined &&
+    preview.takeProfit !== null && preview.takeProfit !== undefined &&
+    (preview.rrRatio ?? 0) >= settings.minRewardRiskRatio;
+
+  // Gold gate: سبب التعطيل الأول (أسبقية) — للعنوان المختصر
+  const goldDisabledReason = !preview.allowed
+    ? "لا توجد خطة صفقة صالحة"
+    : priceActionGuard.status === "BLOCK"
+      ? "حارس اللجان أصدر BLOCK"
+      : settings.killSwitchEnabled
+        ? "Kill Switch مفعّل"
+        : settings.executionMode === "READ_ONLY"
+          ? "التنفيذ مغلق من الإعدادات"
+          : !settings.isConfirmedDemo
+            ? "مراجعة التنفيذ غير مؤكدة — فعّل من الإعدادات"
+            : !eligibility.spreadOk
+              ? `السبريد (${result.currentSpreadPoints ?? "?"} pts) يتجاوز الحد (${settings.maxSpreadPoints} pts)`
+              : result.currentPriceSource !== "mt5-live-tick"
+                ? "البيانات قديمة — لا يوجد tick حالي"
+                : (preview.estimatedLot ?? 0) <= 0
+                  ? "اللوت غير صالح"
+                  : preview.stopLoss === null || preview.stopLoss === undefined
+                    ? "وقف الخسارة غير محدد"
+                    : preview.takeProfit === null || preview.takeProfit === undefined
+                      ? "الهدف غير محدد"
+                      : (preview.rrRatio ?? 0) < settings.minRewardRiskRatio
+                        ? `نسبة RR (${preview.rrRatio?.toFixed(2) ?? "?"}) أقل من الحد الأدنى (${settings.minRewardRiskRatio})`
+                        : null;
+
+  // Gold gate: قائمة أسباب المنع الكاملة — لعرضها في بطاقة أسفل الزر
+  const goldBlockedReasons: string[] = [];
+  if (mode === "gold" && !canOpenGoldModal) {
+    if (!preview.allowed)                                                      goldBlockedReasons.push("لا توجد خطة صفقة صالحة");
+    if (priceActionGuard.status === "BLOCK")                                   goldBlockedReasons.push("حارس اللجان أصدر BLOCK");
+    if (settings.killSwitchEnabled)                                            goldBlockedReasons.push("Kill Switch مفعّل — التنفيذ موقوف");
+    if (settings.executionMode === "READ_ONLY")                               goldBlockedReasons.push("التنفيذ مغلق من الإعدادات");
+    if (!settings.isConfirmedDemo)                                             goldBlockedReasons.push("مراجعة التنفيذ غير مؤكدة");
+    if (!eligibility.spreadOk)                                                 goldBlockedReasons.push(`السبريد (${result.currentSpreadPoints ?? "?"} pts) مرتفع`);
+    if (result.currentPriceSource !== "mt5-live-tick")                        goldBlockedReasons.push("البيانات قديمة — لا يوجد tick حالي");
+    if ((preview.estimatedLot ?? 0) <= 0)                                     goldBlockedReasons.push("اللوت غير صالح");
+    if (preview.stopLoss === null || preview.stopLoss === undefined)           goldBlockedReasons.push("وقف الخسارة غير محدد");
+    if (preview.takeProfit === null || preview.takeProfit === undefined)       goldBlockedReasons.push("الهدف غير محدد");
+    if ((preview.rrRatio ?? 0) < settings.minRewardRiskRatio)                 goldBlockedReasons.push(`نسبة RR (${preview.rrRatio?.toFixed(2) ?? "?"}) أقل من الحد (${settings.minRewardRiskRatio})`);
+  }
+
+  // Gold gate: send handler — precheck → send → record
+  async function handleGoldSendToMT5() {
+    if (!goldUserConfirmed || manualLotInvalid) return;
+
+    // Client-side precheck (belt-and-suspenders)
+    const precheckReasons: string[] = [];
+    if (!preview.allowed)                                        precheckReasons.push("لا توجد خطة صفقة صالحة");
+    if (priceActionGuard.status === "BLOCK")                     precheckReasons.push("حارس جودة التنفيذ أصدر BLOCK");
+    if (settings.killSwitchEnabled)                              precheckReasons.push("Kill Switch مفعّل — التنفيذ موقوف");
+    if (settings.executionMode === "READ_ONLY")                  precheckReasons.push("وضع التنفيذ مقيّد — التنفيذ مغلق");
+    if (!eligibility.spreadOk)                                   precheckReasons.push(`السبريد (${result.currentSpreadPoints ?? "?"} pts) يتجاوز الحد`);
+    if (result.currentPriceSource !== "mt5-live-tick")           precheckReasons.push("البيانات قديمة أو tick غير صالح");
+    if ((preview.estimatedLot ?? 0) <= 0 || manualLotInvalid)   precheckReasons.push("اللوت غير صالح");
+    if (preview.stopLoss  === null || preview.stopLoss  === undefined) precheckReasons.push("وقف الخسارة غير محدد");
+    if (preview.takeProfit === null || preview.takeProfit === undefined) precheckReasons.push("الهدف غير محدد");
+    if ((preview.rrRatio ?? 0) < settings.minRewardRiskRatio)   precheckReasons.push(`نسبة RR (${preview.rrRatio?.toFixed(2) ?? "?"}) أقل من الحد (${settings.minRewardRiskRatio})`);
+    if (!eligibility.symbolAllowed)                              precheckReasons.push("الرمز غير مسموح في إعدادات التنفيذ");
+
+    if (precheckReasons.length > 0) {
+      setGoldPrecheckFailed(precheckReasons);
+      return;
+    }
+    setGoldPrecheckFailed([]);
+    setGoldOrdering(true);
+    setGoldOrderResult(null);
+    setGoldOrderError(null);
+    setJournalStatus(null);
+
+    let attemptStatus: string = "ERROR";
+    let attemptData: DemoOrderResult | null = null;
+    let attemptErrorMsg: string | null = null;
+
+    try {
+      const execReq = buildExecutionRequestPreview(result, preview, eligibility);
+      const body = {
+        ...execReq,
+        manualConfirmation: true as const,
+        manualLot: manualLot > 0 ? manualLot : execReq.estimatedLot,
+      };
+      const res = await fetch("/api/mt5-demo/order-send", {
+        method:  "POST",
+        headers: { "Content-Type": "application/json" },
+        body:    JSON.stringify(body),
+        cache:   "no-store",
+      });
+      const data = (await res.json()) as DemoOrderResult;
+      attemptData = data;
+      if (data.ok || data.accepted) {
+        attemptStatus = "DONE";
+        setGoldOrderResult(data);
+        setGoldUserConfirmed(false);
+      } else if (data.retcodeText === "NO_MONEY_PRECHECK") {
+        attemptStatus = "PRECHECK_FAILED";
+        setGoldOrderResult(data);
+      } else {
+        attemptStatus = "REJECTED";
+        setGoldOrderError(data.error ?? "فشل إرسال الأمر إلى MT5");
+        attemptErrorMsg = data.error ?? null;
+      }
+    } catch (e) {
+      attemptErrorMsg = e instanceof Error ? e.message : "خطأ غير معروف في الإرسال";
+      setGoldOrderError(attemptErrorMsg);
+    } finally {
+      setGoldOrdering(false);
+    }
+
+    if (isAuthenticated) {
+      void recordAttempt({
+        platform:        "MT5",
+        accountMode:     "DEMO_ONLY",
+        decisionId:      undefined,
+        symbol:          result.symbol,
+        orderType:       preview.orderType,
+        direction:       result.direction ?? undefined,
+        requestedLot:    manualLot > 0 ? manualLot : preview.estimatedLot,
+        status:          attemptStatus,
+        ok:              attemptData?.ok ?? false,
+        accepted:        attemptData?.accepted,
+        ticket:          attemptData?.ticket,
+        retcode:         attemptData?.retcode,
+        retcodeText:     attemptData?.retcodeText,
+        errorMessage:    attemptErrorMsg ?? undefined,
+        marginRequired:  attemptData?.marginRequired ?? undefined,
+        marginFree:      attemptData?.freeMarginBefore,
+        marginFreeAfter: undefined,
+        fillingMode:     attemptData?.fillingModeUsed,
+        fillingRetries:  attemptData?.fillingModesTried != null
+                           ? attemptData.fillingModesTried.length - 1
+                           : undefined,
+      }).then(() => setJournalStatus("✓ سُجِّلت المحاولة في سجل MT5"))
+        .catch(() => setJournalStatus("⚠ لم يُسجَّل في Convex"));
+    }
+  }
 
   // A26.2: إرسال أمر Demo إلى MT5 — Demo فقط — بعد تأكيد يدوي
   async function handleSendToMT5Demo() {
@@ -3255,23 +3415,36 @@ function TradePreviewPanel({ result }: { result: AnalysisResult }) {
       {/* B2.2: Header — يعكس حالة الحارس بوضوح */}
       <div className="flex flex-wrap items-center justify-between gap-2">
         <p className={`text-sm font-bold ${priceActionGuard.status === "BLOCK" ? "text-red-300" : "text-foreground"}`}>
-          مراجعة أمر التداول — Demo Preview
-          {priceActionGuard.status === "BLOCK" && <span className="ms-1">— محظور ✗</span>}
+          {mode === "gold" ? "خطة تنفيذ MT5 — بعد موافقة اللجان" : "مراجعة أمر التداول — MT5 Preview"}
+          {priceActionGuard.status === "BLOCK" && mode !== "gold" && <span className="ms-1">— محظور ✗</span>}
         </p>
         <span className={`inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-medium ${
-          priceActionGuard.status === "BLOCK"
-            ? "border-red-500/30 bg-red-500/10 text-red-300"
-            : priceActionGuard.status === "WARN"
-              ? "border-amber-500/20 bg-amber-500/10 text-amber-300"
-              : "border-emerald-500/20 bg-emerald-500/10 text-emerald-300"
+          mode === "gold"
+            ? "border-amber-500/30 bg-amber-500/10 text-amber-300"
+            : priceActionGuard.status === "BLOCK"
+              ? "border-red-500/30 bg-red-500/10 text-red-300"
+              : priceActionGuard.status === "WARN"
+                ? "border-amber-500/20 bg-amber-500/10 text-amber-300"
+                : "border-emerald-500/20 bg-emerald-500/10 text-emerald-300"
         }`}>
-          {priceActionGuard.status === "BLOCK"
-            ? "ممنوع التنفيذ ✗"
-            : priceActionGuard.status === "WARN"
-              ? "تحذيرات تنفيذ ⚠"
-              : "جاهز للمراجعة ✓"}
+          {mode === "gold"
+            ? canOpenGoldModal
+              ? "جاهز للتنفيذ ▶"
+              : "معطّل — شروط التنفيذ غير مكتملة"
+            : priceActionGuard.status === "BLOCK"
+              ? "ممنوع التنفيذ ✗"
+              : priceActionGuard.status === "WARN"
+                ? "تحذيرات تنفيذ ⚠"
+                : "جاهز للمراجعة ✓"}
         </span>
       </div>
+
+      {/* Gold mode: banner إشعار أعلى القسم */}
+      {mode === "gold" && (
+        <div className="rounded-md border border-amber-500/30 bg-amber-500/8 px-3 py-2 text-xs text-amber-200/80">
+          تنفيذ عبر MT5 — يتطلب موافقة جميع اللجان والحراس والتأكيد اليدوي — محكوم بقواعد الحوكمة والمخاطر.
+        </div>
+      )}
 
       {/* Allowed → تفاصيل الأمر */}
       {preview.allowed ? (
@@ -3285,13 +3458,34 @@ function TradePreviewPanel({ result }: { result: AnalysisResult }) {
                 : "border-emerald-500/30 bg-emerald-500/10 text-emerald-300"
           }`}>
             {priceActionGuard.status === "BLOCK"
-              ? "✗ ممنوع التنفيذ — حارس جودة التنفيذ رفض الصفقة"
+              ? (mode === "gold"
+                  ? "التنفيذ ممنوع — الخطة للمراجعة والتوثيق فقط"
+                  : "✗ ممنوع التنفيذ — حارس جودة التنفيذ رفض الصفقة")
               : priceActionGuard.status === "WARN"
                 ? "⚠ الشروط الأساسية متحققة لكن توجد تحذيرات — راجع حارس الجودة أدناه"
-                : "✓ شروط التنفيذ والتحليل متوافقة — يمكن فتح المراجعة التجريبية"}
+                : "✓ شروط التنفيذ والتحليل متوافقة — يمكن فتح المراجعة"}
           </div>
 
+          {/* Gold mode: BLOCK message */}
+          {mode === "gold" && priceActionGuard.status === "BLOCK" && (
+            <div className="rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-300 font-medium">
+              التنفيذ ممنوع — الخطة للمراجعة والتوثيق فقط
+            </div>
+          )}
+
+          {/* Gold mode: READ_ONLY / Kill Switch */}
+          {mode === "gold" && (settings.executionMode === "READ_ONLY" || settings.killSwitchEnabled) && (
+            <div className="rounded-md border border-zinc-500/20 bg-zinc-500/8 px-3 py-2 text-xs text-zinc-300/80">
+              تنفيذ MT5 مغلق من إعدادات النظام
+            </div>
+          )}
+
           {/* بيانات الأمر */}
+          {mode === "gold" && (
+            <p className="text-[10px] font-semibold text-amber-400/70 uppercase tracking-wider">
+              خطة تنفيذ المنصة — بعد موافقة اللجان
+            </p>
+          )}
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
             <div className="flex flex-col gap-0.5">
               <span className="text-xs text-muted-foreground">نوع الأمر</span>
@@ -3310,6 +3504,11 @@ function TradePreviewPanel({ result }: { result: AnalysisResult }) {
               }`}>
                 {preview.direction === "bullish" ? "شراء ↑" : "بيع ↓"}
               </span>
+              {mode === "gold" && (
+                <span className="text-[10px] text-amber-400/70">
+                  {preview.direction === "bullish" ? "BUY MT5" : "SELL MT5"}
+                </span>
+              )}
             </div>
             <div className="flex flex-col gap-0.5">
               <span className="text-xs text-muted-foreground">اللوت</span>
@@ -3372,26 +3571,84 @@ function TradePreviewPanel({ result }: { result: AnalysisResult }) {
             </div>
           ) : (
             <div className="rounded-md border border-amber-500/20 bg-amber-500/5 px-3 py-2 text-xs text-amber-300/80">
-              ⚠ لم يتم جلب السعر الحالي — نوع الأمر تقديري بناءً على آخر سعر إغلاق
+              {mode === "gold"
+                ? "⚠ الأسعار قد تكون غير صالحة للتنفيذ بسبب حالة السوق أو tick — هذه خطة معاينة فقط"
+                : "⚠ لم يتم جلب السعر الحالي — نوع الأمر تقديري بناءً على آخر سعر إغلاق"}
             </div>
           )}
 
-          {/* A25: تقييم أهلية التنفيذ التجريبي */}
+          {/* ── Gold Execution Button — يظهر دائمًا بعد خطة الصفقة ─────────── */}
+          {mode === "gold" && (
+            <div className="rounded-lg border border-amber-500/25 bg-amber-500/5 p-3 space-y-2.5">
+              <p className="text-[10px] font-semibold text-amber-400/80 uppercase tracking-wider">
+                تنفيذ عبر MT5 — بعد موافقة القواعد واللجان
+              </p>
+              <button
+                type="button"
+                disabled={!canOpenGoldModal}
+                onClick={() => {
+                  setGoldPrecheckFailed([]);
+                  setGoldOrderResult(null);
+                  setGoldOrderError(null);
+                  setGoldUserConfirmed(false);
+                  setShowGoldModal(true);
+                }}
+                className={`inline-flex items-center justify-center rounded-md border px-5 py-2.5 text-sm font-semibold transition-colors ${
+                  canOpenGoldModal
+                    ? "border-amber-500/60 bg-amber-500/20 text-amber-200 hover:bg-amber-500/30 active:bg-amber-500/40"
+                    : "border-zinc-500/20 bg-zinc-700/20 text-zinc-400/60 cursor-not-allowed"
+                }`}
+              >
+                {canOpenGoldModal ? "▶ تنفيذ عبر MT5" : "تنفيذ عبر MT5 — معطّل"}
+              </button>
+
+              {/* بطاقة أسباب المنع — تظهر دائمًا عند التعطيل */}
+              {!canOpenGoldModal && goldBlockedReasons.length > 0 && (
+                <div className="rounded-md border border-zinc-500/20 bg-zinc-800/40 px-3 py-2.5 space-y-1.5">
+                  <p className="text-[10px] font-semibold text-zinc-300/80">سبب منع التنفيذ:</p>
+                  <ul className="space-y-1">
+                    {goldBlockedReasons.map((reason, i) => (
+                      <li key={i} className="flex items-start gap-1.5 text-[11px] text-zinc-400/90">
+                        <span className="text-red-400/70 shrink-0 mt-0.5">✗</span>
+                        <span>{reason}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
+              {/* Kill Switch رسالة خاصة */}
+              {settings.killSwitchEnabled && (
+                <p className="text-[11px] text-red-300/80 leading-relaxed">
+                  زر التنفيذ سيبقى معطّلًا ما دام Kill Switch مفعّلًا — أوقفه من الإعدادات.
+                </p>
+              )}
+
+              {/* مراجعة التنفيذ غير مؤكدة */}
+              {!settings.isConfirmedDemo && !settings.killSwitchEnabled && (
+                <p className="text-[11px] text-amber-300/70 leading-relaxed">
+                  فعّل تأكيد مراجعة التنفيذ من الإعدادات لتفعيل زر الإرسال عند اكتمال شروط اللجان.
+                </p>
+              )}
+            </div>
+          )}
+
+          {/* A25: تقييم شروط تنفيذ MT5 */}
           <div className="rounded-md border border-border bg-muted/5 p-3 space-y-2">
             <p className="text-xs font-semibold text-foreground/80">
-              تقييم أهلية التنفيذ التجريبي
+              تقييم شروط تنفيذ MT5
             </p>
             <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-3">
               {[
-                { label: "وضع التنفيذ",      ok: settings.executionMode !== "READ_ONLY", val: settings.executionMode === "READ_ONLY" ? "مغلق" : settings.executionMode === "DEMO_PREVIEW" ? "معاينة" : "مسلّح" },
+                { label: "وضع التنفيذ",      ok: settings.executionMode !== "READ_ONLY", val: settings.executionMode === "READ_ONLY" ? "مغلق" : settings.executionMode === "DEMO_PREVIEW" ? "معاينة MT5" : "MT5 مفعّل" },
                 { label: "Kill Switch",       ok: !eligibility.killSwitchOn,      val: eligibility.killSwitchOn      ? "مفعّل ✗" : "معطّل ✓" },
-                { label: "حساب Demo مؤكد",   ok: eligibility.isDemoConfirmed,    val: eligibility.isDemoConfirmed   ? "نعم ✓" : "غير مؤكد ✗" },
+                { label: "مراجعة مؤكدة",     ok: eligibility.isDemoConfirmed,    val: eligibility.isDemoConfirmed   ? "نعم ✓" : "غير مؤكد ✗" },
                 { label: "الرمز مسموح",      ok: eligibility.symbolAllowed,      val: eligibility.symbolAllowed     ? "مسموح ✓" : "غير مسموح ✗" },
                 { label: "نسبة R/R",          ok: eligibility.rrOk,              val: eligibility.rrOk              ? `≥ ${settings.minRewardRiskRatio} ✓` : `< ${settings.minRewardRiskRatio} ✗` },
                 { label: "السبريد",           ok: eligibility.spreadOk,          val: eligibility.spreadOk          ? "مقبول ✓" : "مرتفع ✗" },
                 { label: "المخاطرة",          ok: eligibility.riskOk,            val: eligibility.riskOk            ? `ضمن $${settings.maxRiskUsdPerTrade} ✓` : `تتجاوز الحد ✗` },
-                { label: "عدد الصفقات",      ok: true,                          val: `حد ${settings.maxTradesPerDay}/يوم — A26` },
-                { label: "مراكز مفتوحة",     ok: true,                          val: `حد ${settings.maxOpenPositions} — A26` },
+                { label: "عدد الصفقات",      ok: true,                          val: `حد ${settings.maxTradesPerDay}/يوم` },
+                { label: "مراكز مفتوحة",     ok: true,                          val: `حد ${settings.maxOpenPositions}` },
               ].map(({ label, ok, val }) => (
                 <div key={label} className="flex items-center justify-between gap-1 rounded border border-border bg-muted/5 px-2 py-1">
                   <span className="text-[10px] text-muted-foreground truncate">{label}</span>
@@ -3404,7 +3661,7 @@ function TradePreviewPanel({ result }: { result: AnalysisResult }) {
 
             {!eligibility.isDemoConfirmed && (
               <p className="text-[10px] text-amber-300/80">
-                ⚠ لن يتم السماح بالتنفيذ إلا على حساب Demo مؤكد — فعّل من صفحة الإعدادات
+                ⚠ يجب تأكيد مراجعة التنفيذ من صفحة الإعدادات قبل إرسال الأمر لـ MT5
               </p>
             )}
           </div>
@@ -3451,7 +3708,9 @@ function TradePreviewPanel({ result }: { result: AnalysisResult }) {
             )}
           </div>
 
-          {/* A26.1: أزرار التنفيذ */}
+
+          {/* A26.1: أزرار التنفيذ — وضع عام */}
+          {mode !== "gold" && (
           <div className="flex flex-wrap items-center gap-3">
             {/* زر مراجعة طلب التنفيذ — enabled فقط عند DEMO_ARMED + جميع الشروط + حارس B2.1 */}
             <button
@@ -3482,9 +3741,10 @@ function TradePreviewPanel({ result }: { result: AnalysisResult }) {
               {eligibility.buttonText}
             </button>
           </div>
+          )}
 
-          {/* A26.1: Modal — المراجعة النهائية قبل تنفيذ Demo */}
-          {showModal && (() => {
+          {/* A26.1: Modal — المراجعة النهائية قبل تنفيذ Demo — مخفي في وضع gold */}
+          {mode !== "gold" && showModal && (() => {
             const execReq = buildExecutionRequestPreview(result, preview, eligibility);
             return (
               <div className="mt-4 rounded-xl border-2 border-emerald-500/30 bg-card shadow-lg">
@@ -3492,24 +3752,24 @@ function TradePreviewPanel({ result }: { result: AnalysisResult }) {
                 <div className="flex items-center justify-between px-5 py-4 border-b border-border">
                   <div>
                     <p className="text-sm font-bold text-foreground">
-                      المراجعة النهائية قبل تنفيذ Demo
+                      المراجعة النهائية قبل إرسال الأمر لـ MT5
                     </p>
                     <p className="text-xs text-muted-foreground mt-0.5">
-                      A26.2 — إرسال Demo فقط بعد تأكيد يدوي
+                      A26.2 — إرسال عبر MT5 بعد تأكيد يدوي
                     </p>
                   </div>
-                  <span className="inline-flex items-center rounded-full border border-red-500/30 bg-red-500/10 px-2.5 py-0.5 text-xs font-medium text-red-300">
-                    ⚠ DEMO ONLY
+                  <span className="inline-flex items-center rounded-full border border-amber-500/30 bg-amber-500/10 px-2.5 py-0.5 text-xs font-medium text-amber-300">
+                    ⚠ محكوم بالحوكمة
                   </span>
                 </div>
 
                 <div className="p-5 space-y-5">
                   {/* تحذير واضح A26.2 */}
                   <div className="rounded-md border border-red-500/30 bg-red-500/10 px-4 py-3 text-xs text-red-200/90 space-y-1">
-                    <p className="font-semibold">⚠ A26.2 — تنفيذ Demo حقيقي</p>
+                    <p className="font-semibold">⚠ A26.2 — تنفيذ عبر منصة MT5</p>
                     <p>
-                      الضغط على الزر سيُرسل أمراً فعلياً إلى حساب MT5 Demo.
-                      تأكد أن الحساب تجريبي (Demo) قبل الإرسال.
+                      الضغط على الزر سيُرسل الأمر إلى منصة MT5 عبر الخدمة المحلية.
+                      تأكد من إعدادات المنصة والحوكمة قبل الإرسال.
                       يتطلب تفعيل MT5_DEMO_EXECUTION_ENABLED=1 في خدمة MT5 المحلية.
                     </p>
                   </div>
@@ -3517,8 +3777,8 @@ function TradePreviewPanel({ result }: { result: AnalysisResult }) {
                   {/* تفاصيل الطلب */}
                   <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
                     {[
-                      { label: "المنصة",       val: execReq.platform,                     cls: "text-amber-300" },
-                      { label: "نوع الحساب",   val: execReq.accountMode,                  cls: "text-emerald-300" },
+                      { label: "المنصة",        val: execReq.platform,                                          cls: "text-amber-300" },
+                      { label: "وضع النظام",   val: SYSTEM_EXECUTION_MODE_LABELS[execReq.systemMode],          cls: "text-emerald-300" },
                       { label: "الرمز",         val: execReq.symbol,                       cls: "font-mono font-bold" },
                       { label: "نوع الأمر",    val: ORDER_TYPE_LABEL[execReq.orderType as OrderTypePreview] ?? execReq.orderType, cls: "" },
                       { label: "الاتجاه",      val: execReq.direction === "bullish" ? "شراء ↑" : "بيع ↓", cls: execReq.direction === "bullish" ? "text-emerald-300" : "text-red-300" },
@@ -3558,7 +3818,7 @@ function TradePreviewPanel({ result }: { result: AnalysisResult }) {
                     <div className="grid grid-cols-2 gap-1.5">
                       {[
                         { label: "Kill Switch",    ok: !eligibility.killSwitchOn,  val: !eligibility.killSwitchOn  ? "معطّل ✓" : "مفعّل ✗" },
-                        { label: "حساب Demo مؤكد", ok: eligibility.isDemoConfirmed, val: eligibility.isDemoConfirmed ? "مؤكد ✓" : "غير مؤكد ✗" },
+                        { label: "مراجعة مؤكدة",  ok: eligibility.isDemoConfirmed, val: eligibility.isDemoConfirmed ? "مؤكد ✓" : "غير مؤكد ✗" },
                         { label: "الرمز مسموح",   ok: eligibility.symbolAllowed,   val: eligibility.symbolAllowed  ? "مسموح ✓" : "ممنوع ✗" },
                         { label: "RR مقبول",       ok: eligibility.rrOk,            val: eligibility.rrOk           ? "مقبول ✓" : "ضعيف ✗" },
                       ].map(({ label, ok, val }) => (
@@ -3619,8 +3879,8 @@ function TradePreviewPanel({ result }: { result: AnalysisResult }) {
                       className="mt-0.5 h-4 w-4 shrink-0 rounded border-border accent-emerald-500"
                     />
                     <span className="text-xs text-foreground/90 leading-relaxed">
-                      أؤكد أن هذا تنفيذ تجريبي Demo فقط، وأن الحساب ليس حساباً حقيقياً،
-                      وأن هذا الإجراء للمراجعة والاختبار فقط بدون تداول فعلي.
+                      أؤكد مراجعة خطة التنفيذ وأن الإرسال يتم عبر منصة MT5 وفق إعدادات النظام والحوكمة،
+                      وأن التنفيذ محكوم بقواعد اللجان والحراس وKill Switch.
                     </span>
                   </label>
 
@@ -3650,7 +3910,7 @@ function TradePreviewPanel({ result }: { result: AnalysisResult }) {
                           : "border-emerald-500/20 bg-emerald-700/20 text-emerald-400/50 cursor-not-allowed"
                       }`}
                     >
-                      {ordering ? "جارٍ الإرسال إلى MT5…" : "إرسال إلى MT5 Demo"}
+                      {ordering ? "جارٍ الإرسال إلى MT5…" : "إرسال إلى MT5"}
                     </button>
 
                     {/* زر الإغلاق */}
@@ -3723,7 +3983,7 @@ function TradePreviewPanel({ result }: { result: AnalysisResult }) {
                   {/* A26.2/A26.3/A26.4: نتيجة الإرسال — نجاح */}
                   {orderResult && orderResult.retcodeText !== "NO_MONEY_PRECHECK" && (
                     <div className="rounded-md border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-xs text-emerald-300 space-y-1">
-                      <p className="font-semibold text-sm">✓ تم إرسال أمر Demo إلى MT5</p>
+                      <p className="font-semibold text-sm">✓ تم إرسال الأمر إلى MT5</p>
                       {orderResult.ticket != null && (
                         <p>رقم التذكرة: <span className="font-mono font-bold">{orderResult.ticket}</span></p>
                       )}
@@ -3759,8 +4019,8 @@ function TradePreviewPanel({ result }: { result: AnalysisResult }) {
                   )}
 
                   <p className="text-[10px] text-muted-foreground/50 border-t border-border pt-2">
-                    ⚠ A26.2 — Demo فقط — يُرسَل إلى MT5 عبر /api/mt5-demo/order-send —
-                    manualConfirmation: true — accountMode: DEMO_ONLY — لا userId من الواجهة
+                    ⚠ A26.2 — يُرسَل إلى MT5 عبر /api/mt5-demo/order-send —
+                    manualConfirmation: true — محكوم بالحوكمة — لا userId من الواجهة
                   </p>
                 </div>
               </div>
@@ -3771,7 +4031,7 @@ function TradePreviewPanel({ result }: { result: AnalysisResult }) {
         /* Blocked → أسباب المنع */
         <>
           <div className="rounded-md border border-amber-500/20 bg-amber-500/5 px-3 py-2 text-xs text-amber-300">
-            غير جاهز للتنفيذ التجريبي
+            غير جاهز للتنفيذ — اللجان لم توافق أو الشروط غير مستوفاة
           </div>
           <ul className="space-y-1.5">
             {preview.blockedReasons.map((reason, i) => (
@@ -3784,6 +4044,197 @@ function TradePreviewPanel({ result }: { result: AnalysisResult }) {
         </>
       )}
 
+      {/* ── Gold MT5 Execution Gate Modal ─────────────────────────────────────── */}
+      {mode === "gold" && showGoldModal && (
+        <div className="mt-2 rounded-xl border-2 border-amber-500/30 bg-card shadow-lg">
+          {/* Header */}
+          <div className="flex items-center justify-between px-5 py-4 border-b border-border">
+            <div>
+              <p className="text-sm font-bold text-foreground">تأكيد تنفيذ عبر MT5</p>
+              <p className="text-xs text-muted-foreground mt-0.5">راجع الخطة بعناية قبل الإرسال</p>
+            </div>
+            <span className="inline-flex items-center rounded-full border border-amber-500/30 bg-amber-500/10 px-2.5 py-0.5 text-xs font-medium text-amber-300">
+              ⚠ MT5 Platform Execution
+            </span>
+          </div>
+
+          <div className="p-5 space-y-5">
+            {/* Warning */}
+            <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-xs text-amber-200/90 space-y-1">
+              <p className="font-semibold">⚠ سيتم إرسال أمر إلى منصة MT5</p>
+              <p>التنفيذ محكوم بقواعد الحوكمة والحراس. تأكد من الإعدادات والخطة قبل الإرسال.</p>
+            </div>
+
+            {/* Trade details */}
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+              {[
+                { label: "الرمز",         val: preview.symbol,                                                                       cls: "font-mono font-bold text-amber-200" },
+                { label: "الاتجاه",       val: preview.direction === "bullish" ? "شراء — BUY" : "بيع — SELL",                        cls: preview.direction === "bullish" ? "text-emerald-300 font-bold" : "text-red-300 font-bold" },
+                { label: "نوع التنفيذ",   val: ORDER_TYPE_LABEL[preview.orderType as OrderTypePreview] ?? preview.orderType,         cls: "" },
+                { label: "سعر الدخول",   val: preview.entry?.toFixed(5) ?? "—",                                                     cls: "font-mono" },
+                { label: "وقف الخسارة",  val: preview.stopLoss?.toFixed(5) ?? "—",                                                  cls: "font-mono text-red-300" },
+                { label: "الهدف",         val: preview.takeProfit?.toFixed(5) ?? "—",                                                cls: "font-mono text-emerald-300" },
+                { label: "اللوت",         val: (manualLot > 0 ? manualLot : (preview.estimatedLot ?? 0.01)).toFixed(2),              cls: "font-mono font-bold" },
+                { label: "المخاطرة",      val: `$${preview.riskUsd}`,                                                               cls: "" },
+                { label: "نسبة RR",       val: `${preview.rrRatio?.toFixed(2) ?? "—"} : 1`,                                         cls: "" },
+                { label: "Bid الحالي",    val: result.currentBid?.toFixed(5) ?? "—",                                                cls: "font-mono text-red-300" },
+                { label: "Ask الحالي",    val: result.currentAsk?.toFixed(5) ?? "—",                                                cls: "font-mono text-emerald-300" },
+                { label: "السبريد",       val: result.currentSpreadPoints !== undefined ? `${result.currentSpreadPoints} pts` : "—", cls: "" },
+              ].map(({ label, val, cls }) => (
+                <div key={label} className="flex flex-col gap-0.5">
+                  <span className="text-[10px] text-muted-foreground">{label}</span>
+                  <span className={`text-sm ${cls || "text-foreground"}`}>{val}</span>
+                </div>
+              ))}
+            </div>
+
+            {/* Precheck failed */}
+            {goldPrecheckFailed.length > 0 && (
+              <div className="rounded-md border border-red-500/40 bg-red-500/10 px-4 py-3 text-xs space-y-1">
+                <p className="font-bold text-red-300">✗ Precheck فشل — لم يُرسَل أي أمر</p>
+                {goldPrecheckFailed.map((r, i) => (
+                  <p key={i} className="text-red-300/80">• {r}</p>
+                ))}
+              </div>
+            )}
+
+            {/* B2.1 guard inside modal */}
+            {!priceActionGuard.allowed && (
+              <div className="rounded-md border border-red-500/50 bg-red-500/10 px-4 py-3 space-y-1">
+                <p className="text-xs font-bold text-red-300">⛔ حارس جودة التنفيذ — BLOCK</p>
+                {priceActionGuard.blockers.map((b, i) => (
+                  <p key={i} className="text-xs text-red-300/80">✗ {b}</p>
+                ))}
+              </div>
+            )}
+
+            {/* Lot override */}
+            <div className="rounded-md border border-amber-500/20 bg-amber-500/[0.04] px-4 py-3 space-y-2">
+              <div className="flex items-center justify-between gap-2">
+                <p className="text-xs font-semibold text-amber-200/90">تعديل اللوت قبل الإرسال</p>
+                <button
+                  type="button"
+                  onClick={() => setManualLot(preview.estimatedLot ?? 0.01)}
+                  className="text-[10px] text-amber-300/70 hover:text-amber-300 underline underline-offset-2"
+                >
+                  إعادة للمحسوب ({(preview.estimatedLot ?? 0.01).toFixed(2)})
+                </button>
+              </div>
+              <input
+                type="number"
+                value={manualLot}
+                onChange={(e) => { const v = parseFloat(e.target.value); if (!isNaN(v)) setManualLot(v); }}
+                min={0.01}
+                step={0.01}
+                className={`w-full rounded border px-3 py-1.5 text-sm font-mono text-foreground focus:outline-none focus:ring-1 ${
+                  manualLotInvalid
+                    ? "border-red-500/50 bg-red-500/10 focus:ring-red-500/40"
+                    : "border-border bg-muted/10 focus:ring-amber-500/40"
+                }`}
+              />
+              {manualLotInvalid && (
+                <p className="text-xs text-red-400">⚠ اللوت يجب أن يكون أكبر من 0</p>
+              )}
+            </div>
+
+            {/* Confirmation checkbox */}
+            <label className="flex items-start gap-3 cursor-pointer rounded-md border border-border bg-muted/5 px-4 py-3">
+              <input
+                type="checkbox"
+                checked={goldUserConfirmed}
+                onChange={(e) => setGoldUserConfirmed(e.target.checked)}
+                className="mt-0.5 h-4 w-4 shrink-0 rounded border-border accent-amber-500"
+              />
+              <span className="text-xs text-foreground/90 leading-relaxed">
+                أؤكد تنفيذ هذه الخطة عبر MT5 وفق قواعد النظام والحوكمة.
+                التنفيذ محكوم بالحراس والمخاطر المحددة في الإعدادات.
+              </span>
+            </label>
+
+            {/* Action buttons */}
+            <div className="flex flex-wrap items-center gap-3 pt-1">
+              <button
+                type="button"
+                disabled={!goldUserConfirmed || goldOrdering || manualLotInvalid || !priceActionGuard.allowed}
+                onClick={() => void handleGoldSendToMT5()}
+                className={`inline-flex items-center justify-center rounded-md border px-4 py-2 text-sm font-semibold transition-colors ${
+                  goldUserConfirmed && !goldOrdering && !manualLotInvalid && priceActionGuard.allowed
+                    ? "border-amber-500/50 bg-amber-500/20 text-amber-200 hover:bg-amber-500/30 cursor-pointer"
+                    : "border-zinc-500/20 bg-zinc-700/20 text-zinc-400/60 cursor-not-allowed"
+                }`}
+              >
+                {goldOrdering ? "جارٍ الإرسال إلى MT5…" : "إرسال عبر MT5"}
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowGoldModal(false);
+                  setGoldUserConfirmed(false);
+                  setGoldOrderResult(null);
+                  setGoldOrderError(null);
+                  setGoldPrecheckFailed([]);
+                }}
+                className="inline-flex items-center justify-center rounded-md border border-border bg-muted/20 px-4 py-2 text-sm font-medium text-muted-foreground hover:text-foreground hover:bg-muted/40 transition-colors"
+              >
+                إغلاق
+              </button>
+            </div>
+
+            {/* Margin precheck failure */}
+            {goldOrderResult && goldOrderResult.retcodeText === "NO_MONEY_PRECHECK" && (
+              <div className="rounded-md border border-orange-500/40 bg-orange-500/10 px-4 py-3 text-xs text-orange-200 space-y-2">
+                <p className="font-semibold text-sm text-orange-300">✗ الهامش غير كافٍ — لم يُرسل الأمر</p>
+                <div className="grid grid-cols-2 gap-x-4 gap-y-1">
+                  <p>الهامش المطلوب: <span className="font-mono font-bold">{goldOrderResult.marginRequired?.toFixed(2) ?? "—"}</span></p>
+                  <p>الهامش المتاح: <span className="font-mono font-bold text-emerald-300">{goldOrderResult.freeMarginBefore?.toFixed(2) ?? "—"}</span></p>
+                </div>
+                {goldOrderResult.suggestedMaxLot != null && (
+                  <div className="space-y-1.5">
+                    <p className="text-amber-300">
+                      اللوت المقترح: <span className="font-mono font-bold">{goldOrderResult.suggestedMaxLot}</span>
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => { setManualLot(goldOrderResult.suggestedMaxLot!); setGoldOrderResult(null); setGoldUserConfirmed(false); }}
+                      className="inline-flex items-center gap-1.5 rounded-md border border-amber-500/40 bg-amber-500/15 px-3 py-1.5 text-xs font-medium text-amber-300 hover:bg-amber-500/25 transition-colors"
+                    >
+                      ← استخدام اللوت المقترح: {goldOrderResult.suggestedMaxLot}
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Success */}
+            {goldOrderResult && goldOrderResult.retcodeText !== "NO_MONEY_PRECHECK" && (goldOrderResult.ok || goldOrderResult.accepted) && (
+              <div className="rounded-md border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-xs text-emerald-300 space-y-1">
+                <p className="font-semibold text-sm">✓ تم إرسال الأمر إلى MT5</p>
+                {goldOrderResult.ticket != null && (
+                  <p>رقم التذكرة: <span className="font-mono font-bold">{goldOrderResult.ticket}</span></p>
+                )}
+                <p>الاستجابة: {goldOrderResult.retcodeText ?? goldOrderResult.message ?? "—"}</p>
+                {goldOrderResult.accountLogin != null && (
+                  <p className="text-emerald-300/60">الحساب: {goldOrderResult.accountLogin} — {goldOrderResult.server ?? "—"}</p>
+                )}
+              </div>
+            )}
+
+            {/* Error */}
+            {goldOrderError && (
+              <div className="rounded-md border border-red-500/30 bg-red-500/10 px-4 py-3 text-xs text-red-300 space-y-1">
+                <p className="font-semibold">✗ فشل إرسال الأمر</p>
+                <p>{goldOrderError}</p>
+              </div>
+            )}
+
+            <p className="text-[10px] text-muted-foreground/50 border-t border-border pt-2">
+              يُرسَل عبر /api/mt5-demo/order-send — manualConfirmation: true —
+              محكوم بالحوكمة والحراس — لا userId من الواجهة
+            </p>
+          </div>
+        </div>
+      )}
+
       {/* A27: حالة تسجيل المحاولة في Convex */}
       {journalStatus && (
         <p className="text-[10px] text-muted-foreground/70">{journalStatus}</p>
@@ -3792,7 +4243,12 @@ function TradePreviewPanel({ result }: { result: AnalysisResult }) {
       {/* A27: آخر محاولات تنفيذ Demo */}
       {recentAttempts && recentAttempts.length > 0 && (
         <div className="rounded-md border border-border bg-muted/5 p-3 space-y-2">
-          <p className="text-xs font-semibold text-foreground/80">آخر محاولات تنفيذ Demo</p>
+          <p className="text-xs font-semibold text-foreground/80">سجل محاولات تنفيذ MT5</p>
+          {mode === "gold" && (
+            <p className="text-[10px] text-amber-400/70">
+              سجل محاولات تجريبية سابقة — لا يعني أن التنفيذ مفعل الآن
+            </p>
+          )}
           <div className="space-y-1.5">
             {recentAttempts.map((a) => (
               <div
@@ -3828,8 +4284,8 @@ function TradePreviewPanel({ result }: { result: AnalysisResult }) {
 
       {/* تحذير دائم — لا يختفي سواء كان allowed أم لا */}
       <p className="text-[10px] text-muted-foreground/50 border-t border-border pt-2">
-        ⚠ هذا Preview فقط — لا يُرسل أي أمر إلى MT5 — لا order_send — لا order_close
-        — لا تنفيذ تداول — لا pending order حقيقي — لا userId من الواجهة
+        ⚠ التنفيذ محكوم بقواعد الحوكمة — لا order_send — لا order_close
+        — لا pending order — لا userId من الواجهة — التنفيذ يتطلب موافقة جميع الحراس
       </p>
     </div>
   );
@@ -3851,7 +4307,7 @@ function buildExecutionEligibility(
     reasons.push("Kill Switch مفعّل — جميع التنفيذات معطّلة");
   }
   if (settings.executionMode === "READ_ONLY") {
-    reasons.push("وضع القراءة فقط — التنفيذ مغلق من الإعدادات");
+    reasons.push("التنفيذ مغلق من الإعدادات — غيّر وضع التنفيذ في الإعدادات");
   }
   if (!settings.isConfirmedDemo) {
     reasons.push("يجب تأكيد أن الحساب Demo من صفحة الإعدادات");
@@ -3909,12 +4365,17 @@ function buildExecutionEligibility(
 function buildExecutionRequestPreview(
   result: AnalysisResult,
   preview: TradeOrderPreview,
-  _eligibility: ExecutionEligibility,
+  eligibility: ExecutionEligibility,
   opts?: { decisionId?: string },
 ): ExecutionRequestPreview {
   return {
     platform:                   "MT5",
     accountMode:                "DEMO_ONLY",
+    systemMode:                 resolveSystemExecutionMode(
+      eligibility.executionMode,
+      eligibility.killSwitchOn,
+      !eligibility.eligible,
+    ),
     symbol:                     preview.symbol,
     orderType:                  preview.orderType,
     direction:                  preview.direction,
@@ -4170,7 +4631,7 @@ export function AnalysisControlPanel({
         <CardHeader className="border-b border-amber-500/10 px-4 py-4 md:px-6">
           <CardTitle className="card-title-inst">لوحة تحليل الفرصة</CardTitle>
           <p className="text-muted-foreground text-xs leading-relaxed">
-            قراءة فقط — لا يتم تنفيذ أي صفقة. هذا تحليل استرشادي فقط.
+            التنفيذ يتم فقط بعد موافقة القواعد واللجان — هذا تحليل استرشادي فقط.
           </p>
         </CardHeader>
         <CardContent className="px-4 py-4 md:px-6">
@@ -4288,7 +4749,7 @@ export function AnalysisControlPanel({
               {syncStatus ?? "تحليل الفرصة"}
             </Button>
             <span className="text-muted-foreground text-xs">
-              قراءة فقط — لا يتم تنفيذ أي صفقة
+              التنفيذ يتم فقط بعد موافقة القواعد
             </span>
           </div>
 
@@ -4303,7 +4764,7 @@ export function AnalysisControlPanel({
             <div className="flex flex-wrap items-center justify-between gap-2">
               <CardTitle className="card-title-inst">نتيجة التحليل</CardTitle>
               <Badge variant="outline" className="text-xs text-amber-300">
-                قراءة فقط — لا يتم تنفيذ أي صفقة
+                التنفيذ محكوم بالقواعد
               </Badge>
             </div>
           </CardHeader>
@@ -4488,7 +4949,7 @@ export function AnalysisControlPanel({
                 <CommitteeSummaryPreview result={result} />
 
                 {/* ── A23: مراجعة أمر التداول Demo Preview ─────────────────── */}
-                <TradePreviewPanel result={result} />
+                <TradePreviewPanel result={result} mode={mode} />
 
                 {/* ── Debug: معلومات التوقيت والمصدر ─────────────────────────── */}
                 <details className="rounded border border-border/30 px-3 py-2 text-[10px] text-muted-foreground/55">

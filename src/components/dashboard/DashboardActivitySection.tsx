@@ -31,7 +31,7 @@ export function DashboardActivitySection() {
       <Card className={institutionalCardClass("p-0")}>
         <CardHeader className="border-b border-amber-500/10 px-4 pb-3 pt-4">
           <CardTitle className="text-base md:text-lg">أحدث قرارات المختبر</CardTitle>
-          <p className="text-muted-foreground text-xs">قراءة فقط — بدون تنفيذ.</p>
+          <p className="text-muted-foreground text-xs">للتحليل — التنفيذ محكوم بالقواعد.</p>
         </CardHeader>
         <CardContent className="space-y-2 px-4 pb-4">
           {snap.phase === "loading" ? (

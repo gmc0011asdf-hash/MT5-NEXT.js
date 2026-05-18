@@ -252,7 +252,7 @@ export default function SettingsPage() {
         acc += chunk.length;
         setSyncProgress(`جاري مزامنة الأزواج: ${acc} / ${total}`);
       }
-      setSyncMessage("تمت مزامنة الرموز الظاهرة في MT5 (قراءة فقط).");
+      setSyncMessage("تمت مزامنة الرموز الظاهرة في MT5.");
     } catch {
       setSyncMessage("فشل الاتصال بالخدمة المحلية أو الخادم.");
     } finally {
@@ -396,7 +396,7 @@ export default function SettingsPage() {
       if (canUseConvex) {
         await syncSnapshotAfterConnect();
       }
-      setConnectMessage("تم الاتصال بمنصة MT5 بنجاح (قراءة فقط).");
+      setConnectMessage("تم الاتصال بمنصة MT5 بنجاح.");
     } catch (e) {
       const reason = e instanceof Error ? e.message : "فشل الاتصال بخدمة MT5 المحلية.";
       setConnectMessage(reason);
@@ -418,7 +418,7 @@ export default function SettingsPage() {
 
       <Section title="إعدادات MT5">
         <p className="rounded-xl border border-amber-500/20 bg-amber-500/5 px-3 py-2 text-amber-100/90 text-xs leading-relaxed mb-4">
-          اتصال قراءة فقط. لا يتم تنفيذ أي أوامر تداول.
+          اتصال MT5 للتحليل والتنفيذ المحكوم.
         </p>
         <div className="grid gap-4 md:grid-cols-2">
           <div className="space-y-2">
@@ -497,12 +497,12 @@ export default function SettingsPage() {
             <div>Free Margin: <span className="tabular-nums">{connectionStatus.free_margin ?? "—"}</span></div>
             <div>العملة: {connectionStatus.currency ?? "—"}</div>
             <div>الرافعة: <span className="tabular-nums">{connectionStatus.leverage ?? "—"}</span></div>
-            <div>وضع القراءة فقط: {connectionStatus.read_only ? "نعم" : "لا"}</div>
+            <div>حالة تنفيذ النظام: {connectionStatus.read_only ? "مقيّد" : "مفعّل"}</div>
           </div>
         ) : null}
       </Section>
 
-      <Section title="إعدادات OKX — قراءة فقط (Placeholder)">
+      <Section title="إعدادات OKX — Placeholder">
         <p className="rounded-xl border border-amber-500/20 bg-amber-500/5 px-3 py-2 text-amber-100/90 text-xs leading-relaxed mb-4">
           هذا القسم مجرد عنصر نائب (Placeholder). سيتم تفعيل الاتصال بواجهة برمجة التطبيقات (API) الخاصة بـ OKX لاحقاً.
         </p>
@@ -510,7 +510,7 @@ export default function SettingsPage() {
           <Field label="API Key" placeholder="مخفي (عنصر نائب)" />
           <Field label="Secret Key" placeholder="مخفي (عنصر نائب)" />
           <Field label="Passphrase" placeholder="مخفي (عنصر نائب)" />
-          <Field label="وضع الاتصال" value="قراءة فقط (مخطط له)" />
+          <Field label="وضع الاتصال" value="Placeholder (مخطط له)" />
         </div>
         <div className="flex flex-wrap items-center gap-3 mt-4">
           <Button type="button" variant="outline" disabled>
@@ -740,10 +740,10 @@ export default function SettingsPage() {
         </div>
       </Section>
 
-      {/* ── A25: Demo Execution Guard Settings ──────────────────────────────── */}
-      <Section title="إعدادات تنفيذ MT5 التجريبي">
+      {/* ── A25: MT5 Platform Execution Settings ─────────────────────────────── */}
+      <Section title="إعدادات تنفيذ MT5 عبر النظام">
         <p className="rounded-xl border border-red-500/20 bg-red-500/5 px-3 py-2 text-red-200/90 text-xs leading-relaxed mb-4">
-          ⚠ هذه الإعدادات للتنفيذ التجريبي Demo فقط — لا تنفيذ تداول حقيقي — لا order_send —
+          ⚠ هذه الإعدادات للتنفيذ عبر منصة MT5 — محكوم بقواعد الحوكمة والحراس — لا order_send —
           الإعدادات محفوظة محلياً (localStorage) ولا تُرسَل إلى أي سيرفر.
         </p>
 
@@ -788,23 +788,27 @@ export default function SettingsPage() {
 
           <div className="flex items-center justify-between rounded-xl border border-border/60 px-4 py-3">
             <div>
-              <p className="text-sm font-medium">تأكيد حساب Demo</p>
+              <p className="text-sm font-medium">تأكيد مراجعة التنفيذ</p>
               <p className="text-xs text-muted-foreground">
-                يجب تأكيده يدوياً — لا يمكن اكتشافه تلقائياً
+                يجب تأكيده يدوياً قبل إرسال الأمر لـ MT5
               </p>
             </div>
             <SymbolToggleSwitch
               checked={demoSettings.isConfirmedDemo}
-              label="تأكيد حساب Demo"
+              label="تأكيد مراجعة التنفيذ"
               onToggle={() => updateDemoSetting("isConfirmedDemo", !demoSettings.isConfirmedDemo)}
             />
           </div>
         </div>
 
+        {demoSettings.killSwitchEnabled && (
+          <p className="rounded-md border border-red-500/20 bg-red-500/5 px-3 py-2 text-xs text-red-300">
+            ⛔ Kill Switch مفعّل — زر التنفيذ في /gold سيبقى معطّلًا ما دام Kill Switch مفعّلًا. أوقفه للسماح بالتنفيذ عند اكتمال الشروط.
+          </p>
+        )}
         {!demoSettings.isConfirmedDemo && (
           <p className="rounded-md border border-amber-500/20 bg-amber-500/5 px-3 py-2 text-xs text-amber-300">
-            ⚠ لن يتم السماح بالتنفيذ إلا على حساب Demo مؤكد.
-            تحقق من نوع حسابك في MT5 قبل التفعيل.
+            ⚠ يجب تأكيد مراجعة التنفيذ قبل إرسال الأمر لـ MT5 — فعّل هذا الخيار بعد مراجعة إعدادات المنصة.
           </p>
         )}
 
@@ -907,7 +911,7 @@ export default function SettingsPage() {
           <p className="font-semibold text-foreground/80 mb-1.5">ملخص الإعدادات الحالية</p>
           <p>الوضع: <span className="text-amber-300">{EXECUTION_MODE_LABELS[demoSettings.executionMode]}</span></p>
           <p>Kill Switch: <span className={demoSettings.killSwitchEnabled ? "text-red-300" : "text-emerald-300"}>{demoSettings.killSwitchEnabled ? "مفعّل" : "معطّل"}</span></p>
-          <p>حساب Demo مؤكد: <span className={demoSettings.isConfirmedDemo ? "text-emerald-300" : "text-amber-300"}>{demoSettings.isConfirmedDemo ? "نعم ✓" : "لا ✗"}</span></p>
+          <p>مراجعة التنفيذ مؤكدة: <span className={demoSettings.isConfirmedDemo ? "text-emerald-300" : "text-amber-300"}>{demoSettings.isConfirmedDemo ? "نعم ✓" : "لا ✗"}</span></p>
           <p>حد المخاطرة: <span className="text-foreground">${demoSettings.maxRiskUsdPerTrade} — RR ≥ {demoSettings.minRewardRiskRatio} — سبريد ≤ {demoSettings.maxSpreadPoints} pts</span></p>
           <p className="text-[10px] text-muted-foreground/50 pt-1">الإعدادات تُخزَّن محلياً فقط — لا ترسل لأي سيرفر — لا تنفيذ في A25</p>
         </div>
@@ -1003,10 +1007,10 @@ export default function SettingsPage() {
 
       <Section title="جاهزية مرحلة العقول واللجان">
         <p className="text-muted-foreground text-xs leading-relaxed mb-4">
-          قائمة تحقق للقراءة فقط قبل تشغيل مرحلة العقول واللجان.
+          قائمة التحقق قبل تشغيل مرحلة العقول واللجان.
         </p>
         <div className="grid gap-2 text-sm">
-          <CheckItem label="اتصال MT5 قراءة فقط" ok={mt5Summary?.hasRealMt5LocalData === true} />
+          <CheckItem label="اتصال MT5 للتحليل" ok={mt5Summary?.hasRealMt5LocalData === true} />
           <CheckItem label="مزامنة الحساب" ok={Boolean(mt5Summary?.latestAccountSnapshot)} />
           <CheckItem label="مزامنة الأسعار" ok={(mt5Summary?.lastSyncAt ?? 0) > 0} />
           <CheckItem label="مزامنة الصفقات النشطة" ok={(mt5Summary?.openPositionsCount ?? 0) >= 0} />
