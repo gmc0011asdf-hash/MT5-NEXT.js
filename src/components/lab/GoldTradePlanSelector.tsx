@@ -248,7 +248,13 @@ function ProfessionalAnalysis({ plan }: { plan: TradePlan }) {
 
 // ─── Main component ───────────────────────────────────────────────────────────
 
-export function GoldTradePlanSelector({ plans }: { plans: GoldTradePlansResult }) {
+export function GoldTradePlanSelector({
+  plans,
+  onSelectPlan,
+}: {
+  plans:          GoldTradePlansResult;
+  onSelectPlan?:  (plan: TradePlan | null) => void;
+}) {
   const [selectedIdx, setSelectedIdx] = useState<number | null>(null);
 
   const { plans: tradePlans, bestPlanIdx } = plans;
@@ -263,7 +269,7 @@ export function GoldTradePlanSelector({ plans }: { plans: GoldTradePlansResult }
       <div className="flex flex-wrap items-center justify-between gap-2">
         <p className="text-sm font-bold text-foreground/90">اختر خطة للمراجعة</p>
         {selectedPlan && (
-          <button type="button" onClick={() => setSelectedIdx(null)}
+          <button type="button" onClick={() => { setSelectedIdx(null); onSelectPlan?.(null); }}
             className="text-[10px] text-muted-foreground hover:text-foreground/60">
             إلغاء الاختيار ✕
           </button>
@@ -282,7 +288,11 @@ export function GoldTradePlanSelector({ plans }: { plans: GoldTradePlansResult }
               key={plan.planType}
               type="button"
               disabled={plan.proposalStatus === "WAIT"}
-              onClick={() => setSelectedIdx(isSelected ? null : i)}
+              onClick={() => {
+                const newIdx = isSelected ? null : i;
+                setSelectedIdx(newIdx);
+                onSelectPlan?.(newIdx != null ? tradePlans[newIdx] : null);
+              }}
               className={`
                 relative rounded-lg border px-3 py-2.5 text-right transition-all
                 ${isSelected ? pl.btnSel : `text-foreground/70 bg-card/30 ${pl.btnBase}`}

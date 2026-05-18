@@ -54,6 +54,17 @@ export function formatCountdown(ms: number): string {
   return `${mm}:${ss}`;
 }
 
+/** Human-readable duration label for each TF. */
+export const TF_DURATION_LABEL: Record<string, string> = {
+  M1:  "دقيقة واحدة",
+  M5:  "5 دقائق",
+  M15: "15 دقيقة",
+  M30: "30 دقيقة",
+  H1:  "ساعة واحدة",
+  H4:  "4 ساعات",
+  D1:  "يوم واحد",
+};
+
 /** Format a Unix-ms timestamp as a readable time string. */
 export function formatTimestamp(ms: number | null | undefined): string {
   if (!ms) return "—";

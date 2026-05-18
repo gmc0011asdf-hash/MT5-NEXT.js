@@ -50,6 +50,15 @@ export function resolveSystemExecutionMode(
   return "READY_FOR_REVIEW";
 }
 
+// ─── Execution Policy ─────────────────────────────────────────────────────────
+
+export type ExecutionPolicy = "STRICT" | "EXPERIMENTAL";
+
+export const EXECUTION_POLICY_LABELS: Record<ExecutionPolicy, string> = {
+  STRICT:       "تنفيذ صارم — أي BLOCK يمنع الزر",
+  EXPERIMENTAL: "تجارب تنفيذ محكومة — Hard Blocks محفوظة",
+};
+
 // ─── Settings Type ────────────────────────────────────────────────────────────
 
 export type DemoExecutionSettings = {
@@ -62,6 +71,7 @@ export type DemoExecutionSettings = {
   allowedExecutionSymbols: string;   // فاصلة بين الرموز — فارغ = كل الرموز مسموحة
   minRewardRiskRatio:      number;
   maxSpreadPoints:         number;
+  executionPolicy:         ExecutionPolicy;  // STRICT (default) / EXPERIMENTAL
 };
 
 export const DEFAULT_DEMO_SETTINGS: DemoExecutionSettings = {
@@ -74,6 +84,7 @@ export const DEFAULT_DEMO_SETTINGS: DemoExecutionSettings = {
   allowedExecutionSymbols: "",
   minRewardRiskRatio:      1.5,
   maxSpreadPoints:         30,
+  executionPolicy:         "STRICT",
 };
 
 // ─── Eligibility Result ───────────────────────────────────────────────────────
