@@ -3816,6 +3816,28 @@ function TradePreviewPanel({
               <p className="text-[10px] font-semibold text-amber-400/80 uppercase tracking-wider">
                 تنفيذ عبر MT5 — بعد موافقة القواعد واللجان
               </p>
+
+              {/* Plan binding info */}
+              {selectedGoldPlan ? (
+                <div className="rounded-md border border-amber-500/20 bg-amber-500/5 px-2.5 py-1.5 text-[10px]">
+                  <span className="text-amber-300/70 font-medium">الخطة المختارة: </span>
+                  <span className="text-amber-200/90">
+                    {selectedGoldPlan.planType === "CONSERVATIVE" ? "المحافظة" :
+                     selectedGoldPlan.planType === "BALANCED"     ? "المتوازنة" : "الهجومية"}
+                  </span>
+                  <span className="text-muted-foreground/60 mx-1">·</span>
+                  <span className="text-muted-foreground">مصدر الخطة: Risk Manager + ATR</span>
+                  <span className="text-muted-foreground/60 mx-1">·</span>
+                  <span className="font-mono text-foreground/75">
+                    لوت: {selectedGoldPlan.estimatedLot?.toFixed(2) ?? "—"}
+                  </span>
+                </div>
+              ) : (
+                <div className="rounded-md border border-amber-500/15 bg-amber-500/5 px-2.5 py-1.5 text-[10px] text-amber-300/60">
+                  ⚠ لم يتم اختيار خطة مهنية — هذه خطة تحليل أولية
+                </div>
+              )}
+
               <button
                 type="button"
                 disabled={!canOpenGoldModal}
@@ -3834,6 +3856,28 @@ function TradePreviewPanel({
               >
                 {canOpenGoldModal ? "▶ تنفيذ عبر MT5" : "تنفيذ عبر MT5 — معطّل"}
               </button>
+
+              {/* Experimental button — يظهر فقط في EXPERIMENTAL مع soft blocks */}
+              {canOpenGoldExperimental && !canOpenGoldModal && (
+                <div className="space-y-1.5">
+                  <div className="inline-flex items-center gap-1.5 rounded border border-violet-500/30 bg-violet-500/10 px-2 py-0.5 text-[9px] text-violet-300/80">
+                    ◇ تجربة تنفيذ محكومة — ليست فرصة معتمدة
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setGoldPrecheckFailed([]);
+                      setGoldOrderResult(null);
+                      setGoldOrderError(null);
+                      setGoldUserConfirmed(false);
+                      setShowGoldModal(true);
+                    }}
+                    className="inline-flex items-center justify-center rounded-md border border-violet-500/40 bg-violet-500/15 px-5 py-2 text-sm font-semibold text-violet-200 hover:bg-violet-500/25 transition-colors"
+                  >
+                    ◇ تجربة تنفيذ — {EXECUTION_POLICY_LABELS["EXPERIMENTAL"]}
+                  </button>
+                </div>
+              )}
 
               {/* بطاقة أسباب المنع — تظهر دائمًا عند التعطيل */}
               {!canOpenGoldModal && goldBlockedReasons.length > 0 && (
@@ -4292,6 +4336,44 @@ function TradePreviewPanel({
           </div>
 
           <div className="p-5 space-y-5">
+
+          {/* EXPERIMENTAL warning section */}
+          {settings.executionPolicy === "EXPERIMENTAL" && canOpenGoldExperimental && (
+            <div className="rounded-xl border border-violet-500/30 bg-violet-500/10 px-4 py-3 space-y-2">
+              <p className="text-xs font-bold text-violet-300/90">
+                ⚠ هذه تجربة تنفيذ للنظام — ليست فرصة عالية الاعتماد
+              </p>
+              <p className="text-[10px] text-violet-300/70">
+                سياسة التنفيذ: تجارب محكومة — Hard Blocks محفوظة — الـ Soft Blocks التالية مسموح بها:
+              </p>
+              {goldPrecheckFailed.length > 0 && (
+                <ul className="space-y-0.5">
+                  {goldPrecheckFailed.map((w, i) => (
+                    <li key={i} className="text-[10px] text-amber-300/70 flex gap-1.5">
+                      <span className="shrink-0">⚠</span>{w}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          )}
+
+          {/* Plan binding note in modal */}
+          {selectedGoldPlan && mode === "gold" && (
+            <div className="rounded-md border border-amber-500/20 bg-amber-500/5 px-3 py-2 text-[10px]">
+              <span className="text-amber-300/70 font-medium">الخطة المختارة: </span>
+              <span className="text-amber-200/90 font-bold">
+                {selectedGoldPlan.planType === "CONSERVATIVE" ? "المحافظة" :
+                 selectedGoldPlan.planType === "BALANCED"     ? "المتوازنة" : "الهجومية"}
+              </span>
+              <span className="text-muted-foreground/50 mx-1">·</span>
+              <span className="text-muted-foreground">لوت: </span>
+              <span className="font-mono text-foreground/80">{selectedGoldPlan.estimatedLot?.toFixed(2) ?? "—"}</span>
+              <span className="text-muted-foreground/50 mx-1">·</span>
+              <span className="text-muted-foreground">خطر: </span>
+              <span className="font-mono text-foreground/80">${selectedGoldPlan.suggestedRiskUsd?.toFixed(2) ?? "—"}</span>
+            </div>
+          )}
             {/* Warning */}
             <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-xs text-amber-200/90 space-y-1">
               <p className="font-semibold">⚠ سيتم إرسال أمر إلى منصة MT5</p>
