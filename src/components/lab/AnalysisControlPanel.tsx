@@ -12,7 +12,7 @@
  * A16: adds "حفظ القرار" button — calls saveAnalysisDecision (no trade execution).
  */
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useConvexAuth, useMutation, useQuery } from "convex/react";
 import { api } from "../../../convex/_generated/api";
 import {
@@ -59,6 +59,16 @@ import {
 } from "@/lib/gold/gold-trade-plans-engine";
 import { GoldTradePlansCard }    from "@/components/lab/GoldTradePlansCard";
 import { GoldTradePlanSelector } from "@/components/lab/GoldTradePlanSelector";
+import { CandleSyncPanel }       from "@/components/lab/CandleSyncPanel";
+import {
+  type AnalysisMetadata,
+  type AnalysisTimelineEntry,
+  type AnalysisTrigger,
+  loadTimeline,
+  saveToTimeline,
+  clearTimelineStorage,
+  tfPeriodMs,
+} from "@/lib/gold/candle-close-timing";
 
 // ---------------------------------------------------------------------------
 // Types (mirror the route response)
@@ -4585,6 +4595,11 @@ export function AnalysisControlPanel({
   const [accountEquity,     setAccountEquity]     = useState<number | null>(null);
   const [accountFreeMargin, setAccountFreeMargin] = useState<number | null>(null);
 
+  // ── Candle Close Auto Re-Analysis v1 ─────────────────────────────────────
+  const [analysisMetadata, setAnalysisMetadata] = useState<AnalysisMetadata | null>(null);
+  const [timeline,         setTimeline]          = useState<AnalysisTimelineEntry[]>(() => loadTimeline());
+  const analysisTriggerRef = useRef<AnalysisTrigger>("MANUAL");
+
   // ── async state — حفظ (A16) ────────────────────────────────────────────
   const [saving, setSaving] = useState(false);
   const [savedDecisionId, setSavedDecisionId] = useState<string | null>(null);
@@ -4636,6 +4651,7 @@ export function AnalysisControlPanel({
   }
 
   async function handleAnalyze() {
+    const analysisRequestedAt = Date.now();
     setFetchError(null);
     setResult(null);
     setSavedDecisionId(null);
@@ -4724,6 +4740,47 @@ export function AnalysisControlPanel({
       }
 
       setResult(json);
+
+      // ── Candle Close Auto Re-Analysis v1 — record timing ────────────────
+      const completedAt      = Date.now();
+      const closedCandleTime = json.marketStateAnalysis?.latestClosedCandleTime ?? null;
+      const selectedTF       = json.selectedTimeframe;
+      const period           = selectedTF ? tfPeriodMs(selectedTF) : null;
+
+      const newMeta: AnalysisMetadata = {
+        trigger:                 analysisTriggerRef.current,
+        requestedAtLocal:        analysisRequestedAt,
+        completedAtLocal:        completedAt,
+        mt5LastClosedCandleTime: closedCandleTime,
+        mt5NextCandleCloseTime:  closedCandleTime && period ? closedCandleTime + period : null,
+        timeframe:               selectedTF,
+        symbol:                  json.symbol,
+        delayAfterCloseMs:
+          analysisTriggerRef.current === "AUTO_CANDLE_CLOSE" &&
+          closedCandleTime && period
+            ? completedAt - (closedCandleTime + period)
+            : null,
+      };
+      setAnalysisMetadata(newMeta);
+
+      const tlEntry: AnalysisTimelineEntry = {
+        id:               String(analysisRequestedAt),
+        symbol:           json.symbol,
+        timeframe:        selectedTF,
+        trigger:          analysisTriggerRef.current,
+        requestedAt:      analysisRequestedAt,
+        completedAt,
+        closedCandleTime,
+        direction:        json.direction ?? null,
+        grade:            null,
+        confidence:       null,
+        recommendation:   json.status,
+      };
+      setTimeline((prev) => saveToTimeline(prev, tlEntry));
+
+      // reset trigger to MANUAL for the next call
+      analysisTriggerRef.current = "MANUAL";
+
     } catch (e) {
       setFetchError(e instanceof Error ? e.message : "خطأ غير معروف في الطلب");
     } finally {
@@ -4876,7 +4933,12 @@ export function AnalysisControlPanel({
 
           {/* زر التحليل */}
           <div className="mt-6 flex flex-wrap items-center gap-4">
-            <Button type="button" onClick={() => void handleAnalyze()} disabled={!canAnalyze} className="min-w-[160px]">
+            <Button
+              type="button"
+              onClick={() => { analysisTriggerRef.current = "MANUAL"; void handleAnalyze(); }}
+              disabled={!canAnalyze}
+              className="min-w-[160px]"
+            >
               {syncStatus ?? "تحليل الفرصة"}
             </Button>
             <span className="text-muted-foreground text-xs">
@@ -4887,6 +4949,26 @@ export function AnalysisControlPanel({
           {fetchError && <p className="mt-3 text-sm text-red-400">{fetchError}</p>}
         </CardContent>
       </Card>
+
+      {/* ── Candle Close Auto Re-Analysis v1 ─────────────────────────────── */}
+      {mode === "gold" && (
+        <CandleSyncPanel
+          selectedTimeframe={result?.selectedTimeframe ?? (timeframeMode === "manual" ? manualTF : null)}
+          symbol={symbol || "XAUUSD"}
+          lastClosedCandleTime={analysisMetadata?.mt5LastClosedCandleTime ?? null}
+          analysisMetadata={analysisMetadata}
+          onTriggerAnalysis={(trigger) => {
+            analysisTriggerRef.current = trigger;
+            void handleAnalyze();
+          }}
+          busy={busy}
+          timeline={timeline}
+          onClearTimeline={() => {
+            clearTimelineStorage();
+            setTimeline([]);
+          }}
+        />
+      )}
 
       {/* ── result card ─────────────────────────────────────────────────── */}
       {result && (
@@ -4930,6 +5012,50 @@ export function AnalysisControlPanel({
                   <Stat label="الفريم المختار" value={result.selectedTimeframe ?? "—"} />
                   <Stat label="الاتجاه" value={directionLabel(result.direction)} />
                 </div>
+
+                {/* ── Candle Close Timing Display — gold mode ──────────── */}
+                {mode === "gold" && analysisMetadata && (
+                  <div className="rounded-md border border-border/20 bg-background/20 px-3 py-2 space-y-1">
+                    <p className="text-[9px] uppercase tracking-wider text-muted-foreground mb-1">توقيت التحليل</p>
+                    <div className="grid grid-cols-2 gap-x-4 gap-y-0.5 text-[10px]">
+                      <div className="flex justify-between gap-1">
+                        <span className="text-muted-foreground">وقت التحليل</span>
+                        <span className="font-mono text-foreground/80">
+                          {analysisMetadata.completedAtLocal
+                            ? new Date(analysisMetadata.completedAtLocal).toLocaleTimeString("ar-SA", { hour12: false })
+                            : "—"}
+                        </span>
+                      </div>
+                      <div className="flex justify-between gap-1">
+                        <span className="text-muted-foreground">trigger</span>
+                        <span className={`font-semibold ${analysisMetadata.trigger === "AUTO_CANDLE_CLOSE" ? "text-violet-300" : "text-sky-300"}`}>
+                          {analysisMetadata.trigger === "AUTO_CANDLE_CLOSE" ? "إعادة تلقائية" : "يدوي"}
+                        </span>
+                      </div>
+                      <div className="flex justify-between gap-1">
+                        <span className="text-muted-foreground">الشمعة المعتمدة</span>
+                        <span className="font-mono text-foreground/70">
+                          {analysisMetadata.mt5LastClosedCandleTime
+                            ? new Date(analysisMetadata.mt5LastClosedCandleTime).toLocaleTimeString("ar-SA", { hour12: false })
+                            : "—"}
+                        </span>
+                      </div>
+                      {analysisMetadata.delayAfterCloseMs != null && (
+                        <div className="flex justify-between gap-1">
+                          <span className="text-muted-foreground">تأخير بعد الإغلاق</span>
+                          <span className="font-mono text-amber-300/80">
+                            {(analysisMetadata.delayAfterCloseMs / 1000).toFixed(1)} ث
+                          </span>
+                        </div>
+                      )}
+                    </div>
+                    {result.marketStateAnalysis?.latestCandleClosed === false && (
+                      <p className="text-[10px] text-amber-300/70 mt-1">
+                        الشمعة الحالية ما زالت مفتوحة — التحليل يعتمد على آخر شمعة مغلقة
+                      </p>
+                    )}
+                  </div>
+                )}
 
                 {/* entry / SL / TP */}
                 {result.entry !== undefined && (
