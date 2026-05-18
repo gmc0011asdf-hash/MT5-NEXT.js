@@ -16,7 +16,7 @@ export default function LabPage() {
       <div>
         <h2 className="page-title">MT5 General Lab</h2>
         <p className="label-secondary mt-1">
-          مختبر تحليل عام لجميع رموز MT5 المفعّلة — قراءة فقط — لا يتم تنفيذ أي تداول.
+          مختبر تحليل عام لجميع رموز MT5 المفعّلة — التنفيذ محكوم بقواعد الحوكمة.
         </p>
         <p className="mt-1 text-xs text-muted-foreground/60">
           للتحليل المؤسسي على XAUUSD:{" "}

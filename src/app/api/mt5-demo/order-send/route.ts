@@ -1,17 +1,17 @@
 /**
- * /api/mt5-demo/order-send — A26.2
+ * /api/mt5-demo/order-send — A26.2 (MT5 Platform Execution Gate)
  * ─────────────────────────────────────────────────────────────────────────────
  * Proxy آمن إلى خدمة MT5 المحلية: POST http://127.0.0.1:8010/demo/order-send
  *
  * ⚠️ هذا Route لا يحتوي على order_send — التنفيذ داخل خدمة Python فقط.
- * ⚠️ Demo فقط — يرفض الطلب إذا كان MT5_DEMO_EXECUTION_ENABLED=false في الخدمة.
+ * ⚠️ التنفيذ مغلق افتراضياً — يتطلب MT5_DEMO_EXECUTION_ENABLED=true في بيئة التشغيل.
+ *     [legacy env name: MT5_DEMO_EXECUTION_ENABLED → سيُعاد تسميته MT5_PLATFORM_EXECUTION_ENABLED لاحقاً]
  *
  * الأمان:
  *  • لا userId يُمرَّر
  *  • لا secrets تُخزَّن
  *  • لا Convex mutations
- *  • الخدمة المحلية تتحقق من Demo account (trade_mode == 0)
- *  • الخدمة المحلية تتحقق من manualConfirmation و accountMode
+ *  • التحقق من manualConfirmation و accountMode داخل الخدمة المحلية
  * ─────────────────────────────────────────────────────────────────────────────
  */
 
@@ -31,7 +31,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       {
         ok: false,
         accepted: false,
-        error: "Demo execution disabled — يجب تفعيل MT5_DEMO_EXECUTION_ENABLED=true للسماح بالتنفيذ التجريبي",
+        error: "تنفيذ MT5 مغلق حاليًا بواسطة إعدادات النظام — يجب تفعيل MT5_DEMO_EXECUTION_ENABLED=true في خدمة MT5",
         demoOnly: true,
         read_only_mode: true,
       },

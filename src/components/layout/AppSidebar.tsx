@@ -146,7 +146,7 @@ export function AppSidebar() {
       {/* Footer */}
       <div className="shrink-0 border-t border-amber-500/10 px-5 py-3">
         <p className="text-[11px] leading-relaxed text-stone-500">
-          MT5 الحقيقي · قراءة فقط
+          MT5 الحقيقي · محكوم بالقواعد
         </p>
       </div>
     </aside>

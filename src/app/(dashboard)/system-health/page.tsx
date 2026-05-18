@@ -22,7 +22,7 @@ interface ServiceCard {
 }
 
 const SERVICES: ServiceCard[] = [
-  { name: "MT5 Read-only Bridge",  nameAr: "جسر MT5 (قراءة فقط)",  status: "healthy",      note: "متصل — وضع القراءة فقط. لا يُنفّذ تداول." },
+  { name: "MT5 Execution Bridge",  nameAr: "جسر MT5 للتنفيذ المحكوم",  status: "healthy",      note: "متصل — تنفيذ MT5 محكوم بالقواعد." },
   { name: "OKX Connector",         nameAr: "موصّل OKX",              status: "placeholder",  note: "غير مفعّل — عنصر نائب للمرحلة القادمة." },
   { name: "Convex Database",       nameAr: "قاعدة بيانات Convex",    status: "healthy",      note: "متصل — يعمل بشكل طبيعي." },
   { name: "Clerk Auth",            nameAr: "مصادقة Clerk",           status: "healthy",      note: "مفعّل — نظام المصادقة يعمل." },
@@ -573,9 +573,9 @@ export default function SystemHealthPage() {
       <div className="rounded-xl border border-amber-500/20 bg-amber-500/5 p-4 text-amber-200/90 text-sm flex items-start gap-3">
         <AlertCircle className="h-5 w-5 text-amber-500 shrink-0 mt-0.5" />
         <div>
-          <p className="font-semibold mb-1">Read-only / لا يوجد تنفيذ تداول</p>
+          <p className="font-semibold mb-1">MT5 Governed · التنفيذ حسب الحوكمة</p>
           <p className="opacity-80">
-            بعض الخدمات حقيقية وبعضها Placeholder حسب المرحلة. هذه الشاشة للمراقبة فقط ولا يوجد تنفيذ تداول.
+            بعض الخدمات حقيقية وبعضها Placeholder حسب المرحلة. التنفيذ يتم فقط بعد موافقة القواعد واللجان.
           </p>
         </div>
       </div>
