@@ -21,6 +21,7 @@ import {
   formatCountdown,
   formatTimestamp,
   tfPeriodMs,
+  TF_DURATION_LABEL,
   type AnalysisTrigger,
   type AnalysisMetadata,
   type AnalysisTimelineEntry,
@@ -258,6 +259,9 @@ export function CandleSyncPanel({
           <p className="text-xs font-bold text-amber-200/90">مزامنة التحليل مع إغلاق الشمعة</p>
           <p className="text-[10px] text-muted-foreground mt-0.5">
             الفريم: <span className="font-mono text-amber-300/80">{tfLabel}</span>
+            {selectedTimeframe && TF_DURATION_LABEL[selectedTimeframe] && (
+              <> · مدة الفريم: <span className="text-foreground/70">{TF_DURATION_LABEL[selectedTimeframe]}</span></>
+            )}
             {" · "}مصدر الوقت: متصفح (UTC)
           </p>
         </div>
@@ -268,24 +272,61 @@ export function CandleSyncPanel({
 
       {/* ── Countdown ──────────────────────────────────────────────────────── */}
       {isKnownTF && nextCloseAt && autoEnabled ? (
-        <div className="rounded-lg border border-sky-500/20 bg-sky-500/5 px-4 py-3 text-center space-y-1">
-          <p className="text-[10px] text-muted-foreground">إعادة التحليل القادمة بعد إغلاق شمعة {tfLabel}</p>
-          <CountdownTimer targetMs={nextCloseAt} />
-          <p className="text-[9px] text-muted-foreground/60">
-            {new Date(nextCloseAt).toLocaleTimeString("ar-SA", { hour12: false })} UTC
+        <div className="rounded-lg border border-sky-500/20 bg-sky-500/5 px-4 py-3 space-y-2">
+          {/* Label + countdown */}
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-[10px] text-muted-foreground leading-tight">
+              المتبقي حتى إغلاق شمعة <span className="font-mono text-amber-300/80">{tfLabel}</span>
+            </span>
+            <CountdownTimer targetMs={nextCloseAt} />
+          </div>
+          {/* Next close times */}
+          <div className="grid grid-cols-2 gap-1 text-[9px]">
+            <div className="flex justify-between gap-1">
+              <span className="text-muted-foreground">إغلاق محلي</span>
+              <span className="font-mono text-foreground/75">
+                {new Date(nextCloseAt).toLocaleTimeString(undefined, { hour12: false })}
+              </span>
+            </div>
+            <div className="flex justify-between gap-1">
+              <span className="text-muted-foreground">UTC</span>
+              <span className="font-mono text-foreground/60">
+                {new Date(nextCloseAt).toISOString().substring(11, 19)}
+              </span>
+            </div>
+          </div>
+          {/* Note: current candle is mid-period */}
+          <p className="text-[9px] text-amber-200/50 leading-tight border-t border-border/15 pt-1.5">
+            هذا الوقت المتبقي للشمعة الحالية — ليس مدة الفريم الكاملة ({TF_DURATION_LABEL[tfLabel] ?? tfLabel})
           </p>
         </div>
       ) : isKnownTF && !autoEnabled ? (
-        <div className="rounded-lg border border-border/20 bg-background/20 px-4 py-2 flex items-center justify-between">
-          <span className="text-[10px] text-muted-foreground">وقت إغلاق الشمعة القادمة</span>
-          <span className="font-mono text-xs text-foreground/70">
-            {selectedTimeframe
-              ? new Date(nextCandleCloseAt(selectedTimeframe) ?? 0).toLocaleTimeString("ar-SA", { hour12: false })
-              : "—"
-            }
-            {" · "}
-            <span className="text-amber-300/70">{msLeft > 0 ? formatCountdown(msLeft) : "—"}</span>
-          </span>
+        <div className="rounded-lg border border-border/20 bg-background/20 px-4 py-2.5 space-y-1.5">
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-[10px] text-muted-foreground">المتبقي حتى إغلاق شمعة {tfLabel}</span>
+            <span className="font-mono text-sm font-semibold text-amber-300/80">
+              {msLeft > 0 ? formatCountdown(msLeft) : "—"}
+            </span>
+          </div>
+          {selectedTimeframe && (
+            <div className="grid grid-cols-2 gap-1 text-[9px]">
+              <div className="flex justify-between gap-1">
+                <span className="text-muted-foreground">إغلاق محلي</span>
+                <span className="font-mono text-foreground/70">
+                  {new Date(nextCandleCloseAt(selectedTimeframe) ?? 0).toLocaleTimeString(undefined, { hour12: false })}
+                </span>
+              </div>
+              <div className="flex justify-between gap-1">
+                <span className="text-muted-foreground">UTC</span>
+                <span className="font-mono text-foreground/55">
+                  {new Date(nextCandleCloseAt(selectedTimeframe) ?? 0).toISOString().substring(11, 19)}
+                </span>
+              </div>
+            </div>
+          )}
+          <p className="text-[9px] text-muted-foreground/40 border-t border-border/10 pt-1">
+            هذا وقت الشمعة الحالية — ليس مدة الفريم الكاملة
+          </p>
         </div>
       ) : (
         <div className="text-[10px] text-muted-foreground/60 text-center py-1">

@@ -24,6 +24,7 @@ import {
   loadDemoSettings,
   resolveSystemExecutionMode,
   SYSTEM_EXECUTION_MODE_LABELS,
+  EXECUTION_POLICY_LABELS,
 } from "@/lib/trading/shared/demo-execution-settings";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -56,6 +57,7 @@ import { SystemRecommendationCard } from "@/components/lab/SystemRecommendationC
 import {
   buildGoldTradePlans,
   type GoldTradePlansResult,
+  type TradePlan,
 } from "@/lib/gold/gold-trade-plans-engine";
 import { GoldTradePlansCard }    from "@/components/lab/GoldTradePlansCard";
 import { GoldTradePlanSelector } from "@/components/lab/GoldTradePlanSelector";
@@ -3190,19 +3192,66 @@ function TradePreviewPanel({
   const summary = useMemo(() => buildDecisionSummary(result), [result]);
   const preview = useMemo(() => buildTradeOrderPreview(result, summary), [result, summary]);
 
-  // A26.5: manual lot override — يُهيَّأ من estimatedLot ويتيح التعديل اليدوي
+  // ── Gold Plan Binding v2 — effectivePreview ────────────────────────────────
+  // إذا المستخدم اختار خطة مهنية، جميع طبقات التنفيذ تستخدم effectivePreview.
+  // إذا لا توجد خطة مختارة، effectivePreview === preview (الخطة الأصلية).
+  const [selectedGoldPlan, setSelectedGoldPlan] = useState<TradePlan | null>(null);
+
+  const effectivePreview = useMemo((): TradeOrderPreview => {
+    if (
+      !selectedGoldPlan ||
+      selectedGoldPlan.proposalStatus === "BLOCKED" ||
+      selectedGoldPlan.direction === "WAIT" ||
+      selectedGoldPlan.entry == null ||
+      selectedGoldPlan.stopLoss == null ||
+      selectedGoldPlan.takeProfit2 == null ||
+      selectedGoldPlan.estimatedLot == null ||
+      selectedGoldPlan.estimatedLot <= 0
+    ) return preview;
+
+    const planDir: "bullish" | "bearish" | null =
+      selectedGoldPlan.direction === "BUY"  ? "bullish" :
+      selectedGoldPlan.direction === "SELL" ? "bearish" : null;
+
+    const et  = selectedGoldPlan.entryType;
+    const dir = selectedGoldPlan.direction;
+    const orderType: OrderTypePreview =
+      dir === "BUY"  && et === "LIMIT" ? "BUY_LIMIT_PREVIEW"   :
+      dir === "BUY"  && et === "STOP"  ? "BUY_STOP_PREVIEW"    :
+      dir === "BUY"                    ? "BUY_MARKET_PREVIEW"  :
+      dir === "SELL" && et === "LIMIT" ? "SELL_LIMIT_PREVIEW"  :
+      dir === "SELL" && et === "STOP"  ? "SELL_STOP_PREVIEW"   :
+      dir === "SELL"                   ? "SELL_MARKET_PREVIEW" : "NONE";
+
+    return {
+      ...preview,
+      allowed:          true,
+      blockedReasons:   [],
+      orderType,
+      direction:        planDir,
+      entry:            selectedGoldPlan.entry as number,
+      stopLoss:         selectedGoldPlan.stopLoss as number,
+      takeProfit:       selectedGoldPlan.takeProfit2 as number,
+      estimatedLot:     selectedGoldPlan.estimatedLot as number,
+      riskUsd:          selectedGoldPlan.suggestedRiskUsd,
+      rrRatio:          selectedGoldPlan.rr2 ?? preview.rrRatio,
+      executionEnabled: false as const,
+    };
+  }, [selectedGoldPlan, preview]);
+
+  // A26.5: manual lot override — يُهيَّأ من effectivePreview ويتيح التعديل اليدوي
   const [manualLot, setManualLot] = useState<number>(
     preview.estimatedLot ?? 0.01,
   );
   const eligibility = useMemo(
-    () => buildExecutionEligibility(preview, settings, { spreadPoints: result.currentSpreadPoints }),
-    [preview, settings, result.currentSpreadPoints],
+    () => buildExecutionEligibility(effectivePreview, settings, { spreadPoints: result.currentSpreadPoints }),
+    [effectivePreview, settings, result.currentSpreadPoints],
   );
 
   // B2.1: حارس Price Action — يُعاد حسابه عند تغيّر orderResult (للهامش)
   const priceActionGuard = useMemo(
-    () => buildPriceActionExecutionGuard(result, summary, preview, orderResult),
-    [result, summary, preview, orderResult],
+    () => buildPriceActionExecutionGuard(result, summary, effectivePreview, orderResult),
+    [result, summary, effectivePreview, orderResult],
   );
 
   // A26.1: زر المراجعة يُفعَّل فقط عند اكتمال جميع الشروط + DEMO_ARMED + حارس B2.1
@@ -3226,23 +3275,23 @@ function TradePreviewPanel({
   const [goldOrderError,     setGoldOrderError]     = useState<string | null>(null);
   const [goldPrecheckFailed, setGoldPrecheckFailed] = useState<string[]>([]);
 
-  // Gold gate: زر يُفتح عند استيفاء الشروط الفنية قبل تأكيد المستخدم
+  // Gold gate: زر يُفتح عند استيفاء الشروط الفنية — يستخدم effectivePreview
   const canOpenGoldModal =
     mode === "gold" &&
-    preview.allowed &&
+    effectivePreview.allowed &&
     priceActionGuard.status !== "BLOCK" &&
     !settings.killSwitchEnabled &&
     settings.executionMode !== "READ_ONLY" &&
     settings.isConfirmedDemo &&
     eligibility.spreadOk &&
     result.currentPriceSource === "mt5-live-tick" &&
-    (preview.estimatedLot ?? 0) > 0 &&
-    preview.stopLoss  !== null && preview.stopLoss  !== undefined &&
-    preview.takeProfit !== null && preview.takeProfit !== undefined &&
-    (preview.rrRatio ?? 0) >= settings.minRewardRiskRatio;
+    (effectivePreview.estimatedLot ?? 0) > 0 &&
+    effectivePreview.stopLoss  !== null && effectivePreview.stopLoss  !== undefined &&
+    effectivePreview.takeProfit !== null && effectivePreview.takeProfit !== undefined &&
+    (effectivePreview.rrRatio ?? 0) >= settings.minRewardRiskRatio;
 
   // Gold gate: سبب التعطيل الأول (أسبقية) — للعنوان المختصر
-  const goldDisabledReason = !preview.allowed
+  const goldDisabledReason = !effectivePreview.allowed
     ? "لا توجد خطة صفقة صالحة"
     : priceActionGuard.status === "BLOCK"
       ? "حارس اللجان أصدر BLOCK"
@@ -3256,30 +3305,30 @@ function TradePreviewPanel({
               ? `السبريد (${result.currentSpreadPoints ?? "?"} pts) يتجاوز الحد (${settings.maxSpreadPoints} pts)`
               : result.currentPriceSource !== "mt5-live-tick"
                 ? "البيانات قديمة — لا يوجد tick حالي"
-                : (preview.estimatedLot ?? 0) <= 0
+                : (effectivePreview.estimatedLot ?? 0) <= 0
                   ? "اللوت غير صالح"
-                  : preview.stopLoss === null || preview.stopLoss === undefined
+                  : effectivePreview.stopLoss == null
                     ? "وقف الخسارة غير محدد"
-                    : preview.takeProfit === null || preview.takeProfit === undefined
+                    : effectivePreview.takeProfit == null
                       ? "الهدف غير محدد"
-                      : (preview.rrRatio ?? 0) < settings.minRewardRiskRatio
-                        ? `نسبة RR (${preview.rrRatio?.toFixed(2) ?? "?"}) أقل من الحد الأدنى (${settings.minRewardRiskRatio})`
+                      : (effectivePreview.rrRatio ?? 0) < settings.minRewardRiskRatio
+                        ? `نسبة RR (${effectivePreview.rrRatio?.toFixed(2) ?? "?"}) أقل من الحد الأدنى (${settings.minRewardRiskRatio})`
                         : null;
 
   // Gold gate: قائمة أسباب المنع الكاملة — لعرضها في بطاقة أسفل الزر
   const goldBlockedReasons: string[] = [];
   if (mode === "gold" && !canOpenGoldModal) {
-    if (!preview.allowed)                                                      goldBlockedReasons.push("لا توجد خطة صفقة صالحة");
+    if (!effectivePreview.allowed)                                             goldBlockedReasons.push(!selectedGoldPlan ? "لا توجد خطة صفقة صالحة — اختر خطة مهنية" : "الخطة المختارة محظورة");
     if (priceActionGuard.status === "BLOCK")                                   goldBlockedReasons.push("حارس اللجان أصدر BLOCK");
     if (settings.killSwitchEnabled)                                            goldBlockedReasons.push("Kill Switch مفعّل — التنفيذ موقوف");
     if (settings.executionMode === "READ_ONLY")                               goldBlockedReasons.push("التنفيذ مغلق من الإعدادات");
     if (!settings.isConfirmedDemo)                                             goldBlockedReasons.push("مراجعة التنفيذ غير مؤكدة");
     if (!eligibility.spreadOk)                                                 goldBlockedReasons.push(`السبريد (${result.currentSpreadPoints ?? "?"} pts) مرتفع`);
     if (result.currentPriceSource !== "mt5-live-tick")                        goldBlockedReasons.push("البيانات قديمة — لا يوجد tick حالي");
-    if ((preview.estimatedLot ?? 0) <= 0)                                     goldBlockedReasons.push("اللوت غير صالح");
-    if (preview.stopLoss === null || preview.stopLoss === undefined)           goldBlockedReasons.push("وقف الخسارة غير محدد");
-    if (preview.takeProfit === null || preview.takeProfit === undefined)       goldBlockedReasons.push("الهدف غير محدد");
-    if ((preview.rrRatio ?? 0) < settings.minRewardRiskRatio)                 goldBlockedReasons.push(`نسبة RR (${preview.rrRatio?.toFixed(2) ?? "?"}) أقل من الحد (${settings.minRewardRiskRatio})`);
+    if ((effectivePreview.estimatedLot ?? 0) <= 0)                            goldBlockedReasons.push("اللوت غير صالح");
+    if (effectivePreview.stopLoss == null)                                     goldBlockedReasons.push("وقف الخسارة غير محدد");
+    if (effectivePreview.takeProfit == null)                                   goldBlockedReasons.push("الهدف غير محدد");
+    if ((effectivePreview.rrRatio ?? 0) < settings.minRewardRiskRatio)        goldBlockedReasons.push(`نسبة RR (${effectivePreview.rrRatio?.toFixed(2) ?? "?"}) أقل من الحد (${settings.minRewardRiskRatio})`);
   }
 
   // ── Gold Recommendation Engine v1 ────────────────────────────────────────
@@ -3305,14 +3354,14 @@ function TradePreviewPanel({
       guardStatus:     priceActionGuard.status,
       guardBlockers:   priceActionGuard.blockers,
       guardWarnings:   priceActionGuard.warnings,
-      rrRatio:         preview.rrRatio,
-      estimatedLot:    preview.estimatedLot,
-      previewAllowed:  preview.allowed,
+      rrRatio:         effectivePreview.rrRatio,
+      estimatedLot:    effectivePreview.estimatedLot,
+      previewAllowed:  effectivePreview.allowed,
       executionMode:   settings.executionMode,
       killSwitchEnabled: settings.killSwitchEnabled,
       executionGateOpen: canOpenGoldModal,
     });
-  }, [mode, result, summary, priceActionGuard, preview, settings, canOpenGoldModal]);
+  }, [mode, result, summary, priceActionGuard, effectivePreview, settings, canOpenGoldModal]);
 
   // ── Gold Trade Plans Engine v2 ────────────────────────────────────────────
   const goldPlans = useMemo((): GoldTradePlansResult | null => {
@@ -3348,28 +3397,85 @@ function TradePreviewPanel({
     });
   }, [mode, result, summary, settings, accountEquity, accountFreeMargin, preview.estimatedLot]);
 
+  // ── Auto-select Balanced plan ────────────────────────────────────────────
+  useEffect(() => {
+    if (!goldPlans) { setSelectedGoldPlan(null); return; }
+    const balanced = goldPlans.plans.find((p) => p.planType === "BALANCED");
+    if (balanced && (balanced.proposalStatus === "EXECUTION_READY" || balanced.proposalStatus === "REVIEW")) {
+      setSelectedGoldPlan(balanced);
+    } else {
+      setSelectedGoldPlan(null);
+    }
+  }, [goldPlans]);
+
+  // ── Sync manualLot with effectivePreview ──────────────────────────────────
+  useEffect(() => {
+    setManualLot(effectivePreview.estimatedLot ?? preview.estimatedLot ?? 0.01);
+  }, [effectivePreview.estimatedLot, preview.estimatedLot]);
+
+  // ── canOpenGoldExperimental — EXPERIMENTAL سياسة فقط ─────────────────────
+  // يُفتح فقط عندما: سياسة EXPERIMENTAL + hard blocks تجتاز + guard soft block
+  const canOpenGoldExperimental =
+    settings.executionPolicy === "EXPERIMENTAL" &&
+    mode === "gold" &&
+    effectivePreview.allowed &&
+    !settings.killSwitchEnabled &&
+    settings.executionMode !== "READ_ONLY" &&
+    settings.isConfirmedDemo &&
+    eligibility.spreadOk &&
+    result.currentPriceSource === "mt5-live-tick" &&
+    (effectivePreview.estimatedLot ?? 0) > 0 &&
+    effectivePreview.stopLoss  != null &&
+    effectivePreview.takeProfit != null &&
+    (effectivePreview.rrRatio ?? 0) >= 1.0 &&          // الحد الأدنى التقني (لا يتخطى 1.0)
+    eligibility.symbolAllowed &&
+    summary.criticalBlocks.length === 0 &&
+    selectedGoldPlan?.proposalStatus !== "BLOCKED" &&
+    priceActionGuard.status === "BLOCK";                // فقط عندما يمنع Guard الزر العادي
+
   // Gold gate: send handler — precheck → send → record
   async function handleGoldSendToMT5() {
     if (!goldUserConfirmed || manualLotInvalid) return;
 
-    // Client-side precheck (belt-and-suspenders)
-    const precheckReasons: string[] = [];
-    if (!preview.allowed)                                        precheckReasons.push("لا توجد خطة صفقة صالحة");
-    if (priceActionGuard.status === "BLOCK")                     precheckReasons.push("حارس جودة التنفيذ أصدر BLOCK");
-    if (settings.killSwitchEnabled)                              precheckReasons.push("Kill Switch مفعّل — التنفيذ موقوف");
-    if (settings.executionMode === "READ_ONLY")                  precheckReasons.push("وضع التنفيذ مقيّد — التنفيذ مغلق");
-    if (!eligibility.spreadOk)                                   precheckReasons.push(`السبريد (${result.currentSpreadPoints ?? "?"} pts) يتجاوز الحد`);
-    if (result.currentPriceSource !== "mt5-live-tick")           precheckReasons.push("البيانات قديمة أو tick غير صالح");
-    if ((preview.estimatedLot ?? 0) <= 0 || manualLotInvalid)   precheckReasons.push("اللوت غير صالح");
-    if (preview.stopLoss  === null || preview.stopLoss  === undefined) precheckReasons.push("وقف الخسارة غير محدد");
-    if (preview.takeProfit === null || preview.takeProfit === undefined) precheckReasons.push("الهدف غير محدد");
-    if ((preview.rrRatio ?? 0) < settings.minRewardRiskRatio)   precheckReasons.push(`نسبة RR (${preview.rrRatio?.toFixed(2) ?? "?"}) أقل من الحد (${settings.minRewardRiskRatio})`);
-    if (!eligibility.symbolAllowed)                              precheckReasons.push("الرمز غير مسموح في إعدادات التنفيذ");
+    // Client-side precheck — يستخدم effectivePreview (الخطة المهنية أو الأصلية)
+    // Hard Blocks: تمنع في كلا الوضعين (STRICT + EXPERIMENTAL)
+    const hardBlockReasons: string[] = [];
+    if (!effectivePreview.allowed)                                          hardBlockReasons.push(selectedGoldPlan ? "الخطة المختارة محظورة" : "لا توجد خطة صفقة صالحة");
+    if (settings.killSwitchEnabled)                                         hardBlockReasons.push("Kill Switch مفعّل — التنفيذ موقوف");
+    if (settings.executionMode === "READ_ONLY")                             hardBlockReasons.push("وضع التنفيذ مقيّد — التنفيذ مغلق");
+    if (!eligibility.spreadOk)                                              hardBlockReasons.push(`السبريد (${result.currentSpreadPoints ?? "?"} pts) يتجاوز الحد`);
+    if (result.currentPriceSource !== "mt5-live-tick")                      hardBlockReasons.push("البيانات قديمة أو tick غير صالح");
+    if ((effectivePreview.estimatedLot ?? 0) <= 0 || manualLotInvalid)     hardBlockReasons.push("اللوت غير صالح");
+    if (effectivePreview.stopLoss  == null)                                  hardBlockReasons.push("وقف الخسارة غير محدد");
+    if (effectivePreview.takeProfit == null)                                 hardBlockReasons.push("الهدف غير محدد");
+    if ((effectivePreview.rrRatio ?? 0) < 1.0)                              hardBlockReasons.push(`نسبة RR (${effectivePreview.rrRatio?.toFixed(2) ?? "?"}) أقل من الحد الأدنى التقني 1.0`);
+    if (!eligibility.symbolAllowed)                                          hardBlockReasons.push("الرمز غير مسموح في إعدادات التنفيذ");
+    if (summary.criticalBlocks.length > 0)                                   hardBlockReasons.push("لجنة حرجة أصدرت BLOCK — لا يجوز التجاوز");
+    if (selectedGoldPlan?.proposalStatus === "BLOCKED")                      hardBlockReasons.push("الخطة المختارة محظورة — اختر خطة أخرى");
 
-    if (precheckReasons.length > 0) {
-      setGoldPrecheckFailed(precheckReasons);
+    // Soft Blocks: تمنع في STRICT فقط — مسموح في EXPERIMENTAL
+    const softBlockReasons: string[] = [];
+    if (priceActionGuard.status === "BLOCK" && summary.criticalBlocks.length === 0) {
+      softBlockReasons.push("حارس جودة التنفيذ أصدر BLOCK (إشارة ضعيفة — مسموح في التجارب)");
+      for (const b of priceActionGuard.blockers.slice(0, 3)) softBlockReasons.push(`  • ${b}`);
+    }
+    if ((effectivePreview.rrRatio ?? 0) >= 1.0 && (effectivePreview.rrRatio ?? 0) < settings.minRewardRiskRatio) {
+      softBlockReasons.push(`نسبة RR (${effectivePreview.rrRatio?.toFixed(2)}) أقل من إعداد المستخدم (${settings.minRewardRiskRatio}) — مسموح في التجارب`);
+    }
+
+    const isExperimental = settings.executionPolicy === "EXPERIMENTAL";
+    const effectivePrecheckFailed = isExperimental ? hardBlockReasons : [...hardBlockReasons, ...softBlockReasons];
+
+    if (hardBlockReasons.length > 0) {
+      setGoldPrecheckFailed(effectivePrecheckFailed);
       return;
     }
+    if (!isExperimental && softBlockReasons.length > 0) {
+      setGoldPrecheckFailed(softBlockReasons);
+      return;
+    }
+    // EXPERIMENTAL: soft blocks shown as warning but execution proceeds
+    setGoldPrecheckFailed(softBlockReasons); // shown in UI as warnings
     setGoldPrecheckFailed([]);
     setGoldOrdering(true);
     setGoldOrderResult(null);
@@ -3381,7 +3487,7 @@ function TradePreviewPanel({
     let attemptErrorMsg: string | null = null;
 
     try {
-      const execReq = buildExecutionRequestPreview(result, preview, eligibility);
+      const execReq = buildExecutionRequestPreview(result, effectivePreview, eligibility);
       const body = {
         ...execReq,
         manualConfirmation: true as const,
@@ -3455,7 +3561,7 @@ function TradePreviewPanel({
     let attemptErrorMsg: string | null = null;
 
     try {
-      const execReq = buildExecutionRequestPreview(result, preview, eligibility);
+      const execReq = buildExecutionRequestPreview(result, effectivePreview, eligibility);
       // A26.5.1: دائماً أرسل manualLot — لا يُمرَّر userId
       const body = {
         ...execReq,
@@ -3566,7 +3672,10 @@ function TradePreviewPanel({
       {mode === "gold" && goldPlans && (
         <>
           <GoldTradePlansCard  plans={goldPlans} />
-          <GoldTradePlanSelector plans={goldPlans} />
+          <GoldTradePlanSelector
+            plans={goldPlans}
+            onSelectPlan={setSelectedGoldPlan}
+          />
         </>
       )}
 
