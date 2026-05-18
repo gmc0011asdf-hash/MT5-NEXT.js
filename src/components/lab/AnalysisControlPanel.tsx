@@ -12,7 +12,7 @@
  * A16: adds "حفظ القرار" button — calls saveAnalysisDecision (no trade execution).
  */
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useConvexAuth, useMutation, useQuery } from "convex/react";
 import { api } from "../../../convex/_generated/api";
 import {
@@ -1543,6 +1543,20 @@ function buildSaveArgs(r: AnalysisResult) {
     // userId: من ctx.auth server-side — لا يُمرَّر من الواجهة
     // readOnly: true مُجبَر server-side
   };
+}
+
+// ── CollapsibleSection — helper for heavy analysis sections ──────────────────
+function CollapsibleSection({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <details className="group rounded-lg border border-border/40 bg-black/10">
+      <summary className="flex cursor-pointer select-none items-center justify-between px-3 py-2 text-xs font-semibold text-muted-foreground/80 hover:text-foreground/80">
+        <span>{title}</span>
+        <span className="text-[10px] text-muted-foreground/50 group-open:hidden">▼ عرض</span>
+        <span className="text-[10px] text-muted-foreground/50 hidden group-open:inline">▲ إخفاء</span>
+      </summary>
+      <div className="border-t border-border/30 px-3 pb-3 pt-2">{children}</div>
+    </details>
+  );
 }
 
 // ── MarketStateSection — B3.2 ─────────────────────────────────────────────────
@@ -3142,22 +3156,22 @@ function TradePreviewPanel({ result, mode = "general" }: { result: AnalysisResul
   );
   const [journalStatus, setJournalStatus] = useState<string | null>(null);
 
-  const summary = buildDecisionSummary(result);
-  const preview = buildTradeOrderPreview(result, summary);
+  const summary = useMemo(() => buildDecisionSummary(result), [result]);
+  const preview = useMemo(() => buildTradeOrderPreview(result, summary), [result, summary]);
 
   // A26.5: manual lot override — يُهيَّأ من estimatedLot ويتيح التعديل اليدوي
   const [manualLot, setManualLot] = useState<number>(
     preview.estimatedLot ?? 0.01,
   );
-  const eligibility = buildExecutionEligibility(
-    preview,
-    settings,
-    { spreadPoints: result.currentSpreadPoints },
+  const eligibility = useMemo(
+    () => buildExecutionEligibility(preview, settings, { spreadPoints: result.currentSpreadPoints }),
+    [preview, settings, result.currentSpreadPoints],
   );
 
   // B2.1: حارس Price Action — يُعاد حسابه عند تغيّر orderResult (للهامش)
-  const priceActionGuard = buildPriceActionExecutionGuard(
-    result, summary, preview, orderResult,
+  const priceActionGuard = useMemo(
+    () => buildPriceActionExecutionGuard(result, summary, preview, orderResult),
+    [result, summary, preview, orderResult],
   );
 
   // A26.1: زر المراجعة يُفعَّل فقط عند اكتمال جميع الشروط + DEMO_ARMED + حارس B2.1
@@ -4242,8 +4256,8 @@ function TradePreviewPanel({ result, mode = "general" }: { result: AnalysisResul
 
       {/* A27: آخر محاولات تنفيذ Demo */}
       {recentAttempts && recentAttempts.length > 0 && (
-        <div className="rounded-md border border-border bg-muted/5 p-3 space-y-2">
-          <p className="text-xs font-semibold text-foreground/80">سجل محاولات تنفيذ MT5</p>
+        <CollapsibleSection title={`سجل محاولات تنفيذ MT5 (${recentAttempts.length})`}>
+        <div className="space-y-2">
           {mode === "gold" && (
             <p className="text-[10px] text-amber-400/70">
               سجل محاولات تجريبية سابقة — لا يعني أن التنفيذ مفعل الآن
@@ -4280,6 +4294,7 @@ function TradePreviewPanel({ result, mode = "general" }: { result: AnalysisResul
             ))}
           </div>
         </div>
+        </CollapsibleSection>
       )}
 
       {/* تحذير دائم — لا يختفي سواء كان allowed أم لا */}
@@ -4912,37 +4927,51 @@ export function AnalysisControlPanel({
 
                 {/* ── B3.2: حالة السوق وجودة البيانات ─────────────────────── */}
                 {result.marketStateAnalysis && (
-                  <MarketStateSection msa={result.marketStateAnalysis} />
+                  <CollapsibleSection title="B3.2 — حالة السوق وجودة البيانات">
+                    <MarketStateSection msa={result.marketStateAnalysis} />
+                  </CollapsibleSection>
                 )}
 
                 {/* ── B1: هيكل السوق ───────────────────────────────────────── */}
                 {result.marketStructure && (
-                  <MarketStructureSection ms={result.marketStructure} />
+                  <CollapsibleSection title="B1 — هيكل السوق">
+                    <MarketStructureSection ms={result.marketStructure} />
+                  </CollapsibleSection>
                 )}
 
                 {/* ── B2: تحليل الشموع والسيولة ────────────────────────────── */}
                 {result.candlestickAnalysis && (
-                  <CandlestickSection cs={result.candlestickAnalysis} />
+                  <CollapsibleSection title="B2 — تحليل الشموع والسيولة">
+                    <CandlestickSection cs={result.candlestickAnalysis} />
+                  </CollapsibleSection>
                 )}
 
                 {/* ── B3: مناطق العرض والطلب والفجوات ─────────────────────── */}
                 {result.zonesAnalysis && (
-                  <ZonesSection za={result.zonesAnalysis} />
+                  <CollapsibleSection title="B3 — مناطق العرض والطلب والفجوات">
+                    <ZonesSection za={result.zonesAnalysis} />
+                  </CollapsibleSection>
                 )}
 
                 {/* ── B4: توافق Fibonacci ───────────────────────────────────── */}
                 {result.fibonacciAnalysis && (
-                  <FibonacciSection fa={result.fibonacciAnalysis} />
+                  <CollapsibleSection title="B4 — توافق Fibonacci">
+                    <FibonacciSection fa={result.fibonacciAnalysis} />
+                  </CollapsibleSection>
                 )}
 
                 {/* ── B5: توافق الفريمات ────────────────────────────────────── */}
                 {result.multiTimeframeConsensus && (
-                  <MTFSection mtf={result.multiTimeframeConsensus} />
+                  <CollapsibleSection title="B5 — توافق الفريمات">
+                    <MTFSection mtf={result.multiTimeframeConsensus} />
+                  </CollapsibleSection>
                 )}
 
                 {/* ── B6.2: لجنة الأخبار والحماية ─────────────────────────── */}
                 {result.newsProtectionCommittee && (
-                  <NewsSentinelSection nc={result.newsProtectionCommittee} />
+                  <CollapsibleSection title="B6.2 — لجنة الأخبار والحماية">
+                    <NewsSentinelSection nc={result.newsProtectionCommittee} />
+                  </CollapsibleSection>
                 )}
 
                 {/* ── A22: ملخص اللجان قبل الحفظ ───────────────────────────── */}
