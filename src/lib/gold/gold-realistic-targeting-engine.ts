@@ -15,6 +15,7 @@
  */
 
 import { buildRiskLevels } from "./gold-risk-manager";
+import type { TradePlan, GoldTradePlansResult } from "./gold-trade-plans-engine";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -258,4 +259,209 @@ export function buildRealisticTargets(input: RealisticTargetInput): RealisticTar
     profileReason: profileReason(profile, input.timeframe),
     atr14,
   };
+}
+
+// ─── Exported realism helper ──────────────────────────────────────────────────
+
+export function computeRealismScore(
+  tp2Dist: number,
+  atr14:   number,
+  profile: TradeTargetProfile,
+): RealismScore {
+  if (atr14 <= 0) return "REALISTIC";
+  const cfg   = PROFILE_CONFIG[profile];
+  const ratio = tp2Dist / atr14;
+  if (ratio <= cfg.tp2WarnMultiplier)   return "REALISTIC";
+  if (ratio <= cfg.tp2TooFarMultiplier) return "STRETCHED";
+  return "TOO_FAR";
+}
+
+// ─── adjustTradePlans ─────────────────────────────────────────────────────────
+// Adjusts all 3 professional plans (Conservative/Balanced/Aggressive) based on
+// targetPreference + profile. FAR = original plans unchanged.
+// REALISTIC / BALANCED = recalculate SL/TP/lot per profile multipliers.
+
+type AdjustRiskInput = {
+  riskUsd:             number;
+  equity?:             number;
+  freeMargin?:         number;
+  riskPercentOfEquity?: number;
+};
+
+// Base SL multiplier per profile × preference
+const PROFILE_PREF_BASE_SL: Record<TradeTargetProfile, Record<"REALISTIC" | "BALANCED", number>> = {
+  SCALP_TEST: { REALISTIC: 0.60, BALANCED: 1.00 },
+  INTRADAY:   { REALISTIC: 1.00, BALANCED: 1.50 },
+  SWING:      { REALISTIC: 2.00, BALANCED: 2.50 },
+};
+
+// Scale applied per plan type on top of the base SL
+const PLAN_SL_SCALE: Record<string, number> = {
+  CONSERVATIVE: 1.30,   // wider SL — safer entry
+  BALANCED:     1.00,
+  AGGRESSIVE:   0.75,   // tighter SL — higher conviction
+};
+
+// Main RR target per plan type (TP2 = SL distance × this)
+const PLAN_MAIN_RR: Record<string, number> = {
+  CONSERVATIVE: 2.0,
+  BALANCED:     1.5,
+  AGGRESSIVE:   1.2,
+};
+
+function adjustOnePlan(
+  plan:        TradePlan,
+  preference:  "REALISTIC" | "BALANCED",
+  profile:     TradeTargetProfile,
+  atr14:       number,
+  riskInput:   AdjustRiskInput,
+  minRR:       number,
+): TradePlan {
+  // Keep blocked / WAIT plans as metadata-only
+  if (
+    plan.proposalStatus === "BLOCKED" ||
+    plan.planType === "WAIT" ||
+    plan.entry == null
+  ) {
+    return {
+      ...plan,
+      targetSource:     "adjusted",
+      targetPreference: preference,
+      profile,
+    };
+  }
+
+  const planKey = plan.planType as string;
+  const baseSL  = PROFILE_PREF_BASE_SL[profile][preference];
+  const scale   = PLAN_SL_SCALE[planKey]  ?? 1.0;
+  const mainRR  = PLAN_MAIN_RR[planKey]   ?? 1.5;
+
+  const slDist = r2(baseSL * scale * atr14);
+  const dir    = plan.direction as "BUY" | "SELL";
+  const entry  = plan.entry;
+
+  const sl  = dir === "BUY" ? r2(entry - slDist) : r2(entry + slDist);
+  const tp1 = dir === "BUY" ? r2(entry + slDist * 0.5)          : r2(entry - slDist * 0.5);
+  const tp2 = dir === "BUY" ? r2(entry + slDist * mainRR)       : r2(entry - slDist * mainRR);
+  const tp3 = dir === "BUY" ? r2(entry + slDist * mainRR * 1.5) : r2(entry - slDist * mainRR * 1.5);
+
+  const rr1 = 0.5;
+  const rr2 = mainRR;
+  const rr3 = r2(mainRR * 1.5);
+
+  // Lot via Risk Manager (same tier as plan type)
+  const rm = buildRiskLevels({
+    userRiskUsdCap:      riskInput.riskUsd,
+    slDistance:          slDist,
+    equity:              riskInput.equity,
+    freeMargin:          riskInput.freeMargin,
+    riskUsd:             riskInput.riskUsd,
+    riskPercentOfEquity: riskInput.riskPercentOfEquity,
+  });
+
+  const riskTier =
+    planKey === "CONSERVATIVE" ? rm.conservative :
+    planKey === "AGGRESSIVE"   ? rm.aggressive   :
+    rm.balanced;
+
+  const proposalStatus: "EXECUTION_READY" | "REVIEW" =
+    rr2 >= minRR ? "EXECUTION_READY" : "REVIEW";
+
+  const tp2Dist     = Math.abs(tp2 - entry);
+  const realismScr  = computeRealismScore(tp2Dist, atr14, profile);
+  const prefLabel   = preference === "REALISTIC" ? "واقعي" : "متوسط";
+  const planLabel   =
+    planKey === "CONSERVATIVE" ? "المحافظة" :
+    planKey === "BALANCED"     ? "المتوازنة" : "الهجومية";
+
+  return {
+    ...plan,
+    stopLoss:         sl,
+    takeProfit1:      tp1,
+    takeProfit2:      tp2,
+    takeProfit3:      tp3,
+    rr1,
+    rr2,
+    rr3,
+    suggestedRiskUsd: riskTier.suggestedRiskUsd,
+    riskUsd:          riskTier.suggestedRiskUsd,
+    estimatedLot:     riskTier.estimatedLot,
+    riskPercent:      riskTier.riskPercent,
+    maxLossUsd:       riskTier.suggestedRiskUsd,
+    lotReason:        riskTier.lotReason,
+    proposalStatus,
+    nextAction:
+      proposalStatus === "EXECUTION_READY"
+        ? `${planLabel} — هدف ${prefLabel} — جاهز للمراجعة — استخدم زر MT5`
+        : `${planLabel} — هدف ${prefLabel} — راجع الشروط`,
+    targetSource:     "adjusted",
+    targetPreference: preference,
+    profile,
+    realismScore:     realismScr,
+  };
+}
+
+export function adjustTradePlans(
+  originalPlans:   TradePlan[],
+  preference:      "REALISTIC" | "BALANCED" | "FAR",
+  realisticTarget: RealisticTarget,
+  riskInput:       AdjustRiskInput,
+  minRR:           number,
+): TradePlan[] {
+  // FAR: return originals with metadata tags only
+  if (preference === "FAR") {
+    return originalPlans.map((p) => {
+      const tp2Dist = p.entry != null && p.takeProfit2 != null
+        ? Math.abs(p.takeProfit2 - p.entry) : 0;
+      return {
+        ...p,
+        targetSource:     "original" as const,
+        targetPreference: "FAR" as const,
+        profile:          realisticTarget.profile,
+        realismScore:     tp2Dist > 0
+          ? computeRealismScore(tp2Dist, realisticTarget.atr14, realisticTarget.profile)
+          : undefined,
+      };
+    });
+  }
+
+  return originalPlans.map((p) =>
+    adjustOnePlan(p, preference, realisticTarget.profile, realisticTarget.atr14, riskInput, minRR),
+  );
+}
+
+export function buildAdjustedGoldPlans(
+  original:        GoldTradePlansResult,
+  preference:      "REALISTIC" | "BALANCED" | "FAR",
+  realisticTarget: RealisticTarget | null,
+  riskInput:       AdjustRiskInput,
+  minRR:           number,
+): GoldTradePlansResult {
+  if (!realisticTarget) {
+    // No ATR — tag originals as FAR
+    return {
+      plans: original.plans.map((p) => ({
+        ...p,
+        targetSource:     "original" as const,
+        targetPreference: preference,
+      })),
+      bestPlanIdx: original.bestPlanIdx,
+    };
+  }
+
+  const adjusted = adjustTradePlans(original.plans, preference, realisticTarget, riskInput, minRR);
+
+  // Recompute bestPlanIdx
+  const order = [1, 0, 2]; // BALANCED → CONSERVATIVE → AGGRESSIVE
+  let bestPlanIdx: number | null = null;
+  for (const i of order) {
+    if (adjusted[i]?.proposalStatus === "EXECUTION_READY") { bestPlanIdx = i; break; }
+  }
+  if (bestPlanIdx === null) {
+    for (const i of order) {
+      if (adjusted[i]?.proposalStatus === "REVIEW") { bestPlanIdx = i; break; }
+    }
+  }
+
+  return { plans: adjusted, bestPlanIdx };
 }

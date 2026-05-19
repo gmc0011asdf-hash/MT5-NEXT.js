@@ -68,6 +68,7 @@ import {
 import { ActionablePlanCard } from "@/components/lab/ActionablePlanCard";
 import {
   buildRealisticTargets,
+  buildAdjustedGoldPlans,
   type RealisticTarget,
 } from "@/lib/gold/gold-realistic-targeting-engine";
 import { RealisticTargetCard } from "@/components/lab/RealisticTargetCard";
@@ -3287,24 +3288,8 @@ function TradePreviewPanel({
       executionEnabled: false as const,
     };
 
-    // ── Layer 2: Realistic targets (SCALP_TEST + preference REALISTIC) ─────
-    if (
-      realisticTarget !== null &&
-      targetPreference === "REALISTIC" &&
-      realisticTarget.profile === "SCALP_TEST"
-    ) {
-      ep = {
-        ...ep,
-        stopLoss:     realisticTarget.sl,
-        takeProfit:   realisticTarget.tp2,
-        estimatedLot: realisticTarget.lot,
-        rrRatio:      realisticTarget.rr2,
-        riskUsd:      realisticTarget.riskUsd,
-      };
-    }
-
     return ep;
-  }, [selectedGoldPlan, preview, realisticTarget, targetPreference]);
+  }, [selectedGoldPlan, preview]);
 
   // A26.5: manual lot override — يُهيَّأ من effectivePreview ويتيح التعديل اليدوي
   const [manualLot, setManualLot] = useState<number>(
@@ -3340,18 +3325,26 @@ function TradePreviewPanel({
   const [goldOrdering,       setGoldOrdering]       = useState(false);
   const [goldOrderResult,    setGoldOrderResult]    = useState<DemoOrderResult | null>(null);
   const [goldOrderError,     setGoldOrderError]     = useState<string | null>(null);
-  const [goldPrecheckFailed, setGoldPrecheckFailed] = useState<string[]>([]);
-  const [goldSendStage,      setGoldSendStage]      = useState<string | null>(null);
-  const [goldSendDebug,      setGoldSendDebug]      = useState<{
-    httpStatus?:   number;
-    responseOk?:   boolean;
-    errorCode?:    string;
-    requestEntry?: number;
-    requestSL?:    number;
-    requestTP?:    number;
-    requestLot?:   number;
-    targetSource?: "realistic" | "selectedPlan";
+  const [goldPrecheckFailed,   setGoldPrecheckFailed]   = useState<string[]>([]);
+  const [goldPrecheckIsWarning,setGoldPrecheckIsWarning] = useState(false);
+  const [goldSendStage,        setGoldSendStage]         = useState<string | null>(null);
+  const [goldSendDebug,        setGoldSendDebug]         = useState<{
+    httpStatus?:      number;
+    responseOk?:      boolean;
+    errorCode?:       string;
+    requestEntry?:    number;
+    requestSL?:       number;
+    requestTP?:       number;
+    requestLot?:      number;
+    requestRiskUsd?:  number;
+    requestRR?:       number;
+    targetSource?:    "realistic" | "selectedPlan";
+    targetPreference?: string;
+    profile?:         string;
+    selectedPlanName?: string;
   } | null>(null);
+  // Tracks which planType the user last selected so we can re-select after preference change
+  const lastSelectedPlanTypeRef = useRef<string | null>(null);
 
   // Gold gate: زر يُفتح عند استيفاء الشروط الفنية — يستخدم effectivePreview
   const canOpenGoldModal =
@@ -3501,6 +3494,23 @@ function TradePreviewPanel({
     });
   }, [mode, result, summary, settings, accountEquity, accountFreeMargin, preview.estimatedLot]);
 
+  // ── Adjusted Gold Plans (targetPreference applied to all 3 plan variants) ──
+  const adjustedGoldPlans = useMemo((): GoldTradePlansResult | null => {
+    if (!goldPlans || mode !== "gold") return null;
+    return buildAdjustedGoldPlans(
+      goldPlans,
+      targetPreference,
+      realisticTarget,
+      {
+        riskUsd:             result.riskUsd,
+        equity:              accountEquity  ?? undefined,
+        freeMargin:          accountFreeMargin ?? undefined,
+        riskPercentOfEquity: result.riskPercentOfEquity,
+      },
+      settings.minRewardRiskRatio,
+    );
+  }, [goldPlans, targetPreference, realisticTarget, result.riskUsd, result.riskPercentOfEquity, accountEquity, accountFreeMargin, settings.minRewardRiskRatio, mode]);
+
   // ── Actionable Plan Engine v1 ─────────────────────────────────────────────
   const actionablePlan = useMemo((): ActionablePlan | null => {
     if (mode !== "gold") return null;
@@ -3543,16 +3553,18 @@ function TradePreviewPanel({
     goldSoftBlockReasons,
   ]);
 
-  // ── Auto-select Balanced plan ────────────────────────────────────────────
+  // ── Auto-select: re-select same planType from adjustedGoldPlans ──────────
   useEffect(() => {
-    if (!goldPlans) { setSelectedGoldPlan(null); return; }
-    const balanced = goldPlans.plans.find((p) => p.planType === "BALANCED");
-    if (balanced && (balanced.proposalStatus === "EXECUTION_READY" || balanced.proposalStatus === "REVIEW")) {
-      setSelectedGoldPlan(balanced);
-    } else {
-      setSelectedGoldPlan(null);
-    }
-  }, [goldPlans]);
+    if (!adjustedGoldPlans) { setSelectedGoldPlan(null); return; }
+    const plans     = adjustedGoldPlans.plans;
+    const prevType  = lastSelectedPlanTypeRef.current;
+    // Try to keep the same planType the user had; fall back to Balanced
+    const preferred =
+      (prevType ? plans.find((p) => p.planType === prevType) : null) ??
+      plans.find((p) => p.planType === "BALANCED");
+    const target = preferred?.proposalStatus !== "BLOCKED" ? preferred : null;
+    setSelectedGoldPlan(target ?? null);
+  }, [adjustedGoldPlans]);
 
   // ── Sync manualLot with effectivePreview ──────────────────────────────────
   useEffect(() => {
@@ -3621,15 +3633,18 @@ function TradePreviewPanel({
     }
 
     if (hardBlockReasons.length > 0) {
+      setGoldPrecheckIsWarning(false);
       setGoldPrecheckFailed(["لا يمكن الإرسال — توجد Hard Blocks:", ...hardBlockReasons]);
       return;
     }
     if (!isExperimental && softBlockReasons.length > 0) {
+      setGoldPrecheckIsWarning(false);
       setGoldPrecheckFailed(softBlockReasons);
       return;
     }
 
-    // EXPERIMENTAL: show soft blocks as informational warnings (single setState call)
+    // EXPERIMENTAL: soft blocks are warnings — execution proceeds
+    setGoldPrecheckIsWarning(softBlockReasons.length > 0);
     setGoldPrecheckFailed(softBlockReasons.length > 0 ? softBlockReasons : []);
 
     setGoldSendStage("جاري إرسال الطلب إلى Next route...");
@@ -3654,11 +3669,7 @@ function TradePreviewPanel({
 
       // ── Target source for diagnostics ───────────────────────────────────
       const targetSource: "realistic" | "selectedPlan" =
-        realisticTarget !== null &&
-        targetPreference === "REALISTIC" &&
-        realisticTarget.profile === "SCALP_TEST"
-          ? "realistic"
-          : "selectedPlan";
+        selectedGoldPlan?.targetSource === "adjusted" ? "realistic" : "selectedPlan";
 
       if (process.env.NODE_ENV === "development") {
         console.log("[GoldSend] fetching /api/mt5-demo/order-send", {
@@ -3685,14 +3696,22 @@ function TradePreviewPanel({
       }
 
       setGoldSendDebug({
-        httpStatus:   res.status,
-        responseOk:   res.ok,
-        errorCode:    data.errorCode,
-        requestEntry: execReq.entryPrice ?? undefined,
-        requestSL:    execReq.stopLoss   ?? undefined,
-        requestTP:    execReq.takeProfit ?? undefined,
-        requestLot:   sentLot,
+        httpStatus:       res.status,
+        responseOk:       res.ok,
+        errorCode:        data.errorCode,
+        requestEntry:     execReq.entryPrice        ?? undefined,
+        requestSL:        execReq.stopLoss          ?? undefined,
+        requestTP:        execReq.takeProfit        ?? undefined,
+        requestLot:       sentLot,
+        requestRiskUsd:   effectivePreview.riskUsd,
+        requestRR:        effectivePreview.rrRatio,
         targetSource,
+        targetPreference: selectedGoldPlan?.targetPreference,
+        profile:          selectedGoldPlan?.profile,
+        selectedPlanName:
+          selectedGoldPlan?.planType === "CONSERVATIVE" ? "المحافظة" :
+          selectedGoldPlan?.planType === "BALANCED"     ? "المتوازنة" :
+          selectedGoldPlan?.planType === "AGGRESSIVE"   ? "الهجومية"  : undefined,
       });
       attemptData = data;
 
@@ -3907,12 +3926,15 @@ function TradePreviewPanel({
       )}
 
       {/* ── خطط التداول المقترحة — Gold Trade Plans Engine v1 ────────────── */}
-      {mode === "gold" && goldPlans && (
+      {mode === "gold" && (adjustedGoldPlans ?? goldPlans) && (
         <>
-          <GoldTradePlansCard  plans={goldPlans} />
+          <GoldTradePlansCard  plans={adjustedGoldPlans ?? goldPlans!} />
           <GoldTradePlanSelector
-            plans={goldPlans}
-            onSelectPlan={setSelectedGoldPlan}
+            plans={adjustedGoldPlans ?? goldPlans!}
+            onSelectPlan={(plan) => {
+              lastSelectedPlanTypeRef.current = plan?.planType ?? null;
+              setSelectedGoldPlan(plan);
+            }}
           />
         </>
       )}
@@ -4683,23 +4705,26 @@ function TradePreviewPanel({
                 <span className="text-muted-foreground">خطر: </span>
                 <span className="font-mono text-foreground/80">${selectedGoldPlan.suggestedRiskUsd?.toFixed(2) ?? "—"}</span>
               </div>
-              {/* Realistic targeting source indicator */}
-              {realisticTarget !== null &&
-               targetPreference === "REALISTIC" &&
-               realisticTarget.profile === "SCALP_TEST" ? (
-                <div className="flex items-center gap-1.5 pt-0.5">
-                  <span className="inline-flex items-center rounded border border-cyan-500/40 bg-cyan-500/10 px-1.5 py-0.5 text-[9px] font-semibold text-cyan-300">
-                    ◈ مصدر الهدف: Realistic Targeting ({realisticTarget.profileLabel})
+              {/* Target preference + source — always shown */}
+              <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
+                <span className={`inline-flex items-center rounded border px-1.5 py-0.5 text-[9px] font-semibold ${
+                  selectedGoldPlan?.targetSource === "adjusted"
+                    ? "border-cyan-500/40 bg-cyan-500/10 text-cyan-300"
+                    : "border-zinc-500/30 bg-zinc-800/30 text-zinc-400/70"
+                }`}>
+                  {selectedGoldPlan?.targetSource === "adjusted" ? "◈ مصدر الهدف: هدف معدّل" : "○ مصدر الهدف: خطة أصلية"}
+                </span>
+                {selectedGoldPlan?.targetPreference && (
+                  <span className="text-[9px] text-muted-foreground/60">
+                    نوع الهدف:
+                    {selectedGoldPlan.targetPreference === "REALISTIC" ? " واقعي سريع" :
+                     selectedGoldPlan.targetPreference === "BALANCED"  ? " متوسط" : " بعيد"}
                   </span>
-                  <span className="text-[9px] text-cyan-400/60">
-                    SL: {realisticTarget.sl.toFixed(2)} · TP2: {realisticTarget.tp2.toFixed(2)} · لوت: {realisticTarget.lot.toFixed(2)}
-                  </span>
-                </div>
-              ) : (
-                <div className="text-[9px] text-zinc-400/50 pt-0.5">
-                  مصدر الهدف: الخطة المهنية المختارة
-                </div>
-              )}
+                )}
+                {selectedGoldPlan?.profile && (
+                  <span className="text-[9px] text-muted-foreground/50">· profile: {selectedGoldPlan.profile}</span>
+                )}
+              </div>
             </div>
           )}
             {/* Warning */}
@@ -4733,10 +4758,18 @@ function TradePreviewPanel({
 
             {/* Precheck failed */}
             {goldPrecheckFailed.length > 0 && (
-              <div className="rounded-md border border-red-500/40 bg-red-500/10 px-4 py-3 text-xs space-y-1">
-                <p className="font-bold text-red-300">✗ Precheck فشل — لم يُرسَل أي أمر</p>
+              <div className={`rounded-md border px-4 py-3 text-xs space-y-1 ${
+                goldPrecheckIsWarning
+                  ? "border-amber-500/40 bg-amber-500/10"
+                  : "border-red-500/40 bg-red-500/10"
+              }`}>
+                <p className={`font-bold ${goldPrecheckIsWarning ? "text-amber-300" : "text-red-300"}`}>
+                  {goldPrecheckIsWarning
+                    ? "⚠ تحذيرات مسموحة في وضع التجارب — التنفيذ مستمر"
+                    : "✗ Precheck فشل — لم يُرسَل أي أمر"}
+                </p>
                 {goldPrecheckFailed.map((r, i) => (
-                  <p key={i} className="text-red-300/80">• {r}</p>
+                  <p key={i} className={goldPrecheckIsWarning ? "text-amber-300/80" : "text-red-300/80"}>• {r}</p>
                 ))}
               </div>
             )}
@@ -4835,6 +4868,7 @@ function TradePreviewPanel({
                   setGoldOrderResult(null);
                   setGoldOrderError(null);
                   setGoldPrecheckFailed([]);
+                  setGoldPrecheckIsWarning(false);
                 }}
                 className="inline-flex items-center justify-center rounded-md border border-border bg-muted/20 px-4 py-2 text-sm font-medium text-muted-foreground hover:text-foreground hover:bg-muted/40 transition-colors"
               >
@@ -4918,18 +4952,26 @@ function TradePreviewPanel({
                 <div className="rounded border border-zinc-600/20 bg-zinc-900/30 px-2 py-1.5 space-y-0.5">
                   <p className="text-[9px] uppercase tracking-wider text-zinc-400/60 mb-1">القيم المُرسلة إلى MT5</p>
                   <div className="grid grid-cols-2 gap-x-4 gap-y-0.5 text-[10px]">
+                    <span className="text-zinc-400/60">الخطة:</span>
+                    <span className="font-mono text-amber-300/80">{goldSendDebug.selectedPlanName ?? "—"}</span>
+                    <span className="text-zinc-400/60">نوع الهدف:</span>
+                    <span className={`font-mono text-[10px] ${goldSendDebug.targetSource === "realistic" ? "text-cyan-400/80" : "text-amber-400/80"}`}>
+                      {goldSendDebug.targetPreference === "REALISTIC" ? "واقعي سريع" : goldSendDebug.targetPreference === "BALANCED" ? "متوسط" : goldSendDebug.targetPreference === "FAR" ? "بعيد" : "—"}
+                    </span>
+                    <span className="text-zinc-400/60">Profile:</span>
+                    <span className="font-mono text-zinc-300/70">{goldSendDebug.profile ?? "—"}</span>
                     <span className="text-zinc-400/60">سعر الدخول:</span>
                     <span className="font-mono text-zinc-300/80">{goldSendDebug.requestEntry?.toFixed(5) ?? "—"}</span>
-                    <span className="text-zinc-400/60">وقف الخسارة:</span>
+                    <span className="text-zinc-400/60">SL:</span>
                     <span className="font-mono text-red-400/80">{goldSendDebug.requestSL?.toFixed(5) ?? "—"}</span>
-                    <span className="text-zinc-400/60">الهدف (TP):</span>
+                    <span className="text-zinc-400/60">TP:</span>
                     <span className="font-mono text-emerald-400/80">{goldSendDebug.requestTP?.toFixed(5) ?? "—"}</span>
-                    <span className="text-zinc-400/60">الحجم (لوت):</span>
+                    <span className="text-zinc-400/60">لوت:</span>
                     <span className="font-mono text-zinc-300/80">{goldSendDebug.requestLot?.toFixed(2) ?? "—"}</span>
-                    <span className="text-zinc-400/60">مصدر الهدف:</span>
-                    <span className={`font-mono text-[10px] ${goldSendDebug.targetSource === "realistic" ? "text-cyan-400/80" : "text-amber-400/80"}`}>
-                      {goldSendDebug.targetSource === "realistic" ? "Realistic Targeting" : "الخطة المهنية"}
-                    </span>
+                    <span className="text-zinc-400/60">المخاطرة:</span>
+                    <span className="font-mono text-zinc-300/70">{goldSendDebug.requestRiskUsd != null ? `$${Number(goldSendDebug.requestRiskUsd).toFixed(2)}` : "—"}</span>
+                    <span className="text-zinc-400/60">R/R:</span>
+                    <span className="font-mono text-zinc-300/70">{goldSendDebug.requestRR?.toFixed(2) ?? "—"}</span>
                   </div>
                 </div>
 
