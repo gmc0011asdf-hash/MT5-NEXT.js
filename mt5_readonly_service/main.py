@@ -1131,7 +1131,8 @@ def demo_order_send(payload: DemoOrderRequest) -> JSONResponse:
             content={
                 "ok": False,
                 "accepted": False,
-                "error": "Demo execution disabled — set MT5_DEMO_EXECUTION_ENABLED=1",
+                "errorCode": "PYTHON_MT5_EXECUTION_ENV_DISABLED",
+                "error": "Demo execution disabled — set MT5_DEMO_EXECUTION_ENABLED=1 in Python process environment",
                 "demoOnly": True,
             },
         )
@@ -1141,7 +1142,7 @@ def demo_order_send(payload: DemoOrderRequest) -> JSONResponse:
     if val_err:
         return Utf8JsonResponse(
             status_code=400,
-            content={"ok": False, "accepted": False, "error": val_err, "demoOnly": True},
+            content={"ok": False, "accepted": False, "errorCode": "VALIDATION_ERROR", "error": val_err, "demoOnly": True},
         )
 
     # ── Gate 3: MT5 initialise (no read-only policy) ──────────────────────────
@@ -1149,7 +1150,7 @@ def demo_order_send(payload: DemoOrderRequest) -> JSONResponse:
     if not ok:
         return Utf8JsonResponse(
             status_code=503,
-            content={"ok": False, "accepted": False, "error": err or "MT5 غير متاح", "demoOnly": True},
+            content={"ok": False, "accepted": False, "errorCode": "MT5_INIT_FAILED", "error": err or "MT5 غير متاح", "demoOnly": True},
         )
 
     try:

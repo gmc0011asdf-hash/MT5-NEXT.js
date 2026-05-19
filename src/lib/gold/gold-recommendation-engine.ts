@@ -60,6 +60,12 @@ export type GoldRecommendationInput = {
 
   // بوابة التنفيذ المحسوبة (=== canOpenGoldModal)
   executionGateOpen: boolean;
+
+  // Calibration v1 — فصل Hard/Soft Blocks حسب السياسة
+  executionPolicy?:        "STRICT" | "EXPERIMENTAL";  // default = "STRICT"
+  hardBlockCount?:         number;   // عدد Hard Blocks الحقيقية (infrastructure)
+  softBlockCount?:         number;   // عدد Soft Blocks (جودة التحليل)
+  canOpenGoldExperimental?: boolean; // true = hard blocks سليمة وguard soft block فقط
 };
 
 // ─── Output ───────────────────────────────────────────────────────────────────
@@ -93,31 +99,44 @@ const RELEVANT_COMMITTEE_IDS = new Set([
 ]);
 
 function resolveStatus(input: GoldRecommendationInput): RecommendationStatus {
-  // BLOCKED — أعلى أولوية
-  if (
-    input.criticalBlockCount > 0 ||
-    input.finalDecision === "BLOCK" ||
-    input.guardStatus === "BLOCK"
-  ) {
+  const hardCount      = input.hardBlockCount ?? 0;
+  const isExperimental = input.executionPolicy === "EXPERIMENTAL";
+
+  // ── Priority 1: Hard Blocks — تمنع دائماً بغض النظر عن السياسة ──────────────
+  // حرجة من اللجان أو infrastructure blocks (Kill Switch، لا tick، إلخ)
+  if (hardCount > 0 || input.criticalBlockCount > 0) {
     return "BLOCKED";
   }
 
-  // NO_TRADE — لا فرصة مكتشفة
+  // ── Priority 2: Soft Guard/Decision Block — يعتمد على السياسة ───────────────
+  // إذا guard أصدر BLOCK بدون لجان حرجة → soft block (جودة التحليل فقط)
+  const softGuardBlock    = input.guardStatus === "BLOCK" && input.criticalBlockCount === 0;
+  const softDecisionBlock = input.finalDecision === "BLOCK" && input.criticalBlockCount === 0;
+
+  if (softGuardBlock || softDecisionBlock) {
+    // EXPERIMENTAL + hard blocks سليمة → اسمح بالتجربة
+    if (isExperimental) return "EXPERIMENTAL";
+    // STRICT → أي BLOCK يمنع
+    return "BLOCKED";
+  }
+
+  // ── Priority 3: لا فرصة مكتشفة ──────────────────────────────────────────────
   if (input.analysisStatus !== "opportunity") {
     return "NO_TRADE";
   }
 
-  // إشارة موجودة (opportunity) — تقييم الجودة
+  // ── Priority 4: جودة منخفضة ──────────────────────────────────────────────────
   if (input.grade === "C" || input.grade === "D" || input.probability < 45) {
     return "WATCH";
   }
 
+  // ── Priority 5: CANDIDATE — إشارة معقولة مع مشاكل ───────────────────────────
   if (input.anyBlock || input.grade === "B") {
     return "CANDIDATE";
   }
 
-  // درجة A أو A+ بلا blocks
-  if (input.executionGateOpen) {
+  // ── Priority 6: درجة A/A+ بلا blocks ─────────────────────────────────────────
+  if (input.executionGateOpen || input.canOpenGoldExperimental) {
     return "APPROVED";
   }
 
@@ -131,8 +150,9 @@ function resolveDirection(input: GoldRecommendationInput): RecommendationDirecti
 }
 
 function resolveTitle(
-  status: RecommendationStatus,
+  status:    RecommendationStatus,
   direction: RecommendationDirection,
+  input:     GoldRecommendationInput,
 ): string {
   switch (status) {
     case "APPROVED":
@@ -141,12 +161,24 @@ function resolveTitle(
         : direction === "SELL"
           ? "توصية النظام: بيع XAUUSD ✓"
           : "توصية النظام: جاهز للمراجعة";
-    case "EXPERIMENTAL":
+    case "EXPERIMENTAL": {
+      // Soft-blocked EXPERIMENTAL (infrastructure OK, analysis quality weak)
+      const isSoftBlocked = (input.softBlockCount ?? 0) > 0 ||
+        (input.guardStatus === "BLOCK" && input.criticalBlockCount === 0);
+      if (isSoftBlocked) {
+        return direction === "BUY"
+          ? "تجربة تنفيذ محكومة — ميل صعودي"
+          : direction === "SELL"
+            ? "تجربة تنفيذ محكومة — ميل هبوطي"
+            : "تجربة تنفيذ محكومة";
+      }
+      // Regular EXPERIMENTAL (execution settings not ready)
       return direction === "BUY"
         ? "إشارة شراء — تجربة محكومة"
         : direction === "SELL"
           ? "إشارة بيع — تجربة محكومة"
           : "إشارة — تجربة محكومة";
+    }
     case "CANDIDATE":
       return direction === "BUY"
         ? "مرشّح للشراء — مراجعة مطلوبة"
@@ -172,8 +204,14 @@ function resolveSummary(
   direction: RecommendationDirection,
 ): string {
   switch (status) {
-    case "BLOCKED":
-      return `القرار محظور — ${input.criticalBlockCount > 0 ? "لجنة حرجة أصدرت BLOCK" : "حارس الجودة رفض الإشارة"} — يُرجى مراجعة أسباب المنع.`;
+    case "BLOCKED": {
+      // Hard blocks → إشارة تقنية صارمة
+      const hardCount = input.hardBlockCount ?? 0;
+      if (hardCount > 0 || input.criticalBlockCount > 0) {
+        return `ممنوع تقنيًا — ${hardCount > 0 ? `${hardCount} Hard Block(s) تمنع التنفيذ` : "لجنة حرجة أصدرت BLOCK"} — تصحيح الأسباب مطلوب قبل المحاولة.`;
+      }
+      return `القرار محظور — حارس الجودة رفض الإشارة — فعّل سياسة التجارب من الإعدادات للمتابعة.`;
+    }
     case "NO_TRADE": {
       const stMap: Record<string, string> = {
         wait:              "لا إشارة تقنية واضحة — السوق في طور الانتظار.",
@@ -187,8 +225,14 @@ function resolveSummary(
       return `الإشارة ضعيفة — درجة ${input.grade} | احتمال ${input.probability}% — تحتاج لتحسّن الشروط قبل الدراسة الجدية.`;
     case "CANDIDATE":
       return `إشارة ${direction === "BUY" ? "شراء" : direction === "SELL" ? "بيع" : "محايدة"} — درجة ${input.grade} | احتمال ${input.probability}% — توجد ${input.committees.filter(c => c.verdict === "BLOCK" || c.verdict === "WARN").length} لجان تحتاج مراجعة قبل التنفيذ.`;
-    case "EXPERIMENTAL":
+    case "EXPERIMENTAL": {
+      const isSoftBlocked = (input.softBlockCount ?? 0) > 0 ||
+        (input.guardStatus === "BLOCK" && input.criticalBlockCount === 0);
+      if (isSoftBlocked) {
+        return "هذه ليست صفقة قوية، لكنها صالحة للاختبار لأن الشروط الفنية الأساسية سليمة.";
+      }
       return `إشارة ${direction === "BUY" ? "شراء" : "بيع"} — درجة ${input.grade} | احتمال ${input.probability}% — التحليل جيد لكن شروط التنفيذ غير مكتملة بعد.`;
+    }
     case "APPROVED":
       return `إشارة ${direction === "BUY" ? "شراء" : "بيع"} قوية — درجة ${input.grade} | احتمال ${input.probability}% — جميع شروط البوابة مكتملة. التنفيذ يتطلب مراجعتك اليدوية.`;
   }
@@ -289,12 +333,18 @@ function resolveNextAction(
       return "راقب السوق — انتظر تحسّن درجة الإشارة قبل الدراسة الجدية.";
     case "CANDIDATE":
       return "راجع نتائج اللجان — أصلح التحذيرات ثم أعد التحليل للترقي.";
-    case "EXPERIMENTAL":
+    case "EXPERIMENTAL": {
+      const expSoftBlocked = (input.softBlockCount ?? 0) > 0 ||
+        (input.guardStatus === "BLOCK" && input.criticalBlockCount === 0);
+      if (expSoftBlocked && input.executionPolicy === "EXPERIMENTAL") {
+        return "ابدأ التجربة بالضغط على زر 'تنفيذ تجربة MT5' أدناه — الشروط الفنية الأساسية سليمة.";
+      }
       return input.killSwitchEnabled
         ? "أوقف Kill Switch من الإعدادات — ثم تحقق من شروط البوابة."
         : input.executionMode === "READ_ONLY"
           ? "فعّل وضع التنفيذ من الإعدادات للمتابعة."
           : "أكمل شروط البوابة (السبريد / LTP / RR) ثم سيُتاح زر التنفيذ.";
+    }
     case "APPROVED":
       return "اضغط زر 'تنفيذ عبر MT5' أدناه — راجع الخطة وأكّد يدوياً.";
   }
@@ -313,7 +363,7 @@ export function buildGoldRecommendation(
     direction,
     confidencePercent:   Math.round(input.probability),
     grade:               input.grade,
-    title:               resolveTitle(status, direction),
+    title:               resolveTitle(status, direction, input),
     summary:             resolveSummary(status, input, direction),
     reasons:             resolveReasons(input),
     warnings:            resolveWarnings(input),

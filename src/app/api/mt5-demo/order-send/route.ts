@@ -25,14 +25,24 @@ const FETCH_TIMEOUT_MS         = 12_000;
 const DEMO_EXECUTION_ENABLED   = process.env.MT5_DEMO_EXECUTION_ENABLED === "true";
 
 export async function POST(request: NextRequest): Promise<NextResponse> {
+  if (process.env.NODE_ENV === "development") {
+    console.log("[mt5-demo/order-send] request received", {
+      mt5ServiceUrl:     MT5_SERVICE_BASE,
+      executionEnabled:  DEMO_EXECUTION_ENABLED,
+      demoOrderUrl:      DEMO_ORDER_URL,
+    });
+  }
+
   // ── Guard: demo execution is disabled by default ───────────────────────────
   if (!DEMO_EXECUTION_ENABLED) {
     return NextResponse.json(
       {
-        ok: false,
-        accepted: false,
-        error: "تنفيذ MT5 مغلق حاليًا بواسطة إعدادات النظام — يجب تفعيل MT5_DEMO_EXECUTION_ENABLED=true في خدمة MT5",
-        demoOnly: true,
+        ok:           false,
+        accepted:     false,
+        errorCode:    "MT5_EXECUTION_ENV_DISABLED",
+        layer:        "next-route",
+        error:        "تنفيذ MT5 مغلق من متغير البيئة MT5_DEMO_EXECUTION_ENABLED=false — لتفعيل التنفيذ: أضف MT5_DEMO_EXECUTION_ENABLED=true في .env.local ثم أعد تشغيل الخادم",
+        demoOnly:     true,
         read_only_mode: true,
       },
       { status: 403 },
@@ -45,21 +55,25 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     body = (await request.json()) as Record<string, unknown>;
   } catch {
     return NextResponse.json(
-      { ok: false, accepted: false, error: "Invalid JSON body", demoOnly: true },
+      { ok: false, accepted: false, errorCode: "INVALID_JSON", layer: "next-route", error: "Invalid JSON body", demoOnly: true },
       { status: 400 },
     );
+  }
+
+  if (process.env.NODE_ENV === "development") {
+    console.log("[mt5-demo/order-send] body keys", Object.keys(body));
   }
 
   // ── Guard: must include manualConfirmation and accountMode ─────────────────
   if (body.manualConfirmation !== true) {
     return NextResponse.json(
-      { ok: false, accepted: false, error: "manualConfirmation مطلوب", demoOnly: true },
+      { ok: false, accepted: false, errorCode: "MISSING_MANUAL_CONFIRMATION", layer: "next-route", error: "manualConfirmation مطلوب", demoOnly: true },
       { status: 400 },
     );
   }
   if (body.accountMode !== "DEMO_ONLY") {
     return NextResponse.json(
-      { ok: false, accepted: false, error: "accountMode يجب أن يكون DEMO_ONLY", demoOnly: true },
+      { ok: false, accepted: false, errorCode: "INVALID_ACCOUNT_MODE", layer: "next-route", error: "accountMode يجب أن يكون DEMO_ONLY", demoOnly: true },
       { status: 400 },
     );
   }
@@ -79,7 +93,14 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     clearTimeout(timeoutId);
 
     const data = (await upstream.json()) as Record<string, unknown>;
-    return NextResponse.json(data, { status: upstream.status });
+
+    if (process.env.NODE_ENV === "development") {
+      console.log("[mt5-demo/order-send] python response", { status: upstream.status, ok: upstream.ok, data });
+    }
+
+    // Attach layer tag so client can discriminate python errors
+    const withLayer = { ...data, layer: "python-bridge" };
+    return NextResponse.json(withLayer, { status: upstream.status });
   } catch (err) {
     clearTimeout(timeoutId);
     const isTimeout = err instanceof Error && err.name === "AbortError";
@@ -87,7 +108,14 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       ? "انتهت مهلة الطلب — تحقق من تشغيل خدمة MT5 المحلية (port 8010)"
       : "خدمة MT5 المحلية غير متاحة أو MT5 غير متصل";
     return NextResponse.json(
-      { ok: false, accepted: false, error: message, demoOnly: true },
+      {
+        ok:        false,
+        accepted:  false,
+        errorCode: isTimeout ? "PYTHON_BRIDGE_TIMEOUT" : "PYTHON_BRIDGE_UNREACHABLE",
+        layer:     "next-route",
+        error:     message,
+        demoOnly:  true,
+      },
       { status: 503 },
     );
   }
