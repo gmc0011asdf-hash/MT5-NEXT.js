@@ -3369,11 +3369,15 @@ function TradePreviewPanel({
     requestTP?:       number;
     requestLot?:      number;
     requestRiskUsd?:  number;
-    requestRR?:       number;
-    targetSource?:    "realistic" | "selectedPlan";
-    targetPreference?: string;
-    profile?:         string;
-    selectedPlanName?: string;
+    requestRR?:             number;
+    targetSource?:          "realistic" | "selectedPlan";
+    targetPreference?:      string;
+    profile?:               string;
+    selectedPlanName?:      string;
+    // RR diagnostics
+    minRewardRiskRatioSetting?: number;
+    experimentalRRFloor?:   number;
+    rrStatus?:              "pass" | "soft_warn" | "hard_reject";
   } | null>(null);
   // Tracks which planType the user last selected so we can re-select after preference change
   const lastSelectedPlanTypeRef = useRef<string | null>(null);
@@ -3606,6 +3610,13 @@ function TradePreviewPanel({
   // ── guardOkForSend: هل Guard يسمح بالإرسال حسب السياسة؟ ─────────────────
   const guardOkForSend = priceActionGuard.allowed || canOpenGoldExperimental;
 
+  // ── Experimental RR floor per target label ────────────────────────────────
+  function getExperimentalRRFloor(label: "TP1" | "TP2" | "TP3" | undefined): number {
+    if (label === "TP1") return 0.50;
+    if (label === "TP3") return 1.00;
+    return 0.80;  // TP2 or single order
+  }
+
   // ── Multi-Target Split Execution state ────────────────────────────────────
   const [goldOrderCount,     setGoldOrderCount]     = useState<1 | 2 | 3>(1);
   const [goldExecutionGroup, setGoldExecutionGroup] = useState<ExecutionGroupResult | null>(null);
@@ -3826,7 +3837,8 @@ function TradePreviewPanel({
       let orderError:  string | null = null;
 
       try {
-        const execReq = buildExecutionRequestPreview(result, sendPreview, eligibility);
+        const execReq            = buildExecutionRequestPreview(result, sendPreview, eligibility);
+        const expFloor           = getExperimentalRRFloor(orderSpec.targetLabel);
         const body = {
           ...execReq,
           manualConfirmation:  true as const,
@@ -3834,6 +3846,10 @@ function TradePreviewPanel({
           comment_override:    comment,
           targetLabel:         orderSpec.targetLabel,
           groupId,
+          // Policy fields — allow Python to apply context-aware RR floor
+          executionPolicy:     settings.executionPolicy ?? "STRICT",
+          minRequiredRR:       settings.minRewardRiskRatio,
+          experimentalRRFloor: expFloor,
         };
 
         if (process.env.NODE_ENV === "development") {
@@ -3862,6 +3878,9 @@ function TradePreviewPanel({
               requestRiskUsd: orderSpec.riskUsd, requestRR: orderSpec.rr,
               targetSource, targetPreference: selectedGoldPlan?.targetPreference,
               profile: selectedGoldPlan?.profile, selectedPlanName: planName,
+              minRewardRiskRatioSetting: settings.minRewardRiskRatio,
+              experimentalRRFloor: expFloor,
+              rrStatus: "pass",
             });
           }
         } else if (data.retcodeText === "NO_MONEY_PRECHECK") {
@@ -3870,6 +3889,8 @@ function TradePreviewPanel({
           if (splitOrders.length === 1) setGoldOrderResult(data);
         } else {
           orderStatus = "REJECTED";
+          const isRRReject = data.error?.includes("rrRatio") || data.errorCode === "VALIDATION_ERROR";
+          const rrStatus   = isRRReject ? "hard_reject" as const : undefined;
           orderError  = data.errorCode === "MT5_EXECUTION_ENV_DISABLED"
             ? "MT5_DEMO_EXECUTION_ENABLED=false — أعد تشغيل الخادم"
             : (data.error ?? `HTTP ${res.status}`);
@@ -3882,6 +3903,9 @@ function TradePreviewPanel({
               requestRiskUsd: orderSpec.riskUsd, requestRR: orderSpec.rr,
               targetSource, targetPreference: selectedGoldPlan?.targetPreference,
               profile: selectedGoldPlan?.profile, selectedPlanName: planName,
+              minRewardRiskRatioSetting: settings.minRewardRiskRatio,
+              experimentalRRFloor: expFloor,
+              rrStatus,
             });
           }
         }
@@ -4077,9 +4101,49 @@ function TradePreviewPanel({
         />
       )}
 
+      {/* ── Dev debug panel — development only ──────────────────────────── */}
+      {mode === "gold" && process.env.NODE_ENV === "development" && (
+        <details className="rounded border border-zinc-600/20 bg-zinc-900/30 px-3 py-2 text-[9px] font-mono text-zinc-400/70">
+          <summary className="cursor-pointer text-zinc-400/50 hover:text-zinc-300/70">🛠 Dev: Target Preference Debug</summary>
+          <div className="mt-1 space-y-0.5">
+            <p>targetPreference: <span className="text-cyan-400">{targetPreference}</span></p>
+            <p>adjustedGoldPlans.plans: {adjustedGoldPlans?.plans.length ?? "—"} | bestIdx: {String(adjustedGoldPlans?.bestPlanIdx)}</p>
+            <p>selectedGoldPlan.planType: {selectedGoldPlan?.planType ?? "—"}</p>
+            <p>selectedGoldPlan.targetPreference: <span className="text-amber-400">{selectedGoldPlan?.targetPreference ?? "—"}</span></p>
+            <p>selectedGoldPlan.takeProfit2: <span className="text-emerald-400">{selectedGoldPlan?.takeProfit2?.toFixed(5) ?? "—"}</span></p>
+            <p>effectivePreview.takeProfit: <span className="text-emerald-400">{effectivePreview.takeProfit?.toFixed(5) ?? "—"}</span></p>
+            <p>effectivePreview.stopLoss: <span className="text-red-400">{effectivePreview.stopLoss?.toFixed(5) ?? "—"}</span></p>
+            <p>effectivePreview.estimatedLot: {effectivePreview.estimatedLot?.toFixed(2) ?? "—"}</p>
+            <p>realisticTarget.profile: {realisticTarget?.profile ?? "—"} | atr14: {realisticTarget?.atr14?.toFixed(2) ?? "—"}</p>
+          </div>
+        </details>
+      )}
+
       {/* ── خطط التداول المقترحة — Gold Trade Plans Engine v1 ────────────── */}
       {mode === "gold" && (adjustedGoldPlans ?? goldPlans) && (
         <>
+          {/* Current preference label */}
+          {(() => {
+            const currentProfile = realisticTarget?.profile ?? selectedGoldPlan?.profile;
+            return (
+              <div className="flex items-center gap-2 text-[11px] text-zinc-400/70">
+                <span>نوع الأهداف الحالي:</span>
+                <span className={`font-semibold ${
+                  targetPreference === "REALISTIC" ? "text-cyan-300" :
+                  targetPreference === "BALANCED"  ? "text-amber-300" : "text-orange-300"
+                }`}>
+                  {getTargetPrefLabel(targetPreference, currentProfile)}
+                </span>
+                {currentProfile && (
+                  <span className="text-zinc-500/60 text-[10px]">({currentProfile})</span>
+                )}
+                {targetPreference === "FAR" && (
+                  <span className="text-orange-400/70">— خطة بعيدة، تحتاج وقت أطول</span>
+                )}
+              </div>
+            );
+          })()}
+
           <GoldTradePlansCard  plans={adjustedGoldPlans ?? goldPlans!} />
           <GoldTradePlanSelector
             plans={adjustedGoldPlans ?? goldPlans!}
@@ -4381,16 +4445,13 @@ function TradePreviewPanel({
               {realisticTarget?.profile === "SCALP_TEST" &&
                targetPreference !== "REALISTIC" && (
                 <p className="text-[11px] text-amber-400/80 leading-relaxed">
-                  ⚠ أنت لا تستخدم الهدف الواقعي السريع — قد تكون الأهداف بعيدة لفريم {result.selectedTimeframe ?? "M15"}.
+                  ⚠ أنت لا تستخدم الهدف الواقعي السريع — قد تكون الأهداف بعيدة لفريم {result.selectedTimeframe ?? "M15"}.{" "}
                   <button
                     type="button"
-                    onClick={() => {
-                      // This would require setTargetPreference to be accessible here
-                      // We'll just show the warning text for now
-                    }}
-                    className="mr-1 text-cyan-400/80 underline underline-offset-2 hover:text-cyan-300"
+                    onClick={() => setTargetPreference("REALISTIC")}
+                    className="text-cyan-400/80 underline underline-offset-2 hover:text-cyan-300"
                   >
-                    فعّل "واقعي سريع" من بطاقة الأهداف أعلاه.
+                    اضغط هنا للتفعيل.
                   </button>
                 </p>
               )}
@@ -4872,9 +4933,7 @@ function TradePreviewPanel({
                 </span>
                 {selectedGoldPlan?.targetPreference && (
                   <span className="text-[9px] text-muted-foreground/60">
-                    نوع الهدف:
-                    {selectedGoldPlan.targetPreference === "REALISTIC" ? " واقعي سريع" :
-                     selectedGoldPlan.targetPreference === "BALANCED"  ? " متوسط" : " بعيد"}
+                    {getTargetPrefLabel(selectedGoldPlan.targetPreference, selectedGoldPlan.profile, false)}
                   </span>
                 )}
                 {selectedGoldPlan?.profile && (
@@ -5233,7 +5292,7 @@ function TradePreviewPanel({
                     <span className="font-mono text-amber-300/80">{goldSendDebug.selectedPlanName ?? "—"}</span>
                     <span className="text-zinc-400/60">نوع الهدف:</span>
                     <span className={`font-mono text-[10px] ${goldSendDebug.targetSource === "realistic" ? "text-cyan-400/80" : "text-amber-400/80"}`}>
-                      {goldSendDebug.targetPreference === "REALISTIC" ? "واقعي سريع" : goldSendDebug.targetPreference === "BALANCED" ? "متوسط" : goldSendDebug.targetPreference === "FAR" ? "بعيد" : "—"}
+                      {getTargetPrefLabel(goldSendDebug.targetPreference, goldSendDebug.profile, false)}
                     </span>
                     <span className="text-zinc-400/60">Profile:</span>
                     <span className="font-mono text-zinc-300/70">{goldSendDebug.profile ?? "—"}</span>
@@ -5247,8 +5306,24 @@ function TradePreviewPanel({
                     <span className="font-mono text-zinc-300/80">{goldSendDebug.requestLot?.toFixed(2) ?? "—"}</span>
                     <span className="text-zinc-400/60">المخاطرة:</span>
                     <span className="font-mono text-zinc-300/70">{goldSendDebug.requestRiskUsd != null ? `$${Number(goldSendDebug.requestRiskUsd).toFixed(2)}` : "—"}</span>
-                    <span className="text-zinc-400/60">R/R:</span>
+                    <span className="text-zinc-400/60">R/R المرسل:</span>
                     <span className="font-mono text-zinc-300/70">{goldSendDebug.requestRR?.toFixed(2) ?? "—"}</span>
+                    <span className="text-zinc-400/60">إعداد minRR:</span>
+                    <span className="font-mono text-amber-300/70">{goldSendDebug.minRewardRiskRatioSetting?.toFixed(1) ?? "—"}</span>
+                    <span className="text-zinc-400/60">حد تجريبي:</span>
+                    <span className="font-mono text-cyan-300/70">{goldSendDebug.experimentalRRFloor?.toFixed(2) ?? "—"}</span>
+                    {goldSendDebug.rrStatus && (
+                      <>
+                        <span className="text-zinc-400/60">حالة RR:</span>
+                        <span className={`font-mono text-[10px] ${
+                          goldSendDebug.rrStatus === "pass" ? "text-emerald-400/80" :
+                          goldSendDebug.rrStatus === "soft_warn" ? "text-amber-400/80" : "text-red-400/80"
+                        }`}>
+                          {goldSendDebug.rrStatus === "pass" ? "✓ مقبول" :
+                           goldSendDebug.rrStatus === "soft_warn" ? "⚠ تحذير" : "✗ مرفوض"}
+                        </span>
+                      </>
+                    )}
                   </div>
                 </div>
 
@@ -5455,6 +5530,25 @@ function getMissingFields(r: AnalysisResult | null): string[] {
 }
 
 // ── Auth error detection ──────────────────────────────────────────────────────
+
+// ── Profile-aware target preference label ────────────────────────────────────
+
+function getTargetPrefLabel(
+  preference: string | undefined,
+  profile:    string | undefined,
+  withIcon = true,
+): string {
+  const icon = withIcon;
+  if (preference === "REALISTIC") {
+    if (profile === "SCALP_TEST") return icon ? "⚡ واقعي سريع"  : "واقعي سريع";
+    if (profile === "INTRADAY")   return icon ? "◑ واقعي يومي"   : "واقعي يومي";
+    if (profile === "SWING")      return icon ? "◎ واقعي طويل"   : "واقعي طويل";
+    return "واقعي";
+  }
+  if (preference === "BALANCED") return icon ? "◑ متوسط"  : "متوسط";
+  if (preference === "FAR")      return icon ? "◎ بعيد"   : "بعيد";
+  return preference ?? "—";
+}
 
 function isAuthError(err: unknown): boolean {
   const msg = (err instanceof Error ? err.message : String(err)).toLowerCase();

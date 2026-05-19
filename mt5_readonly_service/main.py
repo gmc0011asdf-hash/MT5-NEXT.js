@@ -1020,6 +1020,9 @@ class DemoOrderRequest(BaseModel):
     comment_override: str | None = None  # overrides default comment (max 31 chars for MT5)
     targetLabel:      str | None = None  # "TP1" | "TP2" | "TP3"
     groupId:          str | None = None  # execution group identifier
+    # Execution policy — affects RR floor
+    executionPolicy:  str | None = None  # "STRICT" | "EXPERIMENTAL"
+    minRequiredRR:    float | None = None  # user's configured minRewardRiskRatio (default 1.5)
 
 
 def _validate_demo_order(req: DemoOrderRequest) -> str | None:
@@ -1047,9 +1050,29 @@ def _validate_demo_order(req: DemoOrderRequest) -> str | None:
     # ── Order type ────────────────────────────────────────────────────────────
     if req.orderType not in _DEMO_ORDER_TYPE_MAP:
         return f"orderType غير مدعوم: {req.orderType}"
-    # ── RR ────────────────────────────────────────────────────────────────────
-    if req.rrRatio is not None and req.rrRatio < 1.5:
-        return f"rrRatio {req.rrRatio:.2f} أقل من الحد الأدنى 1.5"
+    # ── RR — context-aware floor ──────────────────────────────────────────────
+    if req.rrRatio is not None:
+        policy = (req.executionPolicy or "STRICT").upper()
+        label  = (req.targetLabel or "").upper()
+
+        if policy == "EXPERIMENTAL":
+            # Lower floors per target label in experimental mode
+            if label == "TP1":
+                rr_floor = 0.50
+            elif label == "TP3":
+                rr_floor = 1.00
+            else:  # TP2 or single order
+                rr_floor = 0.80
+        else:
+            # STRICT: use client-provided minRequiredRR or 1.5 hard floor
+            rr_floor = float(req.minRequiredRR) if req.minRequiredRR is not None else 1.5
+
+        if req.rrRatio < rr_floor:
+            return (
+                f"rrRatio {req.rrRatio:.2f} أقل من الحد الأدنى "
+                f"{rr_floor:.2f} ({policy}"
+                + (f" — {label}" if label else "") + ")"
+            )
     # ── SL/TP direction sanity ────────────────────────────────────────────────
     is_buy = "BUY" in req.orderType
     if is_buy:

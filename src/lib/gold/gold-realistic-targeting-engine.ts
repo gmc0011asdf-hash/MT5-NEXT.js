@@ -278,8 +278,7 @@ export function computeRealismScore(
 
 // ─── adjustTradePlans ─────────────────────────────────────────────────────────
 // Adjusts all 3 professional plans (Conservative/Balanced/Aggressive) based on
-// targetPreference + profile. FAR = original plans unchanged.
-// REALISTIC / BALANCED = recalculate SL/TP/lot per profile multipliers.
+// targetPreference. ALL three preferences recompute from ATR — no fallback to original plans.
 
 type AdjustRiskInput = {
   riskUsd:             number;
@@ -288,30 +287,35 @@ type AdjustRiskInput = {
   riskPercentOfEquity?: number;
 };
 
-// Base SL multiplier per profile × preference
-const PROFILE_PREF_BASE_SL: Record<TradeTargetProfile, Record<"REALISTIC" | "BALANCED", number>> = {
-  SCALP_TEST: { REALISTIC: 0.60, BALANCED: 1.00 },
-  INTRADAY:   { REALISTIC: 1.00, BALANCED: 1.50 },
-  SWING:      { REALISTIC: 2.00, BALANCED: 2.50 },
+// Per-preference target parameters (ATR multiples for the Balanced plan variant).
+// Conservative scales SL (and TP) up × 1.30 to maintain the same RR.
+// Aggressive uses tighter SL × 0.75 but same TP → higher RR.
+// These give clearly distinct values: REALISTIC ~1.1×ATR, BALANCED ~1.5×ATR, FAR ~2.5×ATR.
+type PrefParams = {
+  slBalanced: number;  // ATR multiplier for SL (Balanced variant)
+  tp1:        number;  // ATR multiplier for TP1
+  tp2:        number;  // ATR multiplier for TP2 (main target)
+  tp3:        number;  // ATR multiplier for TP3
+  farWarn?:   string;  // optional warning for FAR
+};
+
+const PREF_PARAMS: Record<"REALISTIC" | "BALANCED" | "FAR", PrefParams> = {
+  REALISTIC: { slBalanced: 1.00, tp1: 0.55, tp2: 1.10, tp3: 1.65 },
+  BALANCED:  { slBalanced: 1.40, tp1: 1.00, tp2: 1.50, tp3: 2.00 },
+  FAR:       { slBalanced: 1.80, tp1: 1.50, tp2: 2.50, tp3: 3.50,
+               farWarn: "خطة بعيدة — مناسبة لفريم أعلى أو احتفاظ أطول" },
 };
 
 // Scale applied per plan type on top of the base SL
 const PLAN_SL_SCALE: Record<string, number> = {
-  CONSERVATIVE: 1.30,   // wider SL — safer entry
-  BALANCED:     1.00,
-  AGGRESSIVE:   0.75,   // tighter SL — higher conviction
-};
-
-// Main RR target per plan type (TP2 = SL distance × this)
-const PLAN_MAIN_RR: Record<string, number> = {
-  CONSERVATIVE: 2.0,
-  BALANCED:     1.5,
-  AGGRESSIVE:   1.2,
+  CONSERVATIVE: 1.30,   // wider SL + proportionally wider TP (maintains same RR as Balanced)
+  BALANCED:     1.00,   // base
+  AGGRESSIVE:   0.75,   // tighter SL, same TP → higher RR
 };
 
 function adjustOnePlan(
   plan:        TradePlan,
-  preference:  "REALISTIC" | "BALANCED",
+  preference:  "REALISTIC" | "BALANCED" | "FAR",
   profile:     TradeTargetProfile,
   atr14:       number,
   riskInput:   AdjustRiskInput,
@@ -323,33 +327,34 @@ function adjustOnePlan(
     plan.planType === "WAIT" ||
     plan.entry == null
   ) {
-    return {
-      ...plan,
-      targetSource:     "adjusted",
-      targetPreference: preference,
-      profile,
-    };
+    return { ...plan, targetSource: "adjusted", targetPreference: preference, profile };
   }
 
+  const pp      = PREF_PARAMS[preference];
   const planKey = plan.planType as string;
-  const baseSL  = PROFILE_PREF_BASE_SL[profile][preference];
-  const scale   = PLAN_SL_SCALE[planKey]  ?? 1.0;
-  const mainRR  = PLAN_MAIN_RR[planKey]   ?? 1.5;
+  const slScale = PLAN_SL_SCALE[planKey] ?? 1.0;
+  const isCons  = planKey === "CONSERVATIVE";
 
-  const slDist = r2(baseSL * scale * atr14);
-  const dir    = plan.direction as "BUY" | "SELL";
-  const entry  = plan.entry;
+  // SL scales with plan type. Conservative also scales TP proportionally (same RR).
+  // Aggressive keeps base TP (higher RR than Balanced).
+  const slDist  = r2(pp.slBalanced * slScale * atr14);
+  const tpFac   = isCons ? slScale : 1.0;
+  const tp2Dist = r2(pp.tp2 * tpFac * atr14);
+  const tp1Dist = r2(pp.tp1 * tpFac * atr14);
+  const tp3Dist = r2(pp.tp3 * tpFac * atr14);
 
-  const sl  = dir === "BUY" ? r2(entry - slDist) : r2(entry + slDist);
-  const tp1 = dir === "BUY" ? r2(entry + slDist * 0.5)          : r2(entry - slDist * 0.5);
-  const tp2 = dir === "BUY" ? r2(entry + slDist * mainRR)       : r2(entry - slDist * mainRR);
-  const tp3 = dir === "BUY" ? r2(entry + slDist * mainRR * 1.5) : r2(entry - slDist * mainRR * 1.5);
+  const dir   = plan.direction as "BUY" | "SELL";
+  const entry = plan.entry;
 
-  const rr1 = 0.5;
-  const rr2 = mainRR;
-  const rr3 = r2(mainRR * 1.5);
+  const sl  = dir === "BUY" ? r2(entry - slDist)  : r2(entry + slDist);
+  const tp1 = dir === "BUY" ? r2(entry + tp1Dist) : r2(entry - tp1Dist);
+  const tp2 = dir === "BUY" ? r2(entry + tp2Dist) : r2(entry - tp2Dist);
+  const tp3 = dir === "BUY" ? r2(entry + tp3Dist) : r2(entry - tp3Dist);
 
-  // Lot via Risk Manager (same tier as plan type)
+  const rr1 = r2(tp1Dist / slDist);
+  const rr2 = r2(tp2Dist / slDist);
+  const rr3 = r2(tp3Dist / slDist);
+
   const rm = buildRiskLevels({
     userRiskUsdCap:      riskInput.riskUsd,
     slDistance:          slDist,
@@ -361,18 +366,23 @@ function adjustOnePlan(
 
   const riskTier =
     planKey === "CONSERVATIVE" ? rm.conservative :
-    planKey === "AGGRESSIVE"   ? rm.aggressive   :
-    rm.balanced;
+    planKey === "AGGRESSIVE"   ? rm.aggressive   : rm.balanced;
 
   const proposalStatus: "EXECUTION_READY" | "REVIEW" =
     rr2 >= minRR ? "EXECUTION_READY" : "REVIEW";
 
-  const tp2Dist     = Math.abs(tp2 - entry);
-  const realismScr  = computeRealismScore(tp2Dist, atr14, profile);
-  const prefLabel   = preference === "REALISTIC" ? "واقعي" : "متوسط";
-  const planLabel   =
+  const realismScr = computeRealismScore(tp2Dist, atr14, profile);
+  const prefLabel  =
+    preference === "REALISTIC" ? "واقعي" :
+    preference === "BALANCED"  ? "متوسط" : "بعيد";
+  const planLabel  =
     planKey === "CONSERVATIVE" ? "المحافظة" :
     planKey === "BALANCED"     ? "المتوازنة" : "الهجومية";
+
+  const warnings = (plan.warnings ?? [])
+    .filter((w) => !w.includes("خطة بعيدة"))  // remove stale warning
+    .concat(pp.farWarn ? [pp.farWarn] : [])
+    .slice(0, 6);
 
   return {
     ...plan,
@@ -390,6 +400,7 @@ function adjustOnePlan(
     maxLossUsd:       riskTier.suggestedRiskUsd,
     lotReason:        riskTier.lotReason,
     proposalStatus,
+    warnings,
     nextAction:
       proposalStatus === "EXECUTION_READY"
         ? `${planLabel} — هدف ${prefLabel} — جاهز للمراجعة — استخدم زر MT5`
@@ -401,6 +412,7 @@ function adjustOnePlan(
   };
 }
 
+// ALL three preferences now recompute from ATR — no fallback to original plans.
 export function adjustTradePlans(
   originalPlans:   TradePlan[],
   preference:      "REALISTIC" | "BALANCED" | "FAR",
@@ -408,23 +420,6 @@ export function adjustTradePlans(
   riskInput:       AdjustRiskInput,
   minRR:           number,
 ): TradePlan[] {
-  // FAR: return originals with metadata tags only
-  if (preference === "FAR") {
-    return originalPlans.map((p) => {
-      const tp2Dist = p.entry != null && p.takeProfit2 != null
-        ? Math.abs(p.takeProfit2 - p.entry) : 0;
-      return {
-        ...p,
-        targetSource:     "original" as const,
-        targetPreference: "FAR" as const,
-        profile:          realisticTarget.profile,
-        realismScore:     tp2Dist > 0
-          ? computeRealismScore(tp2Dist, realisticTarget.atr14, realisticTarget.profile)
-          : undefined,
-      };
-    });
-  }
-
   return originalPlans.map((p) =>
     adjustOnePlan(p, preference, realisticTarget.profile, realisticTarget.atr14, riskInput, minRR),
   );
