@@ -80,8 +80,13 @@ export function RealisticTargetCard({
         <span className="text-[10px] text-muted-foreground shrink-0">نوع الخطة:</span>
         <div className="flex gap-1">
           {(["REALISTIC", "BALANCED", "FAR"] as TargetPreference[]).map((p) => {
+            // Profile-aware label for REALISTIC
+            const realisticLabel =
+              target.profile === "SCALP_TEST" ? "واقعي سريع" :
+              target.profile === "INTRADAY"   ? "واقعي يومي" :
+              target.profile === "SWING"      ? "واقعي طويل" : "واقعي";
             const labels: Record<TargetPreference, string> = {
-              REALISTIC: "واقعي سريع",
+              REALISTIC: realisticLabel,
               BALANCED:  "متوسط",
               FAR:       "بعيد",
             };
@@ -101,7 +106,7 @@ export function RealisticTargetCard({
             );
           })}
         </div>
-        {preference === "REALISTIC" && target.profile === "SCALP_TEST" && (
+        {preference === "REALISTIC" && (
           <span className="text-[10px] text-cyan-400/70">← مفعّل في التنفيذ</span>
         )}
       </div>

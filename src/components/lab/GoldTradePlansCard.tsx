@@ -102,7 +102,7 @@ function PlanCard({ plan, isBest }: { plan: TradePlan; isBest: boolean }) {
 
       {/* Direction + timing */}
       {!wait && (
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-1.5">
           <span className={`text-xs ${dirCls}`}>{dirLabel}</span>
           <span className="text-[10px] border border-border/30 rounded px-1 text-muted-foreground">
             {plan.entryType === "LIMIT" ? "LIMIT" : "MARKET"}
@@ -111,6 +111,32 @@ function PlanCard({ plan, isBest }: { plan: TradePlan; isBest: boolean }) {
             {plan.professional.timingAssessment === "NOW" ? "الآن" :
              plan.professional.timingAssessment === "MONITOR" ? "مراقبة" : "انتظار"}
           </span>
+        </div>
+      )}
+
+      {/* Adjustment metadata badges */}
+      {(plan.targetPreference || plan.profile || plan.realismScore) && (
+        <div className="flex flex-wrap gap-1">
+          {plan.targetPreference && (
+            <span className={`rounded border px-1.5 py-0.5 text-[9px] font-medium ${
+              plan.targetPreference === "REALISTIC" ? "border-cyan-500/30 bg-cyan-500/10 text-cyan-300/80" :
+              plan.targetPreference === "BALANCED"  ? "border-amber-500/25 bg-amber-500/8 text-amber-300/80" :
+              "border-orange-500/25 bg-orange-500/8 text-orange-300/80"
+            }`}>
+              {plan.targetPreference === "REALISTIC" ? "⚡ واقعي" :
+               plan.targetPreference === "BALANCED"  ? "◑ متوسط" : "◎ بعيد"}
+            </span>
+          )}
+          {plan.realismScore && (
+            <span className={`rounded border px-1.5 py-0.5 text-[9px] ${
+              plan.realismScore === "REALISTIC" ? "border-emerald-500/25 text-emerald-400/70" :
+              plan.realismScore === "STRETCHED" ? "border-amber-500/25 text-amber-400/70" :
+              "border-red-500/25 text-red-400/70"
+            }`}>{plan.realismScore}</span>
+          )}
+          {plan.targetSource === "adjusted" && (
+            <span className="rounded border border-zinc-500/20 bg-zinc-800/30 px-1.5 py-0.5 text-[9px] text-zinc-400/60">معدّل</span>
+          )}
         </div>
       )}
 
