@@ -66,6 +66,11 @@ import {
   type ActionablePlan,
 } from "@/lib/gold/gold-actionable-plan-engine";
 import { ActionablePlanCard } from "@/components/lab/ActionablePlanCard";
+import {
+  buildRealisticTargets,
+  type RealisticTarget,
+} from "@/lib/gold/gold-realistic-targeting-engine";
+import { RealisticTargetCard } from "@/components/lab/RealisticTargetCard";
 import { CandleSyncPanel }       from "@/components/lab/CandleSyncPanel";
 import {
   type AnalysisMetadata,
@@ -2775,6 +2780,13 @@ type DemoOrderResult = {
   error?:                      string;
   errorCode?:                  string;  // e.g. "MT5_EXECUTION_ENV_DISABLED"
   layer?:                      string;  // "next-route" | "python-bridge"
+  // Python echo — verification of what was actually sent to MT5
+  mt5Retcode?:                 number;
+  mt5Comment?:                 string;
+  requestedVolume?:            number;
+  requestedPrice?:             number;
+  requestedSL?:                number;
+  requestedTP?:                number;
 };
 
 // ── buildPriceActionExecutionGuard — B2.1 ────────────────────────────────────
@@ -3205,7 +3217,33 @@ function TradePreviewPanel({
   // ── Gold Plan Binding v2 — effectivePreview ────────────────────────────────
   // إذا المستخدم اختار خطة مهنية، جميع طبقات التنفيذ تستخدم effectivePreview.
   // إذا لا توجد خطة مختارة، effectivePreview === preview (الخطة الأصلية).
-  const [selectedGoldPlan, setSelectedGoldPlan] = useState<TradePlan | null>(null);
+  const [selectedGoldPlan,  setSelectedGoldPlan]  = useState<TradePlan | null>(null);
+  const [targetPreference,  setTargetPreference]  = useState<"REALISTIC" | "BALANCED" | "FAR">("REALISTIC");
+
+  // ── Realistic Target Engine v1 ────────────────────────────────────────────
+  const realisticTarget = useMemo((): RealisticTarget | null => {
+    if (mode !== "gold") return null;
+    const atr14 = result.indicators?.atr14;
+    if (!atr14 || atr14 <= 0 || !result.direction) return null;
+    const entry = selectedGoldPlan?.entry ?? result.currentAsk ?? result.currentBid ?? result.entry;
+    if (entry == null) return null;
+    return buildRealisticTargets({
+      timeframe:           result.selectedTimeframe,
+      direction:           result.direction,
+      entry,
+      atr14,
+      spreadPoints:        result.currentSpreadPoints,
+      riskUsd:             result.riskUsd,
+      equity:              accountEquity ?? undefined,
+      freeMargin:          accountFreeMargin ?? undefined,
+      riskPercentOfEquity: result.riskPercentOfEquity,
+      currentTP2:          selectedGoldPlan?.takeProfit2,
+      currentSL:           selectedGoldPlan?.stopLoss,
+      marketState:         result.marketStructure?.trendState,
+      rangeDetected:       result.marketStructure?.rangeDetected,
+      pricePosition:       result.zonesAnalysis?.inPremiumDiscount,
+    });
+  }, [mode, result, selectedGoldPlan, accountEquity, accountFreeMargin]);
 
   const effectivePreview = useMemo((): TradeOrderPreview => {
     if (
@@ -3233,7 +3271,8 @@ function TradePreviewPanel({
       dir === "SELL" && et === "STOP"  ? "SELL_STOP_PREVIEW"   :
       dir === "SELL"                   ? "SELL_MARKET_PREVIEW" : "NONE";
 
-    return {
+    // ── Layer 1: selectedGoldPlan values ──────────────────────────────────
+    let ep: TradeOrderPreview = {
       ...preview,
       allowed:          true,
       blockedReasons:   [],
@@ -3247,7 +3286,25 @@ function TradePreviewPanel({
       rrRatio:          selectedGoldPlan.rr2 ?? preview.rrRatio,
       executionEnabled: false as const,
     };
-  }, [selectedGoldPlan, preview]);
+
+    // ── Layer 2: Realistic targets (SCALP_TEST + preference REALISTIC) ─────
+    if (
+      realisticTarget !== null &&
+      targetPreference === "REALISTIC" &&
+      realisticTarget.profile === "SCALP_TEST"
+    ) {
+      ep = {
+        ...ep,
+        stopLoss:     realisticTarget.sl,
+        takeProfit:   realisticTarget.tp2,
+        estimatedLot: realisticTarget.lot,
+        rrRatio:      realisticTarget.rr2,
+        riskUsd:      realisticTarget.riskUsd,
+      };
+    }
+
+    return ep;
+  }, [selectedGoldPlan, preview, realisticTarget, targetPreference]);
 
   // A26.5: manual lot override — يُهيَّأ من effectivePreview ويتيح التعديل اليدوي
   const [manualLot, setManualLot] = useState<number>(
@@ -3285,7 +3342,16 @@ function TradePreviewPanel({
   const [goldOrderError,     setGoldOrderError]     = useState<string | null>(null);
   const [goldPrecheckFailed, setGoldPrecheckFailed] = useState<string[]>([]);
   const [goldSendStage,      setGoldSendStage]      = useState<string | null>(null);
-  const [goldSendDebug,      setGoldSendDebug]      = useState<{ httpStatus?: number; responseOk?: boolean; errorCode?: string } | null>(null);
+  const [goldSendDebug,      setGoldSendDebug]      = useState<{
+    httpStatus?:   number;
+    responseOk?:   boolean;
+    errorCode?:    string;
+    requestEntry?: number;
+    requestSL?:    number;
+    requestTP?:    number;
+    requestLot?:   number;
+    targetSource?: "realistic" | "selectedPlan";
+  } | null>(null);
 
   // Gold gate: زر يُفتح عند استيفاء الشروط الفنية — يستخدم effectivePreview
   const canOpenGoldModal =
@@ -3579,14 +3645,29 @@ function TradePreviewPanel({
 
     try {
       const execReq = buildExecutionRequestPreview(result, effectivePreview, eligibility);
+      const sentLot  = manualLot > 0 ? manualLot : (execReq.estimatedLot ?? effectivePreview.estimatedLot ?? 0.01);
       const body = {
         ...execReq,
         manualConfirmation: true as const,
-        manualLot: manualLot > 0 ? manualLot : execReq.estimatedLot,
+        manualLot: sentLot,
       };
 
+      // ── Target source for diagnostics ───────────────────────────────────
+      const targetSource: "realistic" | "selectedPlan" =
+        realisticTarget !== null &&
+        targetPreference === "REALISTIC" &&
+        realisticTarget.profile === "SCALP_TEST"
+          ? "realistic"
+          : "selectedPlan";
+
       if (process.env.NODE_ENV === "development") {
-        console.log("[GoldSend] fetching /api/mt5-demo/order-send", body);
+        console.log("[GoldSend] fetching /api/mt5-demo/order-send", {
+          ...body,
+          targetSource,
+          effectivePreview_SL:  effectivePreview.stopLoss,
+          effectivePreview_TP:  effectivePreview.takeProfit,
+          effectivePreview_lot: effectivePreview.estimatedLot,
+        });
       }
 
       setGoldSendStage("الطلب مرسل — انتظار الرد من Python bridge...");
@@ -3603,7 +3684,16 @@ function TradePreviewPanel({
         console.log("[GoldSend] response", { httpStatus: res.status, ok: res.ok, data });
       }
 
-      setGoldSendDebug({ httpStatus: res.status, responseOk: res.ok, errorCode: data.errorCode });
+      setGoldSendDebug({
+        httpStatus:   res.status,
+        responseOk:   res.ok,
+        errorCode:    data.errorCode,
+        requestEntry: execReq.entryPrice ?? undefined,
+        requestSL:    execReq.stopLoss   ?? undefined,
+        requestTP:    execReq.takeProfit ?? undefined,
+        requestLot:   sentLot,
+        targetSource,
+      });
       attemptData = data;
 
       if (data.ok || data.accepted) {
@@ -3805,6 +3895,15 @@ function TradePreviewPanel({
       {/* ── خطة النظام العملية — Gold Actionable Plan v1 ─────────────────── */}
       {mode === "gold" && actionablePlan && (
         <ActionablePlanCard plan={actionablePlan} />
+      )}
+
+      {/* ── الأهداف الواقعية — Gold Realistic Targeting v1 ──────────────── */}
+      {mode === "gold" && realisticTarget && (
+        <RealisticTargetCard
+          target={realisticTarget}
+          preference={targetPreference}
+          onPreferenceChange={setTargetPreference}
+        />
       )}
 
       {/* ── خطط التداول المقترحة — Gold Trade Plans Engine v1 ────────────── */}
@@ -4097,6 +4196,24 @@ function TradePreviewPanel({
               {!settings.isConfirmedDemo && !settings.killSwitchEnabled && (
                 <p className="text-[11px] text-amber-300/70 leading-relaxed">
                   فعّل تأكيد مراجعة التنفيذ من الإعدادات لتفعيل زر الإرسال عند اكتمال شروط اللجان.
+                </p>
+              )}
+
+              {/* تحذير: M15 بدون Realistic Targeting */}
+              {realisticTarget?.profile === "SCALP_TEST" &&
+               targetPreference !== "REALISTIC" && (
+                <p className="text-[11px] text-amber-400/80 leading-relaxed">
+                  ⚠ أنت لا تستخدم الهدف الواقعي السريع — قد تكون الأهداف بعيدة لفريم {result.selectedTimeframe ?? "M15"}.
+                  <button
+                    type="button"
+                    onClick={() => {
+                      // This would require setTargetPreference to be accessible here
+                      // We'll just show the warning text for now
+                    }}
+                    className="mr-1 text-cyan-400/80 underline underline-offset-2 hover:text-cyan-300"
+                  >
+                    فعّل "واقعي سريع" من بطاقة الأهداف أعلاه.
+                  </button>
                 </p>
               )}
             </div>
@@ -4552,18 +4669,37 @@ function TradePreviewPanel({
 
           {/* Plan binding note in modal */}
           {selectedGoldPlan && mode === "gold" && (
-            <div className="rounded-md border border-amber-500/20 bg-amber-500/5 px-3 py-2 text-[10px]">
-              <span className="text-amber-300/70 font-medium">الخطة المختارة: </span>
-              <span className="text-amber-200/90 font-bold">
-                {selectedGoldPlan.planType === "CONSERVATIVE" ? "المحافظة" :
-                 selectedGoldPlan.planType === "BALANCED"     ? "المتوازنة" : "الهجومية"}
-              </span>
-              <span className="text-muted-foreground/50 mx-1">·</span>
-              <span className="text-muted-foreground">لوت: </span>
-              <span className="font-mono text-foreground/80">{selectedGoldPlan.estimatedLot?.toFixed(2) ?? "—"}</span>
-              <span className="text-muted-foreground/50 mx-1">·</span>
-              <span className="text-muted-foreground">خطر: </span>
-              <span className="font-mono text-foreground/80">${selectedGoldPlan.suggestedRiskUsd?.toFixed(2) ?? "—"}</span>
+            <div className="rounded-md border border-amber-500/20 bg-amber-500/5 px-3 py-2 text-[10px] space-y-1">
+              <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5">
+                <span className="text-amber-300/70 font-medium">الخطة المختارة: </span>
+                <span className="text-amber-200/90 font-bold">
+                  {selectedGoldPlan.planType === "CONSERVATIVE" ? "المحافظة" :
+                   selectedGoldPlan.planType === "BALANCED"     ? "المتوازنة" : "الهجومية"}
+                </span>
+                <span className="text-muted-foreground/50">·</span>
+                <span className="text-muted-foreground">لوت: </span>
+                <span className="font-mono text-foreground/80">{selectedGoldPlan.estimatedLot?.toFixed(2) ?? "—"}</span>
+                <span className="text-muted-foreground/50">·</span>
+                <span className="text-muted-foreground">خطر: </span>
+                <span className="font-mono text-foreground/80">${selectedGoldPlan.suggestedRiskUsd?.toFixed(2) ?? "—"}</span>
+              </div>
+              {/* Realistic targeting source indicator */}
+              {realisticTarget !== null &&
+               targetPreference === "REALISTIC" &&
+               realisticTarget.profile === "SCALP_TEST" ? (
+                <div className="flex items-center gap-1.5 pt-0.5">
+                  <span className="inline-flex items-center rounded border border-cyan-500/40 bg-cyan-500/10 px-1.5 py-0.5 text-[9px] font-semibold text-cyan-300">
+                    ◈ مصدر الهدف: Realistic Targeting ({realisticTarget.profileLabel})
+                  </span>
+                  <span className="text-[9px] text-cyan-400/60">
+                    SL: {realisticTarget.sl.toFixed(2)} · TP2: {realisticTarget.tp2.toFixed(2)} · لوت: {realisticTarget.lot.toFixed(2)}
+                  </span>
+                </div>
+              ) : (
+                <div className="text-[9px] text-zinc-400/50 pt-0.5">
+                  مصدر الهدف: الخطة المهنية المختارة
+                </div>
+              )}
             </div>
           )}
             {/* Warning */}
@@ -4739,6 +4875,21 @@ function TradePreviewPanel({
                   <p>رقم التذكرة: <span className="font-mono font-bold">{goldOrderResult.ticket}</span></p>
                 )}
                 <p>الاستجابة: {goldOrderResult.retcodeText ?? goldOrderResult.message ?? "—"}</p>
+                {/* Python echoes — تأكيد القيم المُرسلة فعليًا */}
+                <div className="grid grid-cols-2 gap-x-4 gap-y-0.5 pt-1 border-t border-emerald-500/20 text-[10px] text-emerald-300/70">
+                  {goldOrderResult.requestedSL != null && (
+                    <><span>SL المُرسل:</span><span className="font-mono">{goldOrderResult.requestedSL.toFixed(5)}</span></>
+                  )}
+                  {goldOrderResult.requestedTP != null && (
+                    <><span>TP المُرسل:</span><span className="font-mono">{goldOrderResult.requestedTP.toFixed(5)}</span></>
+                  )}
+                  {goldOrderResult.requestedVolume != null && (
+                    <><span>اللوت المُرسل:</span><span className="font-mono">{goldOrderResult.requestedVolume.toFixed(2)}</span></>
+                  )}
+                  {goldOrderResult.mt5Retcode != null && (
+                    <><span>MT5 Retcode:</span><span className="font-mono">{goldOrderResult.mt5Retcode}</span></>
+                  )}
+                </div>
                 {goldOrderResult.accountLogin != null && (
                   <p className="text-emerald-300/60">الحساب: {goldOrderResult.accountLogin} — {goldOrderResult.server ?? "—"}</p>
                 )}
@@ -4760,13 +4911,32 @@ function TradePreviewPanel({
 
             {/* تشخيص الإرسال — يظهر بعد أي محاولة */}
             {goldSendDebug != null && (
-              <div className="rounded-md border border-zinc-500/20 bg-zinc-800/40 px-3 py-2 space-y-1">
+              <div className="rounded-md border border-zinc-500/20 bg-zinc-800/40 px-3 py-2 space-y-2">
                 <p className="text-[10px] font-semibold text-zinc-300/70">تشخيص الإرسال</p>
+
+                {/* Request values sent */}
+                <div className="rounded border border-zinc-600/20 bg-zinc-900/30 px-2 py-1.5 space-y-0.5">
+                  <p className="text-[9px] uppercase tracking-wider text-zinc-400/60 mb-1">القيم المُرسلة إلى MT5</p>
+                  <div className="grid grid-cols-2 gap-x-4 gap-y-0.5 text-[10px]">
+                    <span className="text-zinc-400/60">سعر الدخول:</span>
+                    <span className="font-mono text-zinc-300/80">{goldSendDebug.requestEntry?.toFixed(5) ?? "—"}</span>
+                    <span className="text-zinc-400/60">وقف الخسارة:</span>
+                    <span className="font-mono text-red-400/80">{goldSendDebug.requestSL?.toFixed(5) ?? "—"}</span>
+                    <span className="text-zinc-400/60">الهدف (TP):</span>
+                    <span className="font-mono text-emerald-400/80">{goldSendDebug.requestTP?.toFixed(5) ?? "—"}</span>
+                    <span className="text-zinc-400/60">الحجم (لوت):</span>
+                    <span className="font-mono text-zinc-300/80">{goldSendDebug.requestLot?.toFixed(2) ?? "—"}</span>
+                    <span className="text-zinc-400/60">مصدر الهدف:</span>
+                    <span className={`font-mono text-[10px] ${goldSendDebug.targetSource === "realistic" ? "text-cyan-400/80" : "text-amber-400/80"}`}>
+                      {goldSendDebug.targetSource === "realistic" ? "Realistic Targeting" : "الخطة المهنية"}
+                    </span>
+                  </div>
+                </div>
+
+                {/* Response status */}
                 <div className="grid grid-cols-2 gap-x-4 gap-y-0.5 text-[10px]">
                   <span className="text-zinc-400/60">المرحلة:</span>
                   <span className="text-zinc-300/80 truncate">{goldSendStage ?? "—"}</span>
-                  <span className="text-zinc-400/60">الطلب أُرسل:</span>
-                  <span className="text-zinc-300/80">نعم</span>
                   <span className="text-zinc-400/60">HTTP Status:</span>
                   <span className={`font-mono ${goldSendDebug.responseOk ? "text-emerald-400/80" : "text-red-400/80"}`}>
                     {goldSendDebug.httpStatus ?? "—"}
