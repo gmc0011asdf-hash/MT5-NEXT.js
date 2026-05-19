@@ -69,6 +69,12 @@ export type TradePlan = {
   blockers:        string[];
   nextAction:      string;
   professional:    ProfessionalContext;
+
+  // Adjustment metadata — set by adjustTradePlans (optional)
+  targetSource?:     "original" | "adjusted";
+  targetPreference?: "REALISTIC" | "BALANCED" | "FAR";
+  profile?:          string;
+  realismScore?:     string;
 };
 
 export type ExecutionPreviewStatus = "READY" | "REVIEW" | "BLOCKED";
