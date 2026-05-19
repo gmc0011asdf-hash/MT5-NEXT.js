@@ -160,8 +160,10 @@ function CollapsibleList({
 
 export function SystemRecommendationCard({
   recommendation: rec,
+  hasSoftBlocksOnly = false,
 }: {
-  recommendation: GoldRecommendation;
+  recommendation:    GoldRecommendation;
+  hasSoftBlocksOnly?: boolean;
 }) {
   const cfg = STATUS_CONFIG[rec.recommendationStatus];
 
@@ -234,11 +236,11 @@ export function SystemRecommendationCard({
           dotClass="text-amber-400"
         />
         <CollapsibleList
-          label="أسباب المنع"
+          label={hasSoftBlocksOnly ? "أسباب عدم الاعتماد الكامل" : "أسباب المنع"}
           items={rec.blockers}
           defaultOpen={rec.blockers.length > 0}
-          itemClass="text-red-300/80"
-          dotClass="text-red-400"
+          itemClass={hasSoftBlocksOnly ? "text-amber-300/80" : "text-red-300/80"}
+          dotClass={hasSoftBlocksOnly ? "text-amber-400" : "text-red-400"}
         />
       </div>
 

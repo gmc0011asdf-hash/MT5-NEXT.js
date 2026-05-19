@@ -61,6 +61,11 @@ import {
 } from "@/lib/gold/gold-trade-plans-engine";
 import { GoldTradePlansCard }    from "@/components/lab/GoldTradePlansCard";
 import { GoldTradePlanSelector } from "@/components/lab/GoldTradePlanSelector";
+import {
+  buildActionablePlan,
+  type ActionablePlan,
+} from "@/lib/gold/gold-actionable-plan-engine";
+import { ActionablePlanCard } from "@/components/lab/ActionablePlanCard";
 import { CandleSyncPanel }       from "@/components/lab/CandleSyncPanel";
 import {
   type AnalysisMetadata,
@@ -2768,6 +2773,8 @@ type DemoOrderResult = {
   server?:                     string;
   demoOnly:                    boolean;
   error?:                      string;
+  errorCode?:                  string;  // e.g. "MT5_EXECUTION_ENV_DISABLED"
+  layer?:                      string;  // "next-route" | "python-bridge"
 };
 
 // ── buildPriceActionExecutionGuard — B2.1 ────────────────────────────────────
@@ -3277,6 +3284,8 @@ function TradePreviewPanel({
   const [goldOrderResult,    setGoldOrderResult]    = useState<DemoOrderResult | null>(null);
   const [goldOrderError,     setGoldOrderError]     = useState<string | null>(null);
   const [goldPrecheckFailed, setGoldPrecheckFailed] = useState<string[]>([]);
+  const [goldSendStage,      setGoldSendStage]      = useState<string | null>(null);
+  const [goldSendDebug,      setGoldSendDebug]      = useState<{ httpStatus?: number; responseOk?: boolean; errorCode?: string } | null>(null);
 
   // Gold gate: زر يُفتح عند استيفاء الشروط الفنية — يستخدم effectivePreview
   const canOpenGoldModal =
@@ -3318,21 +3327,43 @@ function TradePreviewPanel({
                         ? `نسبة RR (${effectivePreview.rrRatio?.toFixed(2) ?? "?"}) أقل من الحد الأدنى (${settings.minRewardRiskRatio})`
                         : null;
 
-  // Gold gate: قائمة أسباب المنع الكاملة — لعرضها في بطاقة أسفل الزر
-  const goldBlockedReasons: string[] = [];
-  if (mode === "gold" && !canOpenGoldModal) {
-    if (!effectivePreview.allowed)                                             goldBlockedReasons.push(!selectedGoldPlan ? "لا توجد خطة صفقة صالحة — اختر خطة مهنية" : "الخطة المختارة محظورة");
-    if (priceActionGuard.status === "BLOCK")                                   goldBlockedReasons.push("حارس اللجان أصدر BLOCK");
-    if (settings.killSwitchEnabled)                                            goldBlockedReasons.push("Kill Switch مفعّل — التنفيذ موقوف");
-    if (settings.executionMode === "READ_ONLY")                               goldBlockedReasons.push("التنفيذ مغلق من الإعدادات");
-    if (!settings.isConfirmedDemo)                                             goldBlockedReasons.push("مراجعة التنفيذ غير مؤكدة");
-    if (!eligibility.spreadOk)                                                 goldBlockedReasons.push(`السبريد (${result.currentSpreadPoints ?? "?"} pts) مرتفع`);
-    if (result.currentPriceSource !== "mt5-live-tick")                        goldBlockedReasons.push("البيانات قديمة — لا يوجد tick حالي");
-    if ((effectivePreview.estimatedLot ?? 0) <= 0)                            goldBlockedReasons.push("اللوت غير صالح");
-    if (effectivePreview.stopLoss == null)                                     goldBlockedReasons.push("وقف الخسارة غير محدد");
-    if (effectivePreview.takeProfit == null)                                   goldBlockedReasons.push("الهدف غير محدد");
-    if ((effectivePreview.rrRatio ?? 0) < settings.minRewardRiskRatio)        goldBlockedReasons.push(`نسبة RR (${effectivePreview.rrRatio?.toFixed(2) ?? "?"}) أقل من الحد (${settings.minRewardRiskRatio})`);
+  // Gold gate: Hard Blocks — تمنع دائماً في STRICT و EXPERIMENTAL
+  const goldHardBlockReasons: string[] = [];
+  if (mode === "gold") {
+    if (!effectivePreview.allowed)                                             goldHardBlockReasons.push(!selectedGoldPlan ? "لا توجد خطة صفقة صالحة — اختر خطة مهنية" : "الخطة المختارة محظورة");
+    if (settings.killSwitchEnabled)                                            goldHardBlockReasons.push("Kill Switch مفعّل — التنفيذ موقوف");
+    if (settings.executionMode === "READ_ONLY")                               goldHardBlockReasons.push("التنفيذ مغلق من الإعدادات");
+    if (!settings.isConfirmedDemo)                                             goldHardBlockReasons.push("مراجعة التنفيذ غير مؤكدة");
+    if (!eligibility.spreadOk)                                                 goldHardBlockReasons.push(`السبريد (${result.currentSpreadPoints ?? "?"} pts) مرتفع`);
+    if (result.currentPriceSource !== "mt5-live-tick")                        goldHardBlockReasons.push("البيانات قديمة — لا يوجد tick حالي");
+    if ((effectivePreview.estimatedLot ?? 0) <= 0)                            goldHardBlockReasons.push("اللوت غير صالح");
+    if (effectivePreview.stopLoss == null)                                     goldHardBlockReasons.push("وقف الخسارة غير محدد");
+    if (effectivePreview.takeProfit == null)                                   goldHardBlockReasons.push("الهدف غير محدد");
+    if ((effectivePreview.rrRatio ?? 0) < 1.0)                                goldHardBlockReasons.push(`نسبة RR (${effectivePreview.rrRatio?.toFixed(2) ?? "?"}) أقل من الحد التقني 1.0`);
+    if (!eligibility.symbolAllowed)                                            goldHardBlockReasons.push("الرمز غير مسموح في إعدادات التنفيذ");
+    if (summary.criticalBlocks.length > 0)                                     goldHardBlockReasons.push("لجنة حرجة أصدرت BLOCK");
+    if (selectedGoldPlan?.proposalStatus === "BLOCKED")                        goldHardBlockReasons.push("الخطة المختارة محظورة — اختر خطة أخرى");
   }
+  const hardBlocksInEffect = goldHardBlockReasons.length;
+
+  // Gold gate: Soft Blocks — تمنع في STRICT فقط، مسموح في EXPERIMENTAL
+  const goldSoftBlockReasons: string[] = [];
+  if (mode === "gold") {
+    if (priceActionGuard.status === "BLOCK" && summary.criticalBlocks.length === 0) {
+      goldSoftBlockReasons.push("حارس جودة التنفيذ أصدر BLOCK (إشارة ضعيفة — مسموح في EXPERIMENTAL)");
+    }
+    if ((effectivePreview.rrRatio ?? 0) >= 1.0 && (effectivePreview.rrRatio ?? 0) < settings.minRewardRiskRatio) {
+      goldSoftBlockReasons.push(`نسبة RR (${effectivePreview.rrRatio?.toFixed(2)}) أقل من إعداد المستخدم (${settings.minRewardRiskRatio}) — مسموح في EXPERIMENTAL`);
+    }
+  }
+  const softBlocksInEffect = goldSoftBlockReasons.length;
+
+  // canOpenGoldExperimental — EXPERIMENTAL + hard blocks سليمة + guard soft block فقط
+  const canOpenGoldExperimental =
+    settings.executionPolicy === "EXPERIMENTAL" &&
+    mode === "gold" &&
+    hardBlocksInEffect === 0 &&
+    priceActionGuard.status === "BLOCK";
 
   // ── Gold Recommendation Engine v1 ────────────────────────────────────────
   const goldRec = useMemo((): GoldRecommendation | null => {
@@ -3363,8 +3394,12 @@ function TradePreviewPanel({
       executionMode:   settings.executionMode,
       killSwitchEnabled: settings.killSwitchEnabled,
       executionGateOpen: canOpenGoldModal,
+      executionPolicy:         settings.executionPolicy,
+      hardBlockCount:          hardBlocksInEffect,
+      softBlockCount:          softBlocksInEffect,
+      canOpenGoldExperimental: canOpenGoldExperimental,
     });
-  }, [mode, result, summary, priceActionGuard, effectivePreview, settings, canOpenGoldModal]);
+  }, [mode, result, summary, priceActionGuard, effectivePreview, settings, canOpenGoldModal, hardBlocksInEffect, softBlocksInEffect, canOpenGoldExperimental]);
 
   // ── Gold Trade Plans Engine v2 ────────────────────────────────────────────
   const goldPlans = useMemo((): GoldTradePlansResult | null => {
@@ -3400,6 +3435,48 @@ function TradePreviewPanel({
     });
   }, [mode, result, summary, settings, accountEquity, accountFreeMargin, preview.estimatedLot]);
 
+  // ── Actionable Plan Engine v1 ─────────────────────────────────────────────
+  const actionablePlan = useMemo((): ActionablePlan | null => {
+    if (mode !== "gold") return null;
+    return buildActionablePlan({
+      // Gate state
+      hardBlocksInEffect,
+      softBlocksInEffect,
+      canOpenGoldExperimental,
+      executionPolicy:         settings.executionPolicy ?? "STRICT",
+      recommendationStatus:    goldRec?.recommendationStatus ?? "NO_TRADE",
+      // Analysis
+      analysisStatus:          result.status,
+      direction:               result.direction,
+      // Market structure
+      marketTrendState:        result.marketStructure?.trendState,
+      rangeDetected:           result.marketStructure?.rangeDetected,
+      // Candlestick
+      candlestickBias:         result.candlestickAnalysis?.bias,
+      candlestickQuality:      result.candlestickAnalysis?.quality,
+      latestCandleClosed:      result.marketStateAnalysis?.latestCandleClosed,
+      // Price position
+      pricePosition:           result.zonesAnalysis?.inPremiumDiscount,
+      // Indicators
+      rsi14:                   result.indicators?.rsi14,
+      momentumBias:            result.indicators?.momentumBias,
+      // Selected plan data
+      planEntry:               selectedGoldPlan?.entry ?? effectivePreview.entry,
+      planSL:                  selectedGoldPlan?.stopLoss ?? effectivePreview.stopLoss,
+      planTP:                  selectedGoldPlan?.takeProfit2 ?? effectivePreview.takeProfit,
+      planLot:                 selectedGoldPlan?.estimatedLot ?? effectivePreview.estimatedLot,
+      planRR:                  selectedGoldPlan?.rr2 ?? effectivePreview.rrRatio,
+      planRiskUsd:             selectedGoldPlan?.riskUsd ?? effectivePreview.riskUsd,
+      planDirection:           selectedGoldPlan?.direction,
+      planEntryType:           selectedGoldPlan?.entryType,
+      softBlockReasons:        goldSoftBlockReasons,
+    });
+  }, [
+    mode, result, goldRec, selectedGoldPlan, effectivePreview,
+    settings, hardBlocksInEffect, softBlocksInEffect, canOpenGoldExperimental,
+    goldSoftBlockReasons,
+  ]);
+
   // ── Auto-select Balanced plan ────────────────────────────────────────────
   useEffect(() => {
     if (!goldPlans) { setSelectedGoldPlan(null); return; }
@@ -3416,32 +3493,37 @@ function TradePreviewPanel({
     setManualLot(effectivePreview.estimatedLot ?? preview.estimatedLot ?? 0.01);
   }, [effectivePreview.estimatedLot, preview.estimatedLot]);
 
-  // ── canOpenGoldExperimental — EXPERIMENTAL سياسة فقط ─────────────────────
-  // يُفتح فقط عندما: سياسة EXPERIMENTAL + hard blocks تجتاز + guard soft block
-  const canOpenGoldExperimental =
-    settings.executionPolicy === "EXPERIMENTAL" &&
-    mode === "gold" &&
-    effectivePreview.allowed &&
-    !settings.killSwitchEnabled &&
-    settings.executionMode !== "READ_ONLY" &&
-    settings.isConfirmedDemo &&
-    eligibility.spreadOk &&
-    result.currentPriceSource === "mt5-live-tick" &&
-    (effectivePreview.estimatedLot ?? 0) > 0 &&
-    effectivePreview.stopLoss  != null &&
-    effectivePreview.takeProfit != null &&
-    (effectivePreview.rrRatio ?? 0) >= 1.0 &&          // الحد الأدنى التقني (لا يتخطى 1.0)
-    eligibility.symbolAllowed &&
-    summary.criticalBlocks.length === 0 &&
-    selectedGoldPlan?.proposalStatus !== "BLOCKED" &&
-    priceActionGuard.status === "BLOCK";                // فقط عندما يمنع Guard الزر العادي
+  // ── guardOkForSend: هل Guard يسمح بالإرسال حسب السياسة؟ ─────────────────
+  const guardOkForSend = priceActionGuard.allowed || canOpenGoldExperimental;
 
   // Gold gate: send handler — precheck → send → record
   async function handleGoldSendToMT5() {
-    if (!goldUserConfirmed || manualLotInvalid) return;
+    if (process.env.NODE_ENV === "development") {
+      console.log("[GoldSend] clicked", {
+        goldUserConfirmed,
+        manualLot,
+        guardOkForSend,
+        canOpenGoldExperimental,
+        executionPolicy: settings.executionPolicy,
+        hardBlocksInEffect,
+        softBlocksInEffect,
+        effectivePreviewAllowed: effectivePreview.allowed,
+        effectivePreviewLot: effectivePreview.estimatedLot,
+        effectivePreviewRR: effectivePreview.rrRatio,
+      });
+    }
 
-    // Client-side precheck — يستخدم effectivePreview (الخطة المهنية أو الأصلية)
-    // Hard Blocks: تمنع في كلا الوضعين (STRICT + EXPERIMENTAL)
+    // ── Visible feedback if checkbox not yet checked ─────────────────────────
+    if (!goldUserConfirmed) {
+      setGoldPrecheckFailed(["يجب تأكيد التنفيذ أولاً — فعّل checkbox التأكيد أدناه"]);
+      return;
+    }
+    if (manualLotInvalid) {
+      setGoldPrecheckFailed(["اللوت غير صالح — يجب أن يكون أكبر من 0"]);
+      return;
+    }
+
+    // ── Client-side precheck — Hard Blocks (both modes) ──────────────────────
     const hardBlockReasons: string[] = [];
     if (!effectivePreview.allowed)                                          hardBlockReasons.push(selectedGoldPlan ? "الخطة المختارة محظورة" : "لا توجد خطة صفقة صالحة");
     if (settings.killSwitchEnabled)                                         hardBlockReasons.push("Kill Switch مفعّل — التنفيذ موقوف");
@@ -3456,7 +3538,7 @@ function TradePreviewPanel({
     if (summary.criticalBlocks.length > 0)                                   hardBlockReasons.push("لجنة حرجة أصدرت BLOCK — لا يجوز التجاوز");
     if (selectedGoldPlan?.proposalStatus === "BLOCKED")                      hardBlockReasons.push("الخطة المختارة محظورة — اختر خطة أخرى");
 
-    // Soft Blocks: تمنع في STRICT فقط — مسموح في EXPERIMENTAL
+    // ── Soft Blocks — blocked in STRICT, allowed in EXPERIMENTAL ────────────
     const softBlockReasons: string[] = [];
     if (priceActionGuard.status === "BLOCK" && summary.criticalBlocks.length === 0) {
       softBlockReasons.push("حارس جودة التنفيذ أصدر BLOCK (إشارة ضعيفة — مسموح في التجارب)");
@@ -3467,19 +3549,25 @@ function TradePreviewPanel({
     }
 
     const isExperimental = settings.executionPolicy === "EXPERIMENTAL";
-    const effectivePrecheckFailed = isExperimental ? hardBlockReasons : [...hardBlockReasons, ...softBlockReasons];
+
+    if (process.env.NODE_ENV === "development") {
+      console.log("[GoldSend] precheck", { hardBlockReasons, softBlockReasons, isExperimental, guardOkForSend });
+    }
 
     if (hardBlockReasons.length > 0) {
-      setGoldPrecheckFailed(effectivePrecheckFailed);
+      setGoldPrecheckFailed(["لا يمكن الإرسال — توجد Hard Blocks:", ...hardBlockReasons]);
       return;
     }
     if (!isExperimental && softBlockReasons.length > 0) {
       setGoldPrecheckFailed(softBlockReasons);
       return;
     }
-    // EXPERIMENTAL: soft blocks shown as warning but execution proceeds
-    setGoldPrecheckFailed(softBlockReasons); // shown in UI as warnings
-    setGoldPrecheckFailed([]);
+
+    // EXPERIMENTAL: show soft blocks as informational warnings (single setState call)
+    setGoldPrecheckFailed(softBlockReasons.length > 0 ? softBlockReasons : []);
+
+    setGoldSendStage("جاري إرسال الطلب إلى Next route...");
+    setGoldSendDebug(null);
     setGoldOrdering(true);
     setGoldOrderResult(null);
     setGoldOrderError(null);
@@ -3496,6 +3584,13 @@ function TradePreviewPanel({
         manualConfirmation: true as const,
         manualLot: manualLot > 0 ? manualLot : execReq.estimatedLot,
       };
+
+      if (process.env.NODE_ENV === "development") {
+        console.log("[GoldSend] fetching /api/mt5-demo/order-send", body);
+      }
+
+      setGoldSendStage("الطلب مرسل — انتظار الرد من Python bridge...");
+
       const res = await fetch("/api/mt5-demo/order-send", {
         method:  "POST",
         headers: { "Content-Type": "application/json" },
@@ -3503,21 +3598,54 @@ function TradePreviewPanel({
         cache:   "no-store",
       });
       const data = (await res.json()) as DemoOrderResult;
+
+      if (process.env.NODE_ENV === "development") {
+        console.log("[GoldSend] response", { httpStatus: res.status, ok: res.ok, data });
+      }
+
+      setGoldSendDebug({ httpStatus: res.status, responseOk: res.ok, errorCode: data.errorCode });
       attemptData = data;
+
       if (data.ok || data.accepted) {
         attemptStatus = "DONE";
+        setGoldSendStage("✓ تم إرسال الأمر إلى MT5");
         setGoldOrderResult(data);
         setGoldUserConfirmed(false);
       } else if (data.retcodeText === "NO_MONEY_PRECHECK") {
         attemptStatus = "PRECHECK_FAILED";
+        setGoldSendStage("✗ الهامش غير كافٍ — لم يُرسل الأمر");
         setGoldOrderResult(data);
+      } else if (res.status === 403) {
+        attemptStatus = "REJECTED";
+        const msg = data.errorCode === "MT5_EXECUTION_ENV_DISABLED"
+          ? "التنفيذ مغلق من متغير البيئة MT5_DEMO_EXECUTION_ENABLED — تأكد من إعادة تشغيل الخادم بعد تعديل .env.local"
+          : data.error ?? "403 — رفض من الخادم";
+        setGoldSendStage(`✗ ${msg}`);
+        setGoldOrderError(msg);
+        attemptErrorMsg = msg;
+      } else if (res.status === 400) {
+        attemptStatus = "REJECTED";
+        const msg = `400 — بيانات غير صالحة: ${data.error ?? ""}`;
+        setGoldSendStage(`✗ ${msg}`);
+        setGoldOrderError(msg);
+        attemptErrorMsg = msg;
+      } else if (res.status >= 500) {
+        attemptStatus = "REJECTED";
+        const layerLabel = data.layer === "python-bridge" ? "Python bridge" : "Next route";
+        const msg = `خطأ داخلي في ${layerLabel} — ${data.error ?? ""}`;
+        setGoldSendStage(`✗ ${msg}`);
+        setGoldOrderError(msg);
+        attemptErrorMsg = msg;
       } else {
         attemptStatus = "REJECTED";
-        setGoldOrderError(data.error ?? "فشل إرسال الأمر إلى MT5");
-        attemptErrorMsg = data.error ?? null;
+        const msg = data.error ?? `فشل إرسال الأمر إلى MT5 (HTTP ${res.status})`;
+        setGoldSendStage(`✗ ${msg}`);
+        setGoldOrderError(msg);
+        attemptErrorMsg = msg;
       }
     } catch (e) {
       attemptErrorMsg = e instanceof Error ? e.message : "خطأ غير معروف في الإرسال";
+      setGoldSendStage(`✗ ${attemptErrorMsg}`);
       setGoldOrderError(attemptErrorMsg);
     } finally {
       setGoldOrdering(false);
@@ -3668,7 +3796,15 @@ function TradePreviewPanel({
 
       {/* ── توصية النظام — Gold Recommendation Engine v1 ─────────────────── */}
       {mode === "gold" && goldRec && (
-        <SystemRecommendationCard recommendation={goldRec} />
+        <SystemRecommendationCard
+          recommendation={goldRec}
+          hasSoftBlocksOnly={hardBlocksInEffect === 0 && softBlocksInEffect > 0}
+        />
+      )}
+
+      {/* ── خطة النظام العملية — Gold Actionable Plan v1 ─────────────────── */}
+      {mode === "gold" && actionablePlan && (
+        <ActionablePlanCard plan={actionablePlan} />
       )}
 
       {/* ── خطط التداول المقترحة — Gold Trade Plans Engine v1 ────────────── */}
@@ -3865,12 +4001,9 @@ function TradePreviewPanel({
                 {canOpenGoldModal ? "▶ تنفيذ عبر MT5" : "تنفيذ عبر MT5 — معطّل"}
               </button>
 
-              {/* Experimental button — يظهر فقط في EXPERIMENTAL مع soft blocks */}
+              {/* Experimental button — بارز ومستقل عند EXPERIMENTAL + soft blocks فقط */}
               {canOpenGoldExperimental && !canOpenGoldModal && (
-                <div className="space-y-1.5">
-                  <div className="inline-flex items-center gap-1.5 rounded border border-violet-500/30 bg-violet-500/10 px-2 py-0.5 text-[9px] text-violet-300/80">
-                    ◇ تجربة تنفيذ محكومة — ليست فرصة معتمدة
-                  </div>
+                <div className="space-y-2 pt-1">
                   <button
                     type="button"
                     onClick={() => {
@@ -3880,26 +4013,77 @@ function TradePreviewPanel({
                       setGoldUserConfirmed(false);
                       setShowGoldModal(true);
                     }}
-                    className="inline-flex items-center justify-center rounded-md border border-violet-500/40 bg-violet-500/15 px-5 py-2 text-sm font-semibold text-violet-200 hover:bg-violet-500/25 transition-colors"
+                    className="w-full inline-flex items-center justify-center gap-2 rounded-md border border-violet-500/50 bg-violet-500/20 px-5 py-3 text-base font-bold text-violet-200 hover:bg-violet-500/30 active:bg-violet-500/40 transition-colors"
                   >
-                    ◇ تجربة تنفيذ — {EXECUTION_POLICY_LABELS["EXPERIMENTAL"]}
+                    ▶ تنفيذ تجربة MT5
                   </button>
+                  {goldSoftBlockReasons.length > 0 && (
+                    <div className="rounded border border-violet-500/20 bg-violet-500/8 px-2.5 py-2 space-y-1">
+                      <p className="text-[10px] font-semibold text-violet-300/80">المسموح به تجريبياً:</p>
+                      <ul className="space-y-0.5">
+                        {goldSoftBlockReasons.map((r, i) => (
+                          <li key={i} className="text-[10px] text-violet-300/70">◇ {r}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
                 </div>
               )}
 
-              {/* بطاقة أسباب المنع — تظهر دائمًا عند التعطيل */}
-              {!canOpenGoldModal && goldBlockedReasons.length > 0 && (
-                <div className="rounded-md border border-zinc-500/20 bg-zinc-800/40 px-3 py-2.5 space-y-1.5">
-                  <p className="text-[10px] font-semibold text-zinc-300/80">سبب منع التنفيذ:</p>
-                  <ul className="space-y-1">
-                    {goldBlockedReasons.map((reason, i) => (
-                      <li key={i} className="flex items-start gap-1.5 text-[11px] text-zinc-400/90">
-                        <span className="text-red-400/70 shrink-0 mt-0.5">✗</span>
-                        <span>{reason}</span>
-                      </li>
-                    ))}
-                  </ul>
-                </div>
+              {/* قسم أسباب المنع — Hard vs Soft مفصولان */}
+              {!canOpenGoldModal && (
+                <>
+                  {hardBlocksInEffect > 0 && (
+                    <div className="rounded-md border border-red-500/40 bg-red-500/8 px-3 py-2.5 space-y-1.5">
+                      <div className="flex items-center justify-between">
+                        <p className="text-[11px] font-bold text-red-300">ممنوع تقنيًا — لا يمكن التجربة</p>
+                        <span className="text-[10px] text-zinc-400/70">
+                          Hard: {hardBlocksInEffect} | Soft: {softBlocksInEffect}
+                        </span>
+                      </div>
+                      <ul className="space-y-1">
+                        {goldHardBlockReasons.map((reason, i) => (
+                          <li key={i} className="flex items-start gap-1.5 text-[11px] text-red-300/80">
+                            <span className="text-red-400 shrink-0 mt-0.5">✗</span>
+                            <span>{reason}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+
+                  {hardBlocksInEffect === 0 && softBlocksInEffect > 0 && (
+                    settings.executionPolicy === "EXPERIMENTAL" ? (
+                      <div className="rounded-md border border-violet-500/35 bg-violet-500/8 px-3 py-2.5 space-y-1.5">
+                        <p className="text-[11px] font-bold text-violet-300">
+                          Soft Blocks: {softBlocksInEffect} — قابل للاختبار في EXPERIMENTAL
+                        </p>
+                        <ul className="space-y-1">
+                          {goldSoftBlockReasons.map((reason, i) => (
+                            <li key={i} className="flex items-start gap-1.5 text-[11px] text-violet-300/80">
+                              <span className="text-violet-400 shrink-0 mt-0.5">◇</span>
+                              <span>{reason}</span>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    ) : (
+                      <div className="rounded-md border border-amber-500/35 bg-amber-500/8 px-3 py-2.5 space-y-1.5">
+                        <p className="text-[11px] font-bold text-amber-300">
+                          Soft Blocks: {softBlocksInEffect} — ممنوع في وضع STRICT
+                        </p>
+                        <ul className="space-y-1">
+                          {goldSoftBlockReasons.map((reason, i) => (
+                            <li key={i} className="flex items-start gap-1.5 text-[11px] text-amber-300/80">
+                              <span className="text-amber-400 shrink-0 mt-0.5">⚠</span>
+                              <span>{reason}</span>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )
+                  )}
+                </>
               )}
 
               {/* Kill Switch رسالة خاصة */}
@@ -4423,12 +4607,21 @@ function TradePreviewPanel({
 
             {/* B2.1 guard inside modal */}
             {!priceActionGuard.allowed && (
-              <div className="rounded-md border border-red-500/50 bg-red-500/10 px-4 py-3 space-y-1">
-                <p className="text-xs font-bold text-red-300">⛔ حارس جودة التنفيذ — BLOCK</p>
-                {priceActionGuard.blockers.map((b, i) => (
-                  <p key={i} className="text-xs text-red-300/80">✗ {b}</p>
-                ))}
-              </div>
+              canOpenGoldExperimental ? (
+                <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-4 py-3 space-y-1">
+                  <p className="text-xs font-bold text-amber-300">⚠ حارس الجودة أصدر BLOCK — Soft Block مسموح في وضع التجارب</p>
+                  {priceActionGuard.blockers.map((b, i) => (
+                    <p key={i} className="text-xs text-amber-300/70">⚠ {b}</p>
+                  ))}
+                </div>
+              ) : (
+                <div className="rounded-md border border-red-500/50 bg-red-500/10 px-4 py-3 space-y-1">
+                  <p className="text-xs font-bold text-red-300">⛔ حارس جودة التنفيذ — BLOCK</p>
+                  {priceActionGuard.blockers.map((b, i) => (
+                    <p key={i} className="text-xs text-red-300/80">✗ {b}</p>
+                  ))}
+                </div>
+              )
             )}
 
             {/* Lot override */}
@@ -4437,10 +4630,12 @@ function TradePreviewPanel({
                 <p className="text-xs font-semibold text-amber-200/90">تعديل اللوت قبل الإرسال</p>
                 <button
                   type="button"
-                  onClick={() => setManualLot(preview.estimatedLot ?? 0.01)}
+                  onClick={() => setManualLot(effectivePreview.estimatedLot ?? 0.01)}
                   className="text-[10px] text-amber-300/70 hover:text-amber-300 underline underline-offset-2"
                 >
-                  إعادة للمحسوب ({(preview.estimatedLot ?? 0.01).toFixed(2)})
+                  {selectedGoldPlan
+                    ? `اللوت المهني (${(effectivePreview.estimatedLot ?? 0.01).toFixed(2)})`
+                    : `إعادة للمحسوب (${(effectivePreview.estimatedLot ?? 0.01).toFixed(2)})`}
                 </button>
               </div>
               <input
@@ -4478,15 +4673,23 @@ function TradePreviewPanel({
             <div className="flex flex-wrap items-center gap-3 pt-1">
               <button
                 type="button"
-                disabled={!goldUserConfirmed || goldOrdering || manualLotInvalid || !priceActionGuard.allowed}
+                disabled={!goldUserConfirmed || goldOrdering || manualLotInvalid || !guardOkForSend}
                 onClick={() => void handleGoldSendToMT5()}
                 className={`inline-flex items-center justify-center rounded-md border px-4 py-2 text-sm font-semibold transition-colors ${
-                  goldUserConfirmed && !goldOrdering && !manualLotInvalid && priceActionGuard.allowed
-                    ? "border-amber-500/50 bg-amber-500/20 text-amber-200 hover:bg-amber-500/30 cursor-pointer"
+                  goldUserConfirmed && !goldOrdering && !manualLotInvalid && guardOkForSend
+                    ? canOpenGoldExperimental && !priceActionGuard.allowed
+                      ? "border-violet-500/50 bg-violet-500/20 text-violet-200 hover:bg-violet-500/30 cursor-pointer"
+                      : "border-amber-500/50 bg-amber-500/20 text-amber-200 hover:bg-amber-500/30 cursor-pointer"
                     : "border-zinc-500/20 bg-zinc-700/20 text-zinc-400/60 cursor-not-allowed"
                 }`}
               >
-                {goldOrdering ? "جارٍ الإرسال إلى MT5…" : "إرسال عبر MT5"}
+                {goldOrdering
+                  ? "جارٍ الإرسال..."
+                  : goldOrderError && !goldOrdering
+                    ? "إعادة المحاولة"
+                    : canOpenGoldExperimental && !priceActionGuard.allowed
+                      ? "إرسال تجربة MT5"
+                      : "إرسال عبر MT5"}
               </button>
               <button
                 type="button"
@@ -4547,6 +4750,38 @@ function TradePreviewPanel({
               <div className="rounded-md border border-red-500/30 bg-red-500/10 px-4 py-3 text-xs text-red-300 space-y-1">
                 <p className="font-semibold">✗ فشل إرسال الأمر</p>
                 <p>{goldOrderError}</p>
+                {goldSendDebug?.errorCode === "MT5_EXECUTION_ENV_DISABLED" && (
+                  <p className="text-[10px] text-red-300/60 pt-1">
+                    تحقق: MT5_DEMO_EXECUTION_ENABLED=true في .env.local ثم أعد تشغيل الخادم
+                  </p>
+                )}
+              </div>
+            )}
+
+            {/* تشخيص الإرسال — يظهر بعد أي محاولة */}
+            {goldSendDebug != null && (
+              <div className="rounded-md border border-zinc-500/20 bg-zinc-800/40 px-3 py-2 space-y-1">
+                <p className="text-[10px] font-semibold text-zinc-300/70">تشخيص الإرسال</p>
+                <div className="grid grid-cols-2 gap-x-4 gap-y-0.5 text-[10px]">
+                  <span className="text-zinc-400/60">المرحلة:</span>
+                  <span className="text-zinc-300/80 truncate">{goldSendStage ?? "—"}</span>
+                  <span className="text-zinc-400/60">الطلب أُرسل:</span>
+                  <span className="text-zinc-300/80">نعم</span>
+                  <span className="text-zinc-400/60">HTTP Status:</span>
+                  <span className={`font-mono ${goldSendDebug.responseOk ? "text-emerald-400/80" : "text-red-400/80"}`}>
+                    {goldSendDebug.httpStatus ?? "—"}
+                  </span>
+                  <span className="text-zinc-400/60">Response OK:</span>
+                  <span className={goldSendDebug.responseOk ? "text-emerald-400/80" : "text-red-400/80"}>
+                    {goldSendDebug.responseOk ? "نعم" : "لا"}
+                  </span>
+                  {goldSendDebug.errorCode && (
+                    <>
+                      <span className="text-zinc-400/60">Error Code:</span>
+                      <span className="font-mono text-amber-400/80">{goldSendDebug.errorCode}</span>
+                    </>
+                  )}
+                </div>
               </div>
             )}
 
