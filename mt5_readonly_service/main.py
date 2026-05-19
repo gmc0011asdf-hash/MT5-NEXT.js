@@ -1325,8 +1325,15 @@ def demo_order_send(payload: DemoOrderRequest) -> JSONResponse:
                 "accepted":           accepted,
                 "ticket":             int(mt5_result.order) if accepted else None,
                 "retcode":            int(mt5_result.retcode),
+                "mt5Retcode":         int(mt5_result.retcode),
                 "retcodeText":        _retcode_text(int(mt5_result.retcode)),
                 "message":            getattr(mt5_result, "comment", ""),
+                "mt5Comment":         getattr(mt5_result, "comment", ""),
+                # Top-level request echo (for client verification)
+                "requestedVolume":    exec_lot,
+                "requestedPrice":     round(exec_price, 5),
+                "requestedSL":        round(float(payload.stopLoss), 5),       # type: ignore[arg-type]
+                "requestedTP":        round(float(payload.takeProfit), 5),     # type: ignore[arg-type]
                 "fillingModeUsed":    _filling_mode_name(filling_mode_used),
                 "fillingModesTried":  [_filling_mode_name(m) for m in filling_modes_tried],
                 "symbolFillingMode":  symbol_filling_mask,

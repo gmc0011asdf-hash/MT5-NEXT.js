@@ -61,7 +61,16 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   }
 
   if (process.env.NODE_ENV === "development") {
-    console.log("[mt5-demo/order-send] body keys", Object.keys(body));
+    const b = body as Record<string, unknown>;
+    console.log("[mt5-demo/order-send] body received", {
+      orderType:    b.orderType,
+      lot:          b.manualLot ?? b.estimatedLot,
+      stopLoss:     b.stopLoss,
+      takeProfit:   b.takeProfit,
+      entryPrice:   b.entryPrice,
+      symbol:       b.symbol,
+      direction:    b.direction,
+    });
   }
 
   // ── Guard: must include manualConfirmation and accountMode ─────────────────
