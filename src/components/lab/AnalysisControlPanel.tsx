@@ -399,6 +399,7 @@ type AnalysisResult = {
   evaluatedTimeframes: string[];
   status: "opportunity" | "wait" | "rejected" | "insufficient_data" | "stale_data";
   direction?: "bullish" | "bearish";
+  localMode?: boolean;  // true = no Convex auth — minimal indicators from Python
   entry?: number;
   stopLoss?: number;
   takeProfit?: number;
@@ -2790,6 +2791,37 @@ type DemoOrderResult = {
   requestedTP?:                number;
 };
 
+// ── Multi-Target Split Execution types ───────────────────────────────────────
+
+type SplitOrderSpec = {
+  targetIndex: 1 | 2 | 3;
+  targetLabel: "TP1" | "TP2" | "TP3";
+  entry:       number;
+  sl:          number;
+  tp:          number;
+  rr:          number;
+  lot:         number;
+  riskUsd:     number;
+};
+
+type ExecutionGroupOrder = SplitOrderSpec & {
+  status:  "PENDING" | "SENT" | "DONE" | "FAILED";
+  ticket:  number | null;
+  error:   string | null;
+};
+
+type ExecutionGroupResult = {
+  groupId:          string;
+  ordersRequested:  number;
+  ordersSent:       number;
+  partialSuccess:   boolean;
+  orders:           ExecutionGroupOrder[];
+  totalRiskUsd:     number;
+  totalLot:         number;
+  targetPreference: string | undefined;
+  selectedPlanName: string | undefined;
+};
+
 // ── buildPriceActionExecutionGuard — B2.1 ────────────────────────────────────
 // حارس Price Action — يمنع التنفيذ إذا التحليل غير مؤهل
 // لا order_send — لا تنفيذ تداول — حارس واجهة فقط
@@ -3574,6 +3606,61 @@ function TradePreviewPanel({
   // ── guardOkForSend: هل Guard يسمح بالإرسال حسب السياسة؟ ─────────────────
   const guardOkForSend = priceActionGuard.allowed || canOpenGoldExperimental;
 
+  // ── Multi-Target Split Execution state ────────────────────────────────────
+  const [goldOrderCount,     setGoldOrderCount]     = useState<1 | 2 | 3>(1);
+  const [goldExecutionGroup, setGoldExecutionGroup] = useState<ExecutionGroupResult | null>(null);
+
+  // ── buildSplitOrders — builds per-order specs from plan TP levels ─────────
+  function buildSplitOrders(
+    count:         1 | 2 | 3,
+    plan:          TradePlan,
+    mainTP:        number,     // effectivePreview.takeProfit (TP2)
+    totalRiskUsd:  number,
+  ): { orders: SplitOrderSpec[]; warning: string | null } {
+    if (!plan.entry || !plan.stopLoss) return { orders: [], warning: "الخطة ناقصة — entry أو SL غير محدد" };
+    const entry   = plan.entry;
+    const sl      = plan.stopLoss;
+    const slDist  = Math.abs(entry - sl);
+    if (slDist <= 0) return { orders: [], warning: "SL distance صفر — لا يمكن حساب اللوت" };
+
+    // TP sources: TP1 = plan.takeProfit1, TP2 = mainTP, TP3 = plan.takeProfit3
+    const tpSources: Array<{ tp: number | null; label: "TP1" | "TP2" | "TP3" }> = [
+      { tp: plan.takeProfit1, label: "TP1" },
+      { tp: mainTP,           label: "TP2" },
+      { tp: plan.takeProfit3, label: "TP3" },
+    ];
+
+    const selected = tpSources.slice(0, count);
+    const missing  = selected.filter((t) => t.tp == null);
+    if (missing.length > 0) {
+      return { orders: [], warning: `أهداف غير محددة: ${missing.map((m) => m.label).join(", ")}` };
+    }
+
+    const riskPerOrder = Math.round((totalRiskUsd / count) * 100) / 100;
+    const rawLot       = riskPerOrder / (slDist * 100);
+    const lot          = Math.max(0.01, Math.round(rawLot * 100) / 100);
+
+    if (rawLot < 0.01 && count > 1) {
+      return {
+        orders:  [],
+        warning: `اللوت الأدنى لا يسمح بتقسيم إلى ${count} أوامر — اللوت المحسوب ${rawLot.toFixed(4)} < 0.01. اقترح: صفقة واحدة فقط.`,
+      };
+    }
+
+    const orders: SplitOrderSpec[] = selected.map((t, i) => ({
+      targetIndex: (i + 1) as 1 | 2 | 3,
+      targetLabel: t.label,
+      entry,
+      sl,
+      tp:     t.tp!,
+      rr:     Math.round((Math.abs(t.tp! - entry) / slDist) * 100) / 100,
+      lot,
+      riskUsd: riskPerOrder,
+    }));
+
+    return { orders, warning: null };
+  }
+
   // Gold gate: send handler — precheck → send → record
   async function handleGoldSendToMT5() {
     if (process.env.NODE_ENV === "development") {
@@ -3647,145 +3734,210 @@ function TradePreviewPanel({
     setGoldPrecheckIsWarning(softBlockReasons.length > 0);
     setGoldPrecheckFailed(softBlockReasons.length > 0 ? softBlockReasons : []);
 
-    setGoldSendStage("جاري إرسال الطلب إلى Next route...");
+    // ── Generate execution group ID ──────────────────────────────────────
+    const _ts      = new Date();
+    const _pad     = (n: number) => String(n).padStart(2, "0");
+    const shortGId = `${_pad(_ts.getHours())}${_pad(_ts.getMinutes())}${_pad(_ts.getSeconds())}`;
+    const groupId  = `KING-${_ts.getFullYear()}${_pad(_ts.getMonth()+1)}${_pad(_ts.getDate())}-${_pad(_ts.getHours())}${_pad(_ts.getMinutes())}-${effectivePreview.symbol ?? "GOLD"}`;
+
+    const targetSource: "realistic" | "selectedPlan" =
+      selectedGoldPlan?.targetSource === "adjusted" ? "realistic" : "selectedPlan";
+    const planName =
+      selectedGoldPlan?.planType === "CONSERVATIVE" ? "المحافظة" :
+      selectedGoldPlan?.planType === "BALANCED"     ? "المتوازنة" :
+      selectedGoldPlan?.planType === "AGGRESSIVE"   ? "الهجومية"  : undefined;
+
+    // ── Build split order specs ───────────────────────────────────────────
+    let splitOrders: SplitOrderSpec[];
+
+    if (goldOrderCount > 1 && selectedGoldPlan?.entry && selectedGoldPlan.stopLoss && effectivePreview.takeProfit) {
+      const { orders: sOrders, warning: sWarn } = buildSplitOrders(
+        goldOrderCount,
+        selectedGoldPlan,
+        effectivePreview.takeProfit,
+        effectivePreview.riskUsd,
+      );
+      if (sWarn) {
+        setGoldPrecheckIsWarning(false);
+        setGoldPrecheckFailed([sWarn]);
+        return;
+      }
+      splitOrders = sOrders;
+    } else {
+      const sentLot1 = manualLot > 0 ? manualLot : (effectivePreview.estimatedLot ?? 0.01);
+      splitOrders = [{
+        targetIndex: 1,
+        targetLabel: "TP1",
+        entry:   effectivePreview.entry   ?? 0,
+        sl:      effectivePreview.stopLoss  ?? 0,
+        tp:      effectivePreview.takeProfit ?? 0,
+        rr:      effectivePreview.rrRatio ?? 1.0,
+        lot:     sentLot1,
+        riskUsd: effectivePreview.riskUsd,
+      }];
+    }
+
+    // Validate min lot for group
+    const totalGroupRisk = splitOrders.reduce((s, o) => s + o.riskUsd, 0);
+    if (settings.maxRiskUsdPerTrade > 0 && totalGroupRisk > settings.maxRiskUsdPerTrade * 1.1) {
+      setGoldPrecheckIsWarning(false);
+      setGoldPrecheckFailed([`إجمالي المخاطرة ($${totalGroupRisk.toFixed(2)}) يتجاوز الحد ($${settings.maxRiskUsdPerTrade})`]);
+      return;
+    }
+
+    // ── Initialise execution group ────────────────────────────────────────
+    const groupOrders: ExecutionGroupOrder[] = splitOrders.map((o) => ({
+      ...o, status: "PENDING" as const, ticket: null, error: null,
+    }));
+    setGoldExecutionGroup({
+      groupId,
+      ordersRequested: splitOrders.length,
+      ordersSent:      0,
+      partialSuccess:  false,
+      orders:          groupOrders,
+      totalRiskUsd:    totalGroupRisk,
+      totalLot:        splitOrders.reduce((s, o) => s + o.lot, 0),
+      targetPreference: selectedGoldPlan?.targetPreference,
+      selectedPlanName: planName,
+    });
     setGoldSendDebug(null);
     setGoldOrdering(true);
     setGoldOrderResult(null);
     setGoldOrderError(null);
     setJournalStatus(null);
 
-    let attemptStatus: string = "ERROR";
-    let attemptData: DemoOrderResult | null = null;
-    let attemptErrorMsg: string | null = null;
+    let successCount = 0;
+    let lastData: DemoOrderResult | null = null;
 
-    try {
-      const execReq = buildExecutionRequestPreview(result, effectivePreview, eligibility);
-      const sentLot  = manualLot > 0 ? manualLot : (execReq.estimatedLot ?? effectivePreview.estimatedLot ?? 0.01);
-      const body = {
-        ...execReq,
-        manualConfirmation: true as const,
-        manualLot: sentLot,
+    // ── Send loop ─────────────────────────────────────────────────────────
+    for (const orderSpec of splitOrders) {
+      setGoldSendStage(`جاري إرسال الأمر ${orderSpec.targetIndex}/${splitOrders.length} — ${orderSpec.targetLabel}...`);
+
+      const comment    = `KING_GOLD G${shortGId} ${orderSpec.targetLabel}`;
+      const sendPreview: typeof effectivePreview = {
+        ...effectivePreview,
+        takeProfit:   orderSpec.tp,
+        estimatedLot: orderSpec.lot,
+        rrRatio:      orderSpec.rr,
       };
 
-      // ── Target source for diagnostics ───────────────────────────────────
-      const targetSource: "realistic" | "selectedPlan" =
-        selectedGoldPlan?.targetSource === "adjusted" ? "realistic" : "selectedPlan";
+      let orderStatus: "DONE" | "REJECTED" | "ERROR" = "ERROR";
+      let orderTicket: number | null = null;
+      let orderError:  string | null = null;
 
-      if (process.env.NODE_ENV === "development") {
-        console.log("[GoldSend] fetching /api/mt5-demo/order-send", {
-          ...body,
-          targetSource,
-          effectivePreview_SL:  effectivePreview.stopLoss,
-          effectivePreview_TP:  effectivePreview.takeProfit,
-          effectivePreview_lot: effectivePreview.estimatedLot,
+      try {
+        const execReq = buildExecutionRequestPreview(result, sendPreview, eligibility);
+        const body = {
+          ...execReq,
+          manualConfirmation:  true as const,
+          manualLot:           orderSpec.lot,
+          comment_override:    comment,
+          targetLabel:         orderSpec.targetLabel,
+          groupId,
+        };
+
+        if (process.env.NODE_ENV === "development") {
+          console.log(`[GoldSend] order ${orderSpec.targetIndex} — ${orderSpec.targetLabel}`, body);
+        }
+
+        const res  = await fetch("/api/mt5-demo/order-send", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body), cache: "no-store",
         });
+        const data = (await res.json()) as DemoOrderResult;
+        lastData   = data;
+
+        if (data.ok || data.accepted) {
+          successCount++;
+          orderStatus = "DONE";
+          orderTicket = data.ticket ?? null;
+          if (splitOrders.length === 1) {
+            // Single order: use legacy result display
+            setGoldOrderResult(data);
+            setGoldUserConfirmed(false);
+            setGoldSendDebug({
+              httpStatus: res.status, responseOk: res.ok, errorCode: data.errorCode,
+              requestEntry: execReq.entryPrice ?? undefined, requestSL: execReq.stopLoss ?? undefined,
+              requestTP: execReq.takeProfit ?? undefined, requestLot: orderSpec.lot,
+              requestRiskUsd: orderSpec.riskUsd, requestRR: orderSpec.rr,
+              targetSource, targetPreference: selectedGoldPlan?.targetPreference,
+              profile: selectedGoldPlan?.profile, selectedPlanName: planName,
+            });
+          }
+        } else if (data.retcodeText === "NO_MONEY_PRECHECK") {
+          orderStatus = "REJECTED";
+          orderError  = `الهامش غير كافٍ للأمر ${orderSpec.targetLabel}`;
+          if (splitOrders.length === 1) setGoldOrderResult(data);
+        } else {
+          orderStatus = "REJECTED";
+          orderError  = data.errorCode === "MT5_EXECUTION_ENV_DISABLED"
+            ? "MT5_DEMO_EXECUTION_ENABLED=false — أعد تشغيل الخادم"
+            : (data.error ?? `HTTP ${res.status}`);
+          if (splitOrders.length === 1) {
+            setGoldOrderError(orderError);
+            setGoldSendDebug({
+              httpStatus: res.status, responseOk: res.ok, errorCode: data.errorCode,
+              requestEntry: execReq.entryPrice ?? undefined, requestSL: execReq.stopLoss ?? undefined,
+              requestTP: execReq.takeProfit ?? undefined, requestLot: orderSpec.lot,
+              requestRiskUsd: orderSpec.riskUsd, requestRR: orderSpec.rr,
+              targetSource, targetPreference: selectedGoldPlan?.targetPreference,
+              profile: selectedGoldPlan?.profile, selectedPlanName: planName,
+            });
+          }
+        }
+
+        // Record each order attempt in Convex
+        if (isAuthenticated) {
+          void recordAttempt({
+            platform: "MT5", accountMode: "DEMO_ONLY", decisionId: undefined,
+            symbol: result.symbol, orderType: effectivePreview.orderType,
+            direction: effectivePreview.direction ?? undefined, requestedLot: orderSpec.lot,
+            status: orderStatus === "DONE" ? "DONE" : "REJECTED",
+            ok: data.ok ?? false, accepted: data.accepted,
+            ticket: data.ticket, retcode: data.retcode, retcodeText: data.retcodeText,
+            errorMessage: orderError ?? undefined,
+            marginRequired: data.marginRequired ?? undefined, marginFree: data.freeMarginBefore,
+            marginFreeAfter: undefined, fillingMode: data.fillingModeUsed,
+            fillingRetries: data.fillingModesTried ? data.fillingModesTried.length - 1 : undefined,
+          });
+        }
+
+      } catch (e) {
+        orderStatus = "ERROR";
+        orderError  = e instanceof Error ? e.message : "خطأ في الإرسال";
+        if (splitOrders.length === 1) setGoldOrderError(orderError);
       }
 
-      setGoldSendStage("الطلب مرسل — انتظار الرد من Python bridge...");
-
-      const res = await fetch("/api/mt5-demo/order-send", {
-        method:  "POST",
-        headers: { "Content-Type": "application/json" },
-        body:    JSON.stringify(body),
-        cache:   "no-store",
-      });
-      const data = (await res.json()) as DemoOrderResult;
-
-      if (process.env.NODE_ENV === "development") {
-        console.log("[GoldSend] response", { httpStatus: res.status, ok: res.ok, data });
-      }
-
-      setGoldSendDebug({
-        httpStatus:       res.status,
-        responseOk:       res.ok,
-        errorCode:        data.errorCode,
-        requestEntry:     execReq.entryPrice        ?? undefined,
-        requestSL:        execReq.stopLoss          ?? undefined,
-        requestTP:        execReq.takeProfit        ?? undefined,
-        requestLot:       sentLot,
-        requestRiskUsd:   effectivePreview.riskUsd,
-        requestRR:        effectivePreview.rrRatio,
-        targetSource,
-        targetPreference: selectedGoldPlan?.targetPreference,
-        profile:          selectedGoldPlan?.profile,
-        selectedPlanName:
-          selectedGoldPlan?.planType === "CONSERVATIVE" ? "المحافظة" :
-          selectedGoldPlan?.planType === "BALANCED"     ? "المتوازنة" :
-          selectedGoldPlan?.planType === "AGGRESSIVE"   ? "الهجومية"  : undefined,
-      });
-      attemptData = data;
-
-      if (data.ok || data.accepted) {
-        attemptStatus = "DONE";
-        setGoldSendStage("✓ تم إرسال الأمر إلى MT5");
-        setGoldOrderResult(data);
-        setGoldUserConfirmed(false);
-      } else if (data.retcodeText === "NO_MONEY_PRECHECK") {
-        attemptStatus = "PRECHECK_FAILED";
-        setGoldSendStage("✗ الهامش غير كافٍ — لم يُرسل الأمر");
-        setGoldOrderResult(data);
-      } else if (res.status === 403) {
-        attemptStatus = "REJECTED";
-        const msg = data.errorCode === "MT5_EXECUTION_ENV_DISABLED"
-          ? "التنفيذ مغلق من متغير البيئة MT5_DEMO_EXECUTION_ENABLED — تأكد من إعادة تشغيل الخادم بعد تعديل .env.local"
-          : data.error ?? "403 — رفض من الخادم";
-        setGoldSendStage(`✗ ${msg}`);
-        setGoldOrderError(msg);
-        attemptErrorMsg = msg;
-      } else if (res.status === 400) {
-        attemptStatus = "REJECTED";
-        const msg = `400 — بيانات غير صالحة: ${data.error ?? ""}`;
-        setGoldSendStage(`✗ ${msg}`);
-        setGoldOrderError(msg);
-        attemptErrorMsg = msg;
-      } else if (res.status >= 500) {
-        attemptStatus = "REJECTED";
-        const layerLabel = data.layer === "python-bridge" ? "Python bridge" : "Next route";
-        const msg = `خطأ داخلي في ${layerLabel} — ${data.error ?? ""}`;
-        setGoldSendStage(`✗ ${msg}`);
-        setGoldOrderError(msg);
-        attemptErrorMsg = msg;
-      } else {
-        attemptStatus = "REJECTED";
-        const msg = data.error ?? `فشل إرسال الأمر إلى MT5 (HTTP ${res.status})`;
-        setGoldSendStage(`✗ ${msg}`);
-        setGoldOrderError(msg);
-        attemptErrorMsg = msg;
-      }
-    } catch (e) {
-      attemptErrorMsg = e instanceof Error ? e.message : "خطأ غير معروف في الإرسال";
-      setGoldSendStage(`✗ ${attemptErrorMsg}`);
-      setGoldOrderError(attemptErrorMsg);
-    } finally {
-      setGoldOrdering(false);
+      // Update this order in group
+      const idx = orderSpec.targetIndex - 1;
+      groupOrders[idx] = { ...groupOrders[idx], status: orderStatus === "DONE" ? "DONE" : "FAILED", ticket: orderTicket, error: orderError };
+      setGoldExecutionGroup((prev) => prev ? {
+        ...prev, ordersSent: successCount,
+        partialSuccess: successCount > 0 && groupOrders.some((o) => o.status === "FAILED"),
+        orders: [...groupOrders],
+      } : null);
     }
 
+    // ── Final state ───────────────────────────────────────────────────────
+    const total = splitOrders.length;
+    setGoldSendStage(
+      successCount === total ? `✓ تم إرسال جميع الأوامر (${successCount}/${total})` :
+      successCount > 0       ? `⚠ جزئي — نجح ${successCount}/${total}` :
+                               "✗ فشلت جميع الأوامر",
+    );
+    setGoldExecutionGroup((prev) => prev ? {
+      ...prev, ordersSent: successCount,
+      partialSuccess: successCount > 0 && successCount < total,
+      orders: [...groupOrders],
+    } : null);
+    if (successCount > 0) setGoldUserConfirmed(false);
+    setGoldOrdering(false);
     if (isAuthenticated) {
-      void recordAttempt({
-        platform:        "MT5",
-        accountMode:     "DEMO_ONLY",
-        decisionId:      undefined,
-        symbol:          result.symbol,
-        orderType:       effectivePreview.orderType,
-        direction:       effectivePreview.direction ?? undefined,
-        requestedLot:    manualLot > 0 ? manualLot : effectivePreview.estimatedLot,
-        status:          attemptStatus,
-        ok:              attemptData?.ok ?? false,
-        accepted:        attemptData?.accepted,
-        ticket:          attemptData?.ticket,
-        retcode:         attemptData?.retcode,
-        retcodeText:     attemptData?.retcodeText,
-        errorMessage:    attemptErrorMsg ?? undefined,
-        marginRequired:  attemptData?.marginRequired ?? undefined,
-        marginFree:      attemptData?.freeMarginBefore,
-        marginFreeAfter: undefined,
-        fillingMode:     attemptData?.fillingModeUsed,
-        fillingRetries:  attemptData?.fillingModesTried != null
-                           ? attemptData.fillingModesTried.length - 1
-                           : undefined,
-      }).then(() => setJournalStatus("✓ سُجِّلت المحاولة في سجل MT5"))
-        .catch(() => setJournalStatus("⚠ لم يُسجَّل في Convex"));
+      setJournalStatus(successCount > 0 ? `✓ سُجِّلت ${successCount} محاولة في سجل MT5` : "⚠ لم تُسجَّل");
+    } else if (successCount > 0) {
+      setJournalStatus("تم تنفيذ الأمر في MT5 — لم يتم تسجيل المحاولة في Convex (غير مسجل دخول)");
     }
+    void lastData; // suppress unused warning
   }
 
   // A26.2: إرسال أمر Demo إلى MT5 — Demo فقط — بعد تأكيد يدوي
@@ -4111,6 +4263,8 @@ function TradePreviewPanel({
                   setGoldOrderResult(null);
                   setGoldOrderError(null);
                   setGoldUserConfirmed(false);
+                  setGoldExecutionGroup(null);
+                  setGoldOrderCount(1);
                   setShowGoldModal(true);
                 }}
                 className={`inline-flex items-center justify-center rounded-md border px-5 py-2.5 text-sm font-semibold transition-colors ${
@@ -4132,6 +4286,8 @@ function TradePreviewPanel({
                       setGoldOrderResult(null);
                       setGoldOrderError(null);
                       setGoldUserConfirmed(false);
+                      setGoldExecutionGroup(null);
+                      setGoldOrderCount(1);
                       setShowGoldModal(true);
                     }}
                     className="w-full inline-flex items-center justify-center gap-2 rounded-md border border-violet-500/50 bg-violet-500/20 px-5 py-3 text-base font-bold text-violet-200 hover:bg-violet-500/30 active:bg-violet-500/40 transition-colors"
@@ -4793,7 +4949,70 @@ function TradePreviewPanel({
               )
             )}
 
-            {/* Lot override */}
+            {/* Multi-Target Order Count Selector */}
+            <div className="rounded-md border border-cyan-500/20 bg-cyan-500/5 px-4 py-3 space-y-2">
+              <p className="text-xs font-semibold text-cyan-200/90">عدد صفقات التنفيذ</p>
+              <div className="flex gap-2">
+                {([1, 2, 3] as const).map((n) => (
+                  <button
+                    key={n}
+                    type="button"
+                    onClick={() => setGoldOrderCount(n)}
+                    className={`flex-1 rounded border py-1.5 text-sm font-semibold transition-colors ${
+                      goldOrderCount === n
+                        ? "border-cyan-500/60 bg-cyan-500/25 text-cyan-200"
+                        : "border-border/30 bg-muted/10 text-muted-foreground hover:text-foreground/80"
+                    }`}
+                  >
+                    {n} {n === 1 ? "صفقة" : "صفقات"}
+                  </button>
+                ))}
+              </div>
+              {goldOrderCount > 1 && selectedGoldPlan?.entry && selectedGoldPlan.stopLoss && effectivePreview.takeProfit && (() => {
+                const { orders: preview, warning } = buildSplitOrders(
+                  goldOrderCount, selectedGoldPlan,
+                  effectivePreview.takeProfit, effectivePreview.riskUsd,
+                );
+                if (warning) return (
+                  <p className="text-[11px] text-red-300/80">⚠ {warning}</p>
+                );
+                return (
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-[10px]">
+                      <thead>
+                        <tr className="text-muted-foreground/60">
+                          <th className="text-right px-1 pb-1">صفقة</th>
+                          <th className="text-right px-1 pb-1">الهدف</th>
+                          <th className="text-right px-1 pb-1">TP</th>
+                          <th className="text-right px-1 pb-1">RR</th>
+                          <th className="text-right px-1 pb-1">لوت</th>
+                          <th className="text-right px-1 pb-1">خطر</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {preview.map((o) => (
+                          <tr key={o.targetIndex} className="border-t border-border/10">
+                            <td className="px-1 py-0.5 text-zinc-300/80">{o.targetIndex}</td>
+                            <td className="px-1 py-0.5 text-cyan-300/80 font-semibold">{o.targetLabel}</td>
+                            <td className="px-1 py-0.5 font-mono text-emerald-300/80">{o.tp.toFixed(2)}</td>
+                            <td className="px-1 py-0.5 font-mono text-amber-300/70">{o.rr.toFixed(2)}:1</td>
+                            <td className="px-1 py-0.5 font-mono text-zinc-300/80">{o.lot.toFixed(2)}</td>
+                            <td className="px-1 py-0.5 font-mono text-zinc-300/70">${o.riskUsd.toFixed(2)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                    <p className="text-[9px] text-muted-foreground/50 mt-1">
+                      إجمالي خطر: ${preview.reduce((s, o) => s + o.riskUsd, 0).toFixed(2)} |
+                      إجمالي لوت: {preview.reduce((s, o) => s + o.lot, 0).toFixed(2)}
+                    </p>
+                  </div>
+                );
+              })()}
+            </div>
+
+            {/* Lot override (single order mode only) */}
+            {goldOrderCount === 1 && (
             <div className="rounded-md border border-amber-500/20 bg-amber-500/[0.04] px-4 py-3 space-y-2">
               <div className="flex items-center justify-between gap-2">
                 <p className="text-xs font-semibold text-amber-200/90">تعديل اللوت قبل الإرسال</p>
@@ -4823,6 +5042,7 @@ function TradePreviewPanel({
                 <p className="text-xs text-red-400">⚠ اللوت يجب أن يكون أكبر من 0</p>
               )}
             </div>
+            )}
 
             {/* Confirmation checkbox */}
             <label className="flex items-start gap-3 cursor-pointer rounded-md border border-border bg-muted/5 px-4 py-3">
@@ -4869,12 +5089,69 @@ function TradePreviewPanel({
                   setGoldOrderError(null);
                   setGoldPrecheckFailed([]);
                   setGoldPrecheckIsWarning(false);
+                  setGoldExecutionGroup(null);
                 }}
                 className="inline-flex items-center justify-center rounded-md border border-border bg-muted/20 px-4 py-2 text-sm font-medium text-muted-foreground hover:text-foreground hover:bg-muted/40 transition-colors"
               >
                 إغلاق
               </button>
             </div>
+
+            {/* Execution Group Result — يظهر عند multi-order */}
+            {goldExecutionGroup && goldExecutionGroup.ordersRequested > 1 && (
+              <div className={`rounded-md border px-4 py-3 text-xs space-y-2 ${
+                goldExecutionGroup.ordersSent === goldExecutionGroup.ordersRequested
+                  ? "border-emerald-500/30 bg-emerald-500/8"
+                  : goldExecutionGroup.partialSuccess
+                    ? "border-amber-500/30 bg-amber-500/8"
+                    : "border-red-500/30 bg-red-500/8"
+              }`}>
+                <div className="flex items-center justify-between">
+                  <p className="font-semibold text-sm">
+                    {goldExecutionGroup.ordersSent === goldExecutionGroup.ordersRequested
+                      ? `✓ ${goldExecutionGroup.ordersRequested} أوامر مرسلة`
+                      : goldExecutionGroup.partialSuccess
+                        ? `⚠ جزئي — ${goldExecutionGroup.ordersSent}/${goldExecutionGroup.ordersRequested}`
+                        : "✗ فشلت جميع الأوامر"}
+                  </p>
+                  <span className="font-mono text-[9px] text-muted-foreground/60">{goldExecutionGroup.groupId}</span>
+                </div>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-[10px]">
+                    <thead>
+                      <tr className="text-muted-foreground/60">
+                        <th className="text-right px-1 pb-0.5">الهدف</th>
+                        <th className="text-right px-1 pb-0.5">الحالة</th>
+                        <th className="text-right px-1 pb-0.5">Ticket</th>
+                        <th className="text-right px-1 pb-0.5">TP</th>
+                        <th className="text-right px-1 pb-0.5">لوت</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {goldExecutionGroup.orders.map((o) => (
+                        <tr key={o.targetIndex} className="border-t border-border/10">
+                          <td className="px-1 py-0.5 text-cyan-300/80 font-semibold">{o.targetLabel}</td>
+                          <td className={`px-1 py-0.5 font-semibold ${
+                            o.status === "DONE"    ? "text-emerald-400" :
+                            o.status === "FAILED"  ? "text-red-400" : "text-zinc-400"}`}>
+                            {o.status === "DONE" ? "✓" : o.status === "FAILED" ? "✗" : "⋯"}
+                            {o.error ? ` ${o.error.slice(0, 30)}` : ""}
+                          </td>
+                          <td className="px-1 py-0.5 font-mono text-emerald-300/70">{o.ticket ?? "—"}</td>
+                          <td className="px-1 py-0.5 font-mono text-zinc-300/70">{o.tp.toFixed(2)}</td>
+                          <td className="px-1 py-0.5 font-mono text-zinc-300/70">{o.lot.toFixed(2)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                <p className="text-[9px] text-muted-foreground/50">
+                  إجمالي لوت: {goldExecutionGroup.totalLot.toFixed(2)} |
+                  إجمالي خطر: ${goldExecutionGroup.totalRiskUsd.toFixed(2)} |
+                  {goldExecutionGroup.selectedPlanName && ` خطة: ${goldExecutionGroup.selectedPlanName}`}
+                </p>
+              </div>
+            )}
 
             {/* Margin precheck failure */}
             {goldOrderResult && goldOrderResult.retcodeText === "NO_MONEY_PRECHECK" && (
@@ -5177,6 +5454,17 @@ function getMissingFields(r: AnalysisResult | null): string[] {
   return missing;
 }
 
+// ── Auth error detection ──────────────────────────────────────────────────────
+
+function isAuthError(err: unknown): boolean {
+  const msg = (err instanceof Error ? err.message : String(err)).toLowerCase();
+  return msg.includes("not authenticated") ||
+    msg.includes("sign in first") ||
+    msg.includes("unauthorized") ||
+    msg.includes("missingaccesstoken") ||
+    msg.includes("unauthenticated");
+}
+
 // ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
@@ -5271,6 +5559,7 @@ export function AnalysisControlPanel({
   const lockedSymbolMissing =
     !!lockedSymbol &&
     !symbolsLoading &&
+    canQuery &&  // only block when authenticated — unauthenticated users can still analyze
     !allowedSymbols.includes(lockedSymbol) &&
     !localStorageSymbols.includes(lockedSymbol);
 
@@ -5447,7 +5736,11 @@ export function AnalysisControlPanel({
       setSavedDecisionId(res.decisionId);
       if ("duplicate" in res && res.duplicate) setSavedDuplicate(true);
     } catch (e) {
-      setSaveError(e instanceof Error ? e.message : "فشل الحفظ — حاول مرة أخرى");
+      setSaveError(
+        isAuthError(e)
+          ? "الحفظ يتطلب تسجيل دخول — التحليل يعمل محليًا"
+          : (e instanceof Error ? e.message : "فشل الحفظ — حاول مرة أخرى"),
+      );
     } finally {
       setSaving(false);
     }
@@ -5459,6 +5752,28 @@ export function AnalysisControlPanel({
 
   return (
     <div dir="rtl" className="flex flex-col gap-6">
+
+      {/* ── Local mode banner ────────────────────────────────────────────── */}
+      {!authLoading && !isAuthenticated && (
+        <div className="rounded-md border border-zinc-500/20 bg-zinc-800/30 px-4 py-2.5 text-[11px] text-zinc-300/80 flex items-center gap-2">
+          <span className="text-zinc-400 shrink-0">ⓘ</span>
+          <span>
+            وضع محلي: التحليل وقراءة MT5 يعملان بدون تسجيل دخول — الحفظ والتقارير والقرارات تحتاج{" "}
+            <a href="/sign-in" className="text-amber-300/80 underline underline-offset-2 hover:text-amber-200">
+              تسجيل دخول
+            </a>
+            .
+          </span>
+        </div>
+      )}
+
+      {/* ── Result: local mode notice ─────────────────────────────────────── */}
+      {result?.localMode && (
+        <div className="rounded-md border border-zinc-500/15 bg-zinc-800/20 px-3 py-2 text-[10px] text-zinc-400/80 flex items-center gap-1.5">
+          <span className="text-zinc-500 shrink-0">◈</span>
+          التحليل يعمل محليًا (بدون مزامنة Convex) — المؤشرات أساسية فقط (ATR، High/Low) — لتحليل أدق مع EMA/RSI/MACD سجّل دخولك.
+        </div>
+      )}
 
       {/* ── control panel card ──────────────────────────────────────────── */}
       <Card className={institutionalCardClass("p-0")}>
@@ -5592,7 +5907,14 @@ export function AnalysisControlPanel({
             </span>
           </div>
 
-          {fetchError && <p className="mt-3 text-sm text-red-400">{fetchError}</p>}
+          {fetchError && !isAuthError(fetchError) && (
+            <p className="mt-3 text-sm text-red-400">{fetchError}</p>
+          )}
+          {fetchError && isAuthError(fetchError) && (
+            <p className="mt-3 text-[11px] text-zinc-400/80">
+              ⓘ {isAuthenticated ? fetchError : "التحليل يحتاج اتصالاً بـ MT5 — تأكد من تشغيل الخدمة المحلية."}
+            </p>
+          )}
         </CardContent>
       </Card>
 
