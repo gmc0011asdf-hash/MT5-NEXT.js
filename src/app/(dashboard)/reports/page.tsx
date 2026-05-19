@@ -154,6 +154,46 @@ export default function ReportsPage() {
     });
   }, [tradeHistoryDeals, symbolFilter, statusFilter, typeFilter, resultFilter, search]);
 
+  // ── KING_GOLD TP Analysis (Phase 2 — client-side parsing) ──────────────────
+  const kingGoldAnalysis = useMemo(() => {
+    const deals = tradeHistoryDeals ?? [];
+    const kingDeals = deals.filter((d) => d.comment?.startsWith("KING_GOLD"));
+    if (kingDeals.length === 0) return null;
+
+    const groups: Record<string, { profit: number; count: number; wins: number }> = {
+      TP1: { profit: 0, count: 0, wins: 0 },
+      TP2: { profit: 0, count: 0, wins: 0 },
+      TP3: { profit: 0, count: 0, wins: 0 },
+    };
+    let totalProfit = 0;
+    let totalCount  = 0;
+    const groupMap: Record<string, number> = {};
+
+    for (const d of kingDeals) {
+      const comment = d.comment ?? "";
+      const tpMatch = comment.match(/TP([123])/);
+      const label   = tpMatch ? `TP${tpMatch[1]}` : "TP1";
+      if (!groups[label]) continue;
+      groups[label].count++;
+      groups[label].profit += d.profit;
+      if (d.profit > 0) groups[label].wins++;
+      totalProfit += d.profit;
+      totalCount++;
+
+      // Group tracking
+      const gMatch = comment.match(/G(\S+)/);
+      const gId    = gMatch ? gMatch[1] : "unknown";
+      groupMap[gId] = (groupMap[gId] ?? 0) + 1;
+    }
+
+    return {
+      totalDeals:   totalCount,
+      totalProfit:  totalProfit,
+      uniqueGroups: Object.keys(groupMap).length,
+      byTarget:     groups,
+    };
+  }, [tradeHistoryDeals]);
+
   async function pullTradeHistoryFromMt5() {
     setHistorySyncMessage(null);
     setHistorySyncBusy(true);
@@ -481,6 +521,65 @@ export default function ReportsPage() {
           </div>
         </CardContent>
       </Card>
+
+      {/* ── KING_GOLD TP Analysis ─────────────────────────────────────────── */}
+      {kingGoldAnalysis && (
+        <Card className={institutionalCardClass("p-0")}>
+          <CardHeader>
+            <CardTitle className="text-sm font-semibold text-amber-300/90">
+              نتائج تجارب KING_GOLD — تحليل TP1 / TP2 / TP3
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="space-y-4" dir="rtl">
+              <div className="grid grid-cols-3 gap-3 text-center">
+                <StatCard label="إجمالي صفقات النظام" value={String(kingGoldAnalysis.totalDeals)} />
+                <StatCard label="إجمالي الربح/الخسارة" value={`$${kingGoldAnalysis.totalProfit.toFixed(2)}`} />
+                <StatCard label="مجموعات التنفيذ" value={String(kingGoldAnalysis.uniqueGroups)} />
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs">
+                  <thead>
+                    <tr className="border-b border-border/30 text-muted-foreground">
+                      <th className="text-right pb-2 px-2">الهدف</th>
+                      <th className="text-right pb-2 px-2">عدد الصفقات</th>
+                      <th className="text-right pb-2 px-2">نسبة النجاح</th>
+                      <th className="text-right pb-2 px-2">إجمالي P&L</th>
+                      <th className="text-right pb-2 px-2">متوسط P&L</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(["TP1", "TP2", "TP3"] as const).map((label) => {
+                      const g = kingGoldAnalysis.byTarget[label];
+                      if (!g || g.count === 0) return null;
+                      const winRate = g.count > 0 ? Math.round((g.wins / g.count) * 100) : 0;
+                      const avgPnL  = g.count > 0 ? g.profit / g.count : 0;
+                      return (
+                        <tr key={label} className="border-b border-border/10">
+                          <td className="py-1.5 px-2 font-semibold text-cyan-300">{label}</td>
+                          <td className="py-1.5 px-2 tabular-nums">{g.count}</td>
+                          <td className={`py-1.5 px-2 font-semibold tabular-nums ${winRate >= 50 ? "text-emerald-400" : "text-red-400"}`}>
+                            {winRate}%
+                          </td>
+                          <td className={`py-1.5 px-2 tabular-nums font-mono ${g.profit >= 0 ? "text-emerald-400" : "text-red-400"}`}>
+                            {g.profit >= 0 ? "+" : ""}{g.profit.toFixed(2)}
+                          </td>
+                          <td className={`py-1.5 px-2 tabular-nums font-mono ${avgPnL >= 0 ? "text-emerald-300/80" : "text-red-300/80"}`}>
+                            {avgPnL >= 0 ? "+" : ""}{avgPnL.toFixed(2)}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+              <p className="text-[10px] text-muted-foreground/50">
+                يُعرض فقط سجلات من MT5 تبدأ بـ KING_GOLD — مزامنة من زر "مزامنة سجل الصفقات" أعلاه.
+              </p>
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
     </div>
   );

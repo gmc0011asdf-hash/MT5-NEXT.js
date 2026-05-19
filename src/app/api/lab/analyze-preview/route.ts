@@ -272,6 +272,86 @@ function scoreTimeframe(ind: IndicatorResult, now: number, spreadPoints: number)
 }
 
 // ---------------------------------------------------------------------------
+// Local-mode helpers — used when no Clerk auth token is available
+// ---------------------------------------------------------------------------
+
+async function fetchCandlesFromPython(
+  symbol: string,
+  timeframe: string,
+  count: number,
+): Promise<Array<{ time: number; open: number; high: number; low: number; close: number }>> {
+  const url = new URL(`${MT5_SERVICE_BASE}/readonly/candles`);
+  url.searchParams.set("symbol",    symbol);
+  url.searchParams.set("timeframe", timeframe);
+  url.searchParams.set("count",     String(count));
+  const ctrl = new AbortController();
+  const tid  = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT_MS);
+  try {
+    const r = await fetch(url.toString(), { signal: ctrl.signal, cache: "no-store" });
+    clearTimeout(tid);
+    if (!r.ok) return [];
+    const d = (await r.json()) as { candles?: unknown[] };
+    if (!Array.isArray(d.candles)) return [];
+    return d.candles.filter(
+      (c): c is { time: number; open: number; high: number; low: number; close: number } =>
+        typeof c === "object" && c !== null &&
+        typeof (c as Record<string, unknown>).time  === "number" &&
+        typeof (c as Record<string, unknown>).close === "number",
+    );
+  } catch {
+    clearTimeout(tid);
+    return [];
+  }
+}
+
+function computeMinimalIndicators(
+  candles: Array<{ time: number; open: number; high: number; low: number; close: number }>,
+  timeframe?: string,
+): IndicatorResult {
+  if (candles.length < 5) return { status: "insufficient_data" };
+  const closes = candles.map((c) => c.close);
+
+  // ATR14 — True Range average
+  const trWindow = candles.slice(Math.max(0, candles.length - 15));
+  let trSum = 0; let trCount = 0;
+  for (let i = 1; i < trWindow.length; i++) {
+    const tr = Math.max(
+      trWindow[i].high - trWindow[i].low,
+      Math.abs(trWindow[i].high - trWindow[i - 1].close),
+      Math.abs(trWindow[i].low  - trWindow[i - 1].close),
+    );
+    trSum += tr; trCount++;
+  }
+  const atr14 = trCount > 0 ? trSum / trCount : undefined;
+
+  const recent20  = candles.slice(-20);
+  const recentHigh = Math.max(...recent20.map((c) => c.high));
+  const recentLow  = Math.min(...recent20.map((c) => c.low));
+  const lastClose  = closes[closes.length - 1]!;
+  const lastCandle = candles[candles.length - 1]!;
+
+  const sma20Closes = closes.slice(-20);
+  const sma20 = sma20Closes.reduce((a, b) => a + b, 0) / sma20Closes.length;
+  const trendBias =
+    lastClose > sma20 * 1.001 ? "BULLISH" :
+    lastClose < sma20 * 0.999 ? "BEARISH" : "NEUTRAL";
+
+  return {
+    status:          "ok",
+    candleCount:     candles.length,
+    timeframe,
+    atr14,
+    recentHigh,
+    recentLow,
+    lastClose,
+    trendBias,
+    momentumBias:    "NEUTRAL",
+    latestCandleTime: lastCandle.time,
+    candleAgeMs:     Date.now() - lastCandle.time,
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Fetch symbol properties from local MT5 service
 // ---------------------------------------------------------------------------
 
@@ -361,19 +441,19 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     return NextResponse.json({ ok: false, error: "timeframe required for manual mode" }, { status: 400 });
   }
 
-  // ── auth for Convex ───────────────────────────────────────────────────────
+  // ── Convex auth — optional: local analysis works without sign-in ────────────
   const convexUrl = process.env.NEXT_PUBLIC_CONVEX_URL;
-  if (!convexUrl) {
-    return NextResponse.json({ ok: false, error: "NEXT_PUBLIC_CONVEX_URL not configured" }, { status: 503 });
-  }
-  const session = await auth();
-  const token = await session.getToken({ template: "convex" });
-  if (!token) {
-    return NextResponse.json({ ok: false, error: "not authenticated — sign in first" }, { status: 401 });
-  }
+  const session   = await auth();
+  const token     = convexUrl
+    ? await session.getToken({ template: "convex" }).catch(() => null)
+    : null;
+  const localMode = !token;  // true = no Convex — use Python candles directly
 
-  const client = new ConvexHttpClient(convexUrl);
-  client.setAuth(token);
+  let client: ConvexHttpClient | null = null;
+  if (convexUrl && token) {
+    client = new ConvexHttpClient(convexUrl);
+    client.setAuth(token);
+  }
 
   // ── fetch symbol properties (best-effort, non-blocking) ──────────────────
   const [symbolProps] = await Promise.all([fetchSymbolProps(symbol)]);
@@ -387,15 +467,21 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   const indicatorResults: Record<string, IndicatorResult> = {};
   await Promise.all(
     timeframesToEval.map(async (tf) => {
-      try {
-        const res = await client.query(api.technicalIndicators.computeIndicatorsForSymbol, {
-          symbol,
-          timeframe: tf,
-          candleCount,
-        });
-        indicatorResults[tf] = res as IndicatorResult;
-      } catch {
-        indicatorResults[tf] = { status: "error" };
+      if (client) {
+        try {
+          const res = await client.query(api.technicalIndicators.computeIndicatorsForSymbol, {
+            symbol,
+            timeframe: tf,
+            candleCount,
+          });
+          indicatorResults[tf] = res as IndicatorResult;
+        } catch {
+          indicatorResults[tf] = { status: "error" };
+        }
+      } else {
+        // Local mode: compute from Python candles directly
+        const candles = await fetchCandlesFromPython(symbol, tf, candleCount);
+        indicatorResults[tf] = computeMinimalIndicators(candles, tf);
       }
     }),
   );
@@ -433,11 +519,16 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   if (selectedTimeframe) {
     let rawCandles: { time: number; open: number; high: number; low: number; close: number }[] = [];
     try {
-      rawCandles = await client.query(api.mt5CandlesQuery.getCandlesForStructure, {
-        symbol,
-        timeframe: selectedTimeframe,
-        limit: candleCount,
-      });
+      if (client) {
+        rawCandles = await client.query(api.mt5CandlesQuery.getCandlesForStructure, {
+          symbol,
+          timeframe: selectedTimeframe,
+          limit: candleCount,
+        });
+      } else {
+        // Local mode: fetch candles directly from Python
+        rawCandles = await fetchCandlesFromPython(symbol, selectedTimeframe, candleCount);
+      }
     } catch {
       // non-blocking — if fetch fails, all analysis is skipped
     }
@@ -508,16 +599,19 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     if (missing.length > 0) {
       await Promise.all(
         missing.map(async (tf) => {
-          try {
-            const res = await client.query(api.technicalIndicators.computeIndicatorsForSymbol, {
-              symbol,
-              timeframe: tf,
-              candleCount: 200,
-            });
-            const r = res as { status: string; trendBias?: string; candleCount?: number };
-            if (r.status === "ok") mtfIndicators[tf] = r;
-          } catch {
-            // non-blocking — leave missing
+          if (client) {
+            try {
+              const res = await client.query(api.technicalIndicators.computeIndicatorsForSymbol, {
+                symbol, timeframe: tf, candleCount: 200,
+              });
+              const r = res as { status: string; trendBias?: string; candleCount?: number };
+              if (r.status === "ok") mtfIndicators[tf] = r;
+            } catch { /* non-blocking */ }
+          } else {
+            // Local mode: compute from Python
+            const candles = await fetchCandlesFromPython(symbol, tf, 200);
+            const ind = computeMinimalIndicators(candles, tf);
+            if (ind.status === "ok") mtfIndicators[tf] = ind;
           }
         }),
       );
@@ -530,8 +624,8 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     // non-blocking
   }
 
-  // ── B6.2: News Protection Committee ──────────────────────────────────────
-  try {
+  // ── B6.2: News Protection Committee (requires Convex auth) ───────────────
+  if (client) try {
     const COMMITTEE_WINDOW_MS = 24 * 60 * 60 * 1000; // last 24 hours
     const recentNewsData = await client.query(api.newsReviews.getRecentNewsForCommittee, {
       sinceMs: Date.now() - COMMITTEE_WINDOW_MS,
@@ -586,8 +680,13 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       riskUsd,
       dataQuality: { symbolPropsAvailable, indicatorsAvailable: false },
       freshness: { stale: false },
-      reasons: ["لا توجد شموع كافية في قاعدة البيانات — زامن الشموع أولاً عبر /api/mt5-readonly/candles"],
+      reasons: [
+        localMode
+          ? "لا توجد شموع في Python bridge — تأكد من تشغيل خدمة MT5 المحلية وفتح MT5"
+          : "لا توجد شموع كافية في قاعدة البيانات — زامن الشموع أولاً عبر /api/mt5-readonly/candles",
+      ],
       warnings,
+      ...(localMode ? { localMode: true } : {}),
     };
     return NextResponse.json(result);
   }
@@ -805,6 +904,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     zonesAnalysis,        // B3 — undefined if fetch/compute failed
     reasons,
     warnings,
+    ...(localMode ? { localMode: true } : {}),
   };
 
   return NextResponse.json(result);

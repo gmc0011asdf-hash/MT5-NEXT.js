@@ -1016,6 +1016,10 @@ class DemoOrderRequest(BaseModel):
     executionEnabled:           bool = False   # contract value — remains False
     manualConfirmation:         bool = False   # must be True from explicit user action
     manualLot:                  float | None = None  # A26.5: user override for estimatedLot
+    # Multi-target split execution (optional)
+    comment_override: str | None = None  # overrides default comment (max 31 chars for MT5)
+    targetLabel:      str | None = None  # "TP1" | "TP2" | "TP3"
+    groupId:          str | None = None  # execution group identifier
 
 
 def _validate_demo_order(req: DemoOrderRequest) -> str | None:
@@ -1276,7 +1280,7 @@ def demo_order_send(payload: DemoOrderRequest) -> JSONResponse:
             "tp":        float(payload.takeProfit),     # type: ignore[arg-type]
             "deviation": 20,
             "magic":     26200,        # A26.2 magic number
-            "comment":   "KING_MT5_DEMO_A26_2",
+            "comment":   (payload.comment_override or "KING_MT5_DEMO_A26_2")[:31],
             "type_time": mt5.ORDER_TIME_GTC,
         }
 
