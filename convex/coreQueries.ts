@@ -513,6 +513,40 @@ export const getMyTradeHistoryDeals = query({
   },
 });
 
+/** Returns metadata about the last history sync — used to show freshness in /reports. */
+export const getMyHistorySyncMeta = query({
+  args: {},
+  handler: async (ctx) => {
+    const userId = await requireUserId(ctx);
+    const empty = { lastSyncAt: null as number | null, lastSyncRunId: null as string | null, dealCount: 0, isFresh: false };
+    if (!userId) return empty;
+
+    // monitoringStatus is upserted per (userId, service) — one row, take(1) is enough
+    const statusRows = await ctx.db
+      .query("monitoringStatus")
+      .withIndex("by_userId_service", (q) =>
+        q.eq("userId", userId).eq("service", "mt5-local-history-readonly"),
+      )
+      .take(1);
+
+    const latest       = statusRows[0] ?? null;
+    const lastSyncAt   = latest?.checkedAt ?? null;
+    const lastSyncRunId = latest?.syncRunId ?? null;
+
+    const rows = await ctx.db
+      .query("mt5TradeHistoryDeals")
+      .withIndex("by_userId_time", (q) => q.eq("userId", userId))
+      .order("desc")
+      .take(300);
+    const dealCount = rows.filter((r) => r.source === SOURCE_MT5_LOCAL).length;
+
+    const HISTORY_STALE_MS = 30 * 60 * 1_000; // 30 minutes
+    const isFresh = lastSyncAt !== null && (Date.now() - lastSyncAt) <= HISTORY_STALE_MS;
+
+    return { lastSyncAt, lastSyncRunId, dealCount, isFresh };
+  },
+});
+
 export const getMyRealMt5ReportSummary = query({
   args: {},
   handler: async (ctx) => {

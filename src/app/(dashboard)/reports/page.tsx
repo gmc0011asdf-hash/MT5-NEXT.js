@@ -137,6 +137,7 @@ export default function ReportsPage() {
   const canUseConvex = !isConvexAuthLoading && isAuthenticated;
 
   const tradeHistoryDeals = useQuery(api.coreQueries.getMyTradeHistoryDeals, canUseConvex ? {} : "skip");
+  const historyMeta       = useQuery(api.coreQueries.getMyHistorySyncMeta,   canUseConvex ? {} : "skip");
   const freshPositionsResult = useQuery(api.coreQueries.getMyFreshActiveMt5Positions, canUseConvex ? {} : "skip");
   const activePositions = freshPositionsResult?.positions ?? [];
   const positionsFresh  = freshPositionsResult?.isFresh   ?? false;
@@ -160,6 +161,7 @@ export default function ReportsPage() {
   const [activeSyncBusy, setActiveSyncBusy] = useState(false);
   const [historySyncMessage, setHistorySyncMessage] = useState<string | null>(null);
   const [activeSyncMessage, setActiveSyncMessage] = useState<string | null>(null);
+  const [historySyncDetail, setHistorySyncDetail] = useState<{ received: number; inserted: number; skipped: number; runId: string } | null>(null);
 
   // ── Live MT5 History — direct fetch, no Convex ────────────────────────────
   const [liveRawDeals,  setLiveRawDeals]  = useState<RawMT5Deal[] | null>(null);
@@ -342,27 +344,40 @@ export default function ReportsPage() {
           profit,
           commission,
           swap,
-          net:    profit + commission + swap,
-          comment: outD?.comment ?? inD?.comment ?? "",
-          isOpen: !outD,
+          net:       profit + commission + swap,
+          comment:   outD?.comment ?? inD?.comment ?? "",
+          isOpen:    !outD,
+          isPartial: !inD && !!outD, // OUT deal present but no IN — incomplete dataset
         };
       })
       .sort((a, b) => (b.closeTime ?? b.openTime ?? 0) - (a.closeTime ?? a.openTime ?? 0));
   }, [tradeHistoryDeals]);
 
+  // Complete trades: have both IN + OUT (or only IN = still open). Exclude partial (OUT only).
+  const convexCompleteTrades = useMemo(
+    () => convexGroupedTrades.filter((t) => !t.isPartial),
+    [convexGroupedTrades],
+  );
+
+  // Partial records: OUT deal exists but no IN — incomplete dataset from old sync window.
+  const convexPartialRecords = useMemo(
+    () => convexGroupedTrades.filter((t) => t.isPartial),
+    [convexGroupedTrades],
+  );
+
   const convexGroupedStats = useMemo(() => {
-    const closed = convexGroupedTrades.filter((t) => !t.isOpen);
+    const closed = convexCompleteTrades.filter((t) => !t.isOpen);
     return {
-      total:       convexGroupedTrades.length,
+      total:       convexCompleteTrades.length,
       closedCount: closed.length,
-      openCount:   convexGroupedTrades.filter((t) => t.isOpen).length,
+      openCount:   convexCompleteTrades.filter((t) => t.isOpen).length,
       wins:        closed.filter((t) => t.profit > 0).length,
       losses:      closed.filter((t) => t.profit < 0).length,
       grossProfit: closed.filter((t) => t.profit > 0).reduce((s, t) => s + t.profit, 0),
       grossLoss:   closed.filter((t) => t.profit < 0).reduce((s, t) => s + t.profit, 0),
       netProfit:   closed.reduce((s, t) => s + t.net, 0),
     };
-  }, [convexGroupedTrades]);
+  }, [convexCompleteTrades]);
 
   async function fetchLiveHistory() {
     setLiveFetchBusy(true);
@@ -389,6 +404,7 @@ export default function ReportsPage() {
 
   async function pullTradeHistoryFromMt5() {
     setHistorySyncMessage(null);
+    setHistorySyncDetail(null);
     setHistorySyncBusy(true);
     try {
       const res = await fetch(
@@ -416,10 +432,13 @@ export default function ReportsPage() {
       const readOnly =
         typeof payload.read_only_mode === "boolean" ? payload.read_only_mode : true;
 
+      let totalInserted = 0;
+      let totalSkipped  = 0;
+
       for (let i = 0; i < totalChunks; i++) {
         const chunk = (chunks[i] ?? []) as unknown[];
         try {
-          await syncHistoryMutation({
+          const result = await syncHistoryMutation({
             connected: true,
             deals: chunk,
             read_only_mode: readOnly,
@@ -429,6 +448,11 @@ export default function ReportsPage() {
             chunkIndex: i,
             totalChunks,
           });
+          if (result && typeof result === "object" && "inserted" in result) {
+            const ins = result.inserted as { deals?: number; skippedDuplicates?: number } | undefined;
+            totalInserted += ins?.deals ?? 0;
+            totalSkipped  += ins?.skippedDuplicates ?? 0;
+          }
         } catch (e) {
           const reason = e instanceof Error ? e.message : String(e);
           setHistorySyncMessage(
@@ -437,7 +461,8 @@ export default function ReportsPage() {
           return;
         }
       }
-      setHistorySyncMessage("تم تحديث سجل الصفقات من MT5 (قراءة فقط).");
+      setHistorySyncDetail({ received: deals.length, inserted: totalInserted, skipped: totalSkipped, runId: syncRunId });
+      setHistorySyncMessage(`✓ deals مستلمة: ${deals.length} — جديدة: ${totalInserted} — موجودة مسبقاً: ${totalSkipped}`);
     } catch {
       setHistorySyncMessage("فشل الاتصال بالخدمة المحلية.");
     } finally {
@@ -679,10 +704,46 @@ export default function ReportsPage() {
           <div className="flex items-center gap-2 flex-wrap">
             <CardTitle className="card-title-inst">أرشيف Convex — deals الخام بعد المزامنة</CardTitle>
             <span className="inline-flex items-center rounded border border-zinc-500/30 bg-zinc-500/10 px-2 py-0.5 text-[9px] font-medium text-zinc-400">أرشيف</span>
+            {/* Freshness badge for history archive */}
+            {historyMeta !== undefined && historyMeta.lastSyncAt && (
+              historyMeta.isFresh ? (
+                <span className="inline-flex items-center rounded border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-[9px] font-medium text-emerald-400">محدّث</span>
+              ) : (
+                <span className="inline-flex items-center rounded border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-[9px] font-medium text-amber-400">قديم · Stale</span>
+              )
+            )}
           </div>
           <p className="text-muted-foreground text-xs leading-relaxed">
             صفقات مجمّعة من deals الخام المحفوظة في Convex — يظهر كل position كصف واحد (IN + OUT مدموجان). يُحدَّث بالضغط على زر المزامنة أدناه.
           </p>
+          {/* History sync metadata */}
+          {historyMeta !== undefined && (
+            <div className="flex flex-wrap gap-3 text-[10px] font-mono text-zinc-400/70">
+              {historyMeta.lastSyncAt ? (
+                <span>آخر مزامنة: <span className="text-zinc-300/80">{fmtTs(historyMeta.lastSyncAt)}</span></span>
+              ) : (
+                <span className="text-amber-400/70">لم تتم مزامنة السجل بعد — اضغط "سحب سجل الصفقات من MT5"</span>
+              )}
+              <span>deals في Convex: <span className="text-cyan-400">{historyMeta.dealCount}</span></span>
+              <span>positions مجمّعة: <span className="text-amber-400">{convexGroupedStats.total}</span></span>
+            </div>
+          )}
+          {/* Mismatch warning: live vs archive */}
+          {liveGroupedTrades !== null && convexGroupedStats.total > 0 && (liveGroupedTrades.length - convexGroupedStats.total) > 2 && (
+            <div className="rounded-md border border-orange-500/20 bg-orange-500/5 px-3 py-2">
+              <p className="text-orange-300/90 text-xs">
+                تحذير: الأرشيف لا يطابق السجل المباشر — مباشر: {liveGroupedTrades.length} positions، Convex: {convexGroupedStats.total}.
+                نفّذ "سحب سجل الصفقات من MT5" لتحديثه.
+              </p>
+            </div>
+          )}
+          {liveGroupedTrades !== null && convexGroupedStats.total === 0 && historyMeta?.dealCount === 0 && (
+            <div className="rounded-md border border-amber-500/20 bg-amber-500/5 px-3 py-2">
+              <p className="text-amber-300/80 text-xs">
+                أرشيف Convex فارغ أو غير محدث. اضغط "سحب سجل الصفقات من MT5" لجلب {liveGroupedTrades.length} صفقة.
+              </p>
+            </div>
+          )}
         </CardHeader>
         <CardContent className="space-y-4 px-2 pb-4 md:px-4">
           <div className="grid gap-3 sm:grid-cols-3 xl:grid-cols-6">
@@ -787,9 +848,21 @@ export default function ReportsPage() {
 
           <div className="space-y-3">
             <h4 className="font-semibold text-amber-100/90 text-sm">B) سجل الصفقات المجمّعة — من Convex (بعد المزامنة)</h4>
+
+            {/* Main archive table — complete trades only */}
             <div className="overflow-x-auto">
               {convexEmptyOrLoading(tradeHistoryDeals, false) ??
-                (convexGroupedTrades.length === 0 ? (
+                /* Stale archive: no complete trades, only partial leftovers */
+                (historyMeta !== undefined && !historyMeta.isFresh && convexCompleteTrades.length === 0 ? (
+                  <div className="rounded-md border border-amber-500/20 bg-amber-500/5 px-4 py-3 space-y-1">
+                    <p className="text-amber-300/90 text-sm">
+                      أرشيف Convex قديم أو ناقص. اضغط "سحب سجل الصفقات من MT5" لتحديثه.
+                    </p>
+                    <p className="text-muted-foreground/60 text-xs">
+                      البيانات القديمة مخفية حتى لا تُفهم كصفقات حالية.
+                    </p>
+                  </div>
+                ) : convexCompleteTrades.length === 0 ? (
                   <p className="text-muted-foreground px-2 py-4 text-sm">
                     لا يوجد سجل بعد — اضغط "سحب سجل الصفقات من MT5" في لوحة التحكم أعلاه.
                   </p>
@@ -810,7 +883,7 @@ export default function ReportsPage() {
                       </tr>
                     </thead>
                     <tbody>
-                      {convexGroupedTrades.map((t) => (
+                      {convexCompleteTrades.map((t) => (
                         <tr key={t.positionId} className="border-b border-border/10">
                           <td className="py-1 px-2">
                             <Badge variant="outline" className={t.isOpen ? "border-sky-500/30 text-sky-300" : "border-zinc-500/30 text-zinc-400"}>
@@ -840,6 +913,41 @@ export default function ReportsPage() {
                   </table>
                 ))}
             </div>
+
+            {/* Partial records — collapsed, clearly labelled as old/incomplete */}
+            {convexPartialRecords.length > 0 && (
+              <details className="rounded-md border border-zinc-700/30 bg-zinc-900/20 text-xs">
+                <summary className="cursor-pointer select-none px-3 py-2 text-[10px] text-zinc-400/60 hover:text-zinc-300/70 list-none flex items-center gap-1">
+                  <span>▸</span>
+                  <span>سجلات ناقصة من مزامنة قديمة ({convexPartialRecords.length}) — خروج بدون دخول</span>
+                </summary>
+                <div className="px-3 pb-1 pt-0.5 text-[9px] text-zinc-500/60 italic border-t border-zinc-700/20">
+                  هذه السجلات تحتوي deal خروج فقط بدون deal دخول — ناتجة عن مزامنة قديمة لا تشمل كامل نطاق التاريخ. لا تمثل صفقات حالية.
+                </div>
+                <table className="w-full text-[10px] px-2 pb-2">
+                  <thead>
+                    <tr className="border-b border-zinc-700/20 text-zinc-500/70">
+                      <th className="text-right pb-1 px-3">الرمز</th>
+                      <th className="text-right pb-1 px-3">سعر الخروج</th>
+                      <th className="text-right pb-1 px-3">الربح</th>
+                      <th className="text-right pb-1 px-3">وقت</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {convexPartialRecords.map((t) => (
+                      <tr key={t.positionId} className="border-b border-zinc-800/30 text-zinc-500/60">
+                        <td className="py-1 px-3">{t.symbol}</td>
+                        <td className="py-1 px-3 tabular-nums font-mono">{t.closePrice?.toFixed(2) ?? "—"}</td>
+                        <td className="py-1 px-3 tabular-nums font-mono">{t.profit >= 0 ? "+" : ""}{t.profit.toFixed(2)}</td>
+                        <td className="py-1 px-3 tabular-nums text-[9px]">
+                          {t.closeTime ? fmtTs(t.closeTime) : "—"}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </details>
+            )}
           </div>
         </CardContent>
       </Card>
