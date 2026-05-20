@@ -72,6 +72,11 @@ import {
   type RealisticTarget,
 } from "@/lib/gold/gold-realistic-targeting-engine";
 import { RealisticTargetCard } from "@/components/lab/RealisticTargetCard";
+import {
+  PendingTradePlanCard,
+  type PendingTradePlan,
+  type PendingPlanType,
+} from "@/components/lab/PendingTradePlanCard";
 import { CandleSyncPanel }       from "@/components/lab/CandleSyncPanel";
 import {
   type AnalysisMetadata,
@@ -3244,6 +3249,13 @@ function TradePreviewPanel({
   );
   const [journalStatus, setJournalStatus] = useState<string | null>(null);
 
+  // Gold Journal v1 — non-blocking mutations
+  const saveAnalysisSnapshot  = useMutation(api.goldJournal.saveAnalysisSnapshot);
+  const saveExecutionGroup    = useMutation(api.goldJournal.saveExecutionGroup);
+  const markSnapshotExecuted  = useMutation(api.goldJournal.markSnapshotExecuted);
+  const savePendingPlan       = useMutation(api.goldJournal.savePendingPlan);
+  const [goldAnalysisSnapshotId, setGoldAnalysisSnapshotId] = useState<string | null>(null);
+
   const summary = useMemo(() => buildDecisionSummary(result), [result]);
   const preview = useMemo(() => buildTradeOrderPreview(result, summary), [result, summary]);
 
@@ -3589,6 +3601,38 @@ function TradePreviewPanel({
     goldSoftBlockReasons,
   ]);
 
+  // ── Pending Trade Plan — derived from actionablePlan when type is PENDING ──
+  const goldPendingPlan = useMemo((): PendingTradePlan | null => {
+    if (mode !== "gold" || !actionablePlan) return null;
+    if (actionablePlan.planType !== "PENDING_LIMIT" && actionablePlan.planType !== "PENDING_STOP") return null;
+    if (!actionablePlan.entry || !actionablePlan.stopLoss) return null;
+    const dir    = actionablePlan.direction ?? result.direction;
+    const isSell = dir === "SELL" || result.direction === "bearish";
+    let pendingType: PendingPlanType =
+      actionablePlan.planType === "PENDING_LIMIT"
+        ? (isSell ? "SELL_LIMIT" : "BUY_LIMIT")
+        : (isSell ? "SELL_STOP"  : "BUY_STOP");
+    return {
+      id:               `pending-${Date.now()}`,
+      pendingType,
+      status:           "WATCHING",
+      symbol:           result.symbol,
+      timeframe:        result.selectedTimeframe ?? undefined,
+      direction:        dir ?? undefined,
+      triggerPrice:     actionablePlan.entry,
+      stopLoss:         actionablePlan.stopLoss,
+      takeProfit1:      selectedGoldPlan?.takeProfit1 ?? undefined,
+      takeProfit2:      actionablePlan.takeProfit ?? selectedGoldPlan?.takeProfit2 ?? undefined,
+      takeProfit3:      selectedGoldPlan?.takeProfit3 ?? undefined,
+      lot:              actionablePlan.lot ?? undefined,
+      riskUsd:          actionablePlan.riskUsd ?? undefined,
+      conditionText:    actionablePlan.activationConditions.join(" | "),
+      reason:           actionablePlan.reason,
+      targetPreference: selectedGoldPlan?.targetPreference,
+      createdAt:        Date.now(),
+    };
+  }, [mode, actionablePlan, result, selectedGoldPlan]);
+
   // ── Auto-select: re-select same planType from adjustedGoldPlans ──────────
   useEffect(() => {
     if (!adjustedGoldPlans) { setSelectedGoldPlan(null); return; }
@@ -3601,6 +3645,43 @@ function TradePreviewPanel({
     const target = preferred?.proposalStatus !== "BLOCKED" ? preferred : null;
     setSelectedGoldPlan(target ?? null);
   }, [adjustedGoldPlans]);
+
+  // ── Gold Journal v1 — save snapshot when result changes (non-blocking) ─────
+  const prevResultSymbolRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (mode !== "gold") return;
+    if (!result || !isAuthenticated) return;
+    // Only save when a genuinely new analysis result appears
+    const key = `${result.symbol}-${result.selectedTimeframe}-${result.status}`;
+    if (prevResultSymbolRef.current === key) return;
+    prevResultSymbolRef.current = key;
+    void saveAnalysisSnapshot({
+      symbol:               result.symbol,
+      timeframe:            result.selectedTimeframe ?? undefined,
+      direction:            result.direction,
+      analysisStatus:       result.status,
+      grade:                summary?.grade,
+      probability:          summary?.probability,
+      hardBlockCount:       hardBlocksInEffect,
+      softBlockCount:       softBlocksInEffect,
+      targetPreference:     targetPreference,
+      selectedPlanName:     selectedGoldPlan?.planType,
+      entry:                result.entry,
+      stopLoss:             result.stopLoss,
+      takeProfit:           effectivePreview.takeProfit,
+      lot:                  effectivePreview.estimatedLot,
+      riskUsd:              effectivePreview.riskUsd,
+      rrRatio:              effectivePreview.rrRatio,
+      actionPlanType:       actionablePlan?.planType,
+      executionPolicy:      settings.executionPolicy,
+      recommendationStatus: goldRec?.recommendationStatus,
+      profile:              realisticTarget?.profile,
+      reasonSummary:        result.reasons?.slice(0, 3).join(" | "),
+    }).then((id) => {
+      if (id) setGoldAnalysisSnapshotId(id);
+    }).catch(() => { /* non-blocking */ });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [result, mode, isAuthenticated]);
 
   // ── Sync manualLot with effectivePreview ──────────────────────────────────
   useEffect(() => {
@@ -3958,8 +4039,36 @@ function TradePreviewPanel({
     setGoldOrdering(false);
     if (isAuthenticated) {
       setJournalStatus(successCount > 0 ? `✓ سُجِّلت ${successCount} محاولة في سجل MT5` : "⚠ لم تُسجَّل");
+      // Save execution group to Gold Journal — non-blocking
+      void (async () => {
+        try {
+          await saveExecutionGroup({
+            groupId,
+            analysisSnapshotId: goldAnalysisSnapshotId
+              ? (goldAnalysisSnapshotId as Parameters<typeof saveExecutionGroup>[0]["analysisSnapshotId"])
+              : undefined,
+            symbol:           result.symbol,
+            direction:        effectivePreview.direction ?? undefined,
+            targetPreference: selectedGoldPlan?.targetPreference,
+            selectedPlanName: selectedGoldPlan?.planType,
+            profile:          selectedGoldPlan?.profile,
+            timeframe:        result.selectedTimeframe ?? undefined,
+            totalRiskUsd:     splitOrders.reduce((s, o) => s + o.riskUsd, 0),
+            totalLot:         splitOrders.reduce((s, o) => s + o.lot, 0),
+            ordersRequested:  splitOrders.length,
+            ordersSent:       successCount,
+            tickets:          groupOrders.filter(o => o.ticket != null).map(o => o.ticket!),
+            partialSuccess:   successCount > 0 && successCount < splitOrders.length,
+          });
+          if (goldAnalysisSnapshotId && successCount > 0) {
+            void markSnapshotExecuted({
+              snapshotId: goldAnalysisSnapshotId as Parameters<typeof markSnapshotExecuted>[0]["snapshotId"],
+            });
+          }
+        } catch { /* non-blocking */ }
+      })();
     } else if (successCount > 0) {
-      setJournalStatus("تم تنفيذ الأمر في MT5 — لم يتم تسجيل المحاولة في Convex (غير مسجل دخول)");
+      setJournalStatus("تم تنفيذ الأمر في MT5 — لم يتم تسجيله في Convex (غير مسجل دخول)");
     }
     void lastData; // suppress unused warning
   }
@@ -4090,6 +4199,14 @@ function TradePreviewPanel({
       {/* ── خطة النظام العملية — Gold Actionable Plan v1 ─────────────────── */}
       {mode === "gold" && actionablePlan && (
         <ActionablePlanCard plan={actionablePlan} />
+      )}
+
+      {/* ── صفقة مستقبلية محتملة — Pending Trade Plan v1 ────────────────── */}
+      {mode === "gold" && goldPendingPlan && (
+        <PendingTradePlanCard
+          plan={goldPendingPlan}
+          onCancel={() => { /* dismissed locally — Convex save deferred */ }}
+        />
       )}
 
       {/* ── الأهداف الواقعية — Gold Realistic Targeting v1 ──────────────── */}
@@ -4319,9 +4436,10 @@ function TradePreviewPanel({
                 </div>
               )}
 
+              {/* Main execution button — shown only when fully approved */}
+              {canOpenGoldModal && (
               <button
                 type="button"
-                disabled={!canOpenGoldModal}
                 onClick={() => {
                   setGoldPrecheckFailed([]);
                   setGoldOrderResult(null);
@@ -4331,14 +4449,18 @@ function TradePreviewPanel({
                   setGoldOrderCount(1);
                   setShowGoldModal(true);
                 }}
-                className={`inline-flex items-center justify-center rounded-md border px-5 py-2.5 text-sm font-semibold transition-colors ${
-                  canOpenGoldModal
-                    ? "border-amber-500/60 bg-amber-500/20 text-amber-200 hover:bg-amber-500/30 active:bg-amber-500/40"
-                    : "border-zinc-500/20 bg-zinc-700/20 text-zinc-400/60 cursor-not-allowed"
-                }`}
+                className="inline-flex items-center justify-center rounded-md border border-amber-500/60 bg-amber-500/20 px-5 py-2.5 text-sm font-semibold text-amber-200 hover:bg-amber-500/30 active:bg-amber-500/40 transition-colors"
               >
-                {canOpenGoldModal ? "▶ تنفيذ عبر MT5" : "تنفيذ عبر MT5 — معطّل"}
+                ▶ تنفيذ MT5 محكوم
               </button>
+              )}
+
+              {/* Status when not executable */}
+              {!canOpenGoldModal && !canOpenGoldExperimental && hardBlocksInEffect === 0 && softBlocksInEffect === 0 && (
+                <p className="text-[11px] text-zinc-400/70 text-center py-1">
+                  تنفيذ MT5 غير متاح — استوفِ شروط اللجان والحراس أولاً.
+                </p>
+              )}
 
               {/* Experimental button — بارز ومستقل عند EXPERIMENTAL + soft blocks فقط */}
               {canOpenGoldExperimental && !canOpenGoldModal && (

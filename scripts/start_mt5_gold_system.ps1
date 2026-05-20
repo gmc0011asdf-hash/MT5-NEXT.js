@@ -16,7 +16,7 @@ function Warn($m) { Write-Host ("WARN: {0}" -f $m) -ForegroundColor Yellow }
 function Fail($m) { Write-Host ("FAIL: {0}" -f $m) -ForegroundColor Red }
 
 Write-Host ""
-Write-Host "MT5 Gold System - Local Runtime Launcher v1" -ForegroundColor Yellow
+Write-Host "MT5 Gold System - Local Runtime Launcher v2 (+ Convex)" -ForegroundColor Yellow
 Write-Host "------------------------------------------------"
 
 Step "Checking requirements"
@@ -69,6 +69,21 @@ Ok "Python Bridge window opened"
 Step "Waiting 5 seconds for Python Bridge"
 Start-Sleep -Seconds 5
 
+Step "Starting Convex dev (syncing functions to cloud)"
+
+$convexCmd = "Set-Location '$PROJECT_ROOT'; Write-Host 'Convex dev starting...' -ForegroundColor Magenta; Write-Host 'Syncing goldJournal + schema to Convex cloud...' -ForegroundColor DarkMagenta; pnpm exec convex dev"
+
+Start-Process -FilePath "powershell.exe" -ArgumentList @(
+    "-NoExit",
+    "-ExecutionPolicy", "Bypass",
+    "-Command", $convexCmd
+)
+
+Ok "Convex dev window opened"
+
+Step "Waiting 12 seconds for Convex to sync functions"
+Start-Sleep -Seconds 12
+
 Step "Starting Next.js"
 
 $nextCmd = "Set-Location '$PROJECT_ROOT'; Write-Host 'Next.js starting...' -ForegroundColor Cyan; pnpm dev"
@@ -87,9 +102,16 @@ Start-Sleep -Seconds 8
 Step "Opening Gold Command Center"
 Start-Process $GOLD_URL
 
-Ok "Done"
+Write-Host ""
+Write-Host "Gold system ready:" -ForegroundColor Green
+Write-Host "  [1] Convex dev   -> running in separate window (syncing cloud functions)" -ForegroundColor Magenta
+Write-Host "  [2] MT5 Bridge   -> http://127.0.0.1:8010" -ForegroundColor Cyan
+Write-Host "  [3] Next.js      -> http://localhost:3000" -ForegroundColor Cyan
+Write-Host "  [4] /gold        -> opening in browser" -ForegroundColor Cyan
 Write-Host ""
 Write-Host "Check status with:"
 Write-Host "curl.exe http://127.0.0.1:8010/health"
 Write-Host "curl.exe http://localhost:3000/api/mt5-readonly/connection-status"
+Write-Host ""
+Write-Host "Note: Keep the Convex window open. Closing it stops function syncing." -ForegroundColor DarkYellow
 Write-Host ""

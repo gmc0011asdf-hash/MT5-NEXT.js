@@ -70,6 +70,11 @@ export default function ReportsPage() {
   const summary = useQuery(api.coreQueries.getMyRealMt5ReportSummary, canUseConvex ? {} : "skip");
   const syncHistoryMutation = useMutation(api.mt5Bridge.syncReadOnlyTradeHistoryFromLocalService);
   const syncSnapshotMutation = useMutation(api.mt5Bridge.syncReadOnlySnapshotFromLocalService);
+  // Gold Journal queries
+  const goldSnapshots    = useQuery(api.goldJournal.getMyRecentSnapshots,       canUseConvex ? { limit: 50 } : "skip");
+  const goldExecGroups   = useQuery(api.goldJournal.getMyRecentExecutionGroups, canUseConvex ? { limit: 30 } : "skip");
+  const goldPendingPlans = useQuery(api.goldJournal.getMyPendingPlans,          canUseConvex ? {} : "skip");
+  const savePendingPlanMutation = useMutation(api.goldJournal.updatePendingPlanStatus);
 
   const [historyDays, setHistoryDays] = useState("30");
   const [symbolFilter, setSymbolFilter] = useState("all");
@@ -576,6 +581,106 @@ export default function ReportsPage() {
               <p className="text-[10px] text-muted-foreground/50">
                 يُعرض فقط سجلات من MT5 تبدأ بـ KING_GOLD — مزامنة من زر "مزامنة سجل الصفقات" أعلاه.
               </p>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* ── Gold Analysis Journal ────────────────────────────────────────────── */}
+      {canUseConvex && (goldSnapshots?.length ?? 0) > 0 && (
+        <Card className={institutionalCardClass("p-0")}>
+          <CardHeader>
+            <CardTitle className="text-sm font-semibold text-amber-300/90">
+              سجل تحليلات الذهب — Gold Analysis Journal
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div dir="rtl" className="space-y-3">
+              <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                <StatCard label="إجمالي التحليلات" value={String(goldSnapshots?.length ?? 0)} />
+                <StatCard label="تحليلات مُنفَّذة"  value={String(goldSnapshots?.filter(s => s.wasExecuted).length ?? 0)} />
+                <StatCard label="مجموعات التنفيذ"   value={String(goldExecGroups?.length ?? 0)} />
+                <StatCard label="خطط معلّقة"         value={String(goldPendingPlans?.filter(p => p.status === "WATCHING").length ?? 0)} />
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs">
+                  <thead>
+                    <tr className="border-b border-border/30 text-muted-foreground">
+                      <th className="text-right pb-1.5 px-2">وقت</th>
+                      <th className="text-right pb-1.5 px-2">اتجاه</th>
+                      <th className="text-right pb-1.5 px-2">فريم</th>
+                      <th className="text-right pb-1.5 px-2">خطة</th>
+                      <th className="text-right pb-1.5 px-2">هدف</th>
+                      <th className="text-right pb-1.5 px-2">توصية</th>
+                      <th className="text-right pb-1.5 px-2">نُفِّذ</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {goldSnapshots?.slice(0, 20).map((s) => (
+                      <tr key={s._id} className="border-b border-border/10">
+                        <td className="py-1 px-2 text-muted-foreground/60 tabular-nums text-[10px]">
+                          {new Date(s.createdAt).toLocaleString("ar-SA", { hour12: false, month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" })}
+                        </td>
+                        <td className={`py-1 px-2 font-semibold ${s.direction === "bullish" ? "text-emerald-400" : s.direction === "bearish" ? "text-red-400" : "text-zinc-400"}`}>
+                          {s.direction === "bullish" ? "↑ شراء" : s.direction === "bearish" ? "↓ بيع" : "—"}
+                        </td>
+                        <td className="py-1 px-2 text-zinc-300/70 text-[10px]">{s.timeframe ?? "—"}</td>
+                        <td className="py-1 px-2 text-amber-300/70 text-[10px]">
+                          {s.selectedPlanName === "CONSERVATIVE" ? "محافظة" : s.selectedPlanName === "BALANCED" ? "متوازنة" : s.selectedPlanName === "AGGRESSIVE" ? "هجومية" : "—"}
+                        </td>
+                        <td className="py-1 px-2 text-cyan-300/70 text-[10px]">
+                          {s.targetPreference === "REALISTIC" ? "واقعي" : s.targetPreference === "BALANCED" ? "متوسط" : s.targetPreference === "FAR" ? "بعيد" : "—"}
+                        </td>
+                        <td className={`py-1 px-2 text-[10px] ${s.recommendationStatus === "APPROVED" ? "text-emerald-400" : s.recommendationStatus === "EXPERIMENTAL" ? "text-violet-400" : s.recommendationStatus === "BLOCKED" ? "text-red-400" : "text-zinc-400"}`}>
+                          {s.recommendationStatus ?? s.analysisStatus ?? "—"}
+                        </td>
+                        <td className="py-1 px-2">{s.wasExecuted ? <span className="text-emerald-400 text-[10px]">✓</span> : <span className="text-zinc-500/50 text-[10px]">—</span>}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* ── Gold Execution Groups ────────────────────────────────────────────── */}
+      {canUseConvex && (goldExecGroups?.length ?? 0) > 0 && (
+        <Card className={institutionalCardClass("p-0")}>
+          <CardHeader>
+            <CardTitle className="text-sm font-semibold text-amber-300/90">مجموعات تنفيذ الذهب</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div dir="rtl" className="overflow-x-auto">
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="border-b border-border/30 text-muted-foreground">
+                    <th className="text-right pb-1.5 px-2">وقت</th>
+                    <th className="text-right pb-1.5 px-2">groupId</th>
+                    <th className="text-right pb-1.5 px-2">أوامر</th>
+                    <th className="text-right pb-1.5 px-2">تذاكر</th>
+                    <th className="text-right pb-1.5 px-2">خطة</th>
+                    <th className="text-right pb-1.5 px-2">هدف</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {goldExecGroups?.slice(0, 15).map((g) => (
+                    <tr key={g._id} className="border-b border-border/10">
+                      <td className="py-1 px-2 text-muted-foreground/60 tabular-nums text-[10px]">
+                        {new Date(g.createdAt).toLocaleString("ar-SA", { hour12: false, month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" })}
+                      </td>
+                      <td className="py-1 px-2 font-mono text-[10px] text-zinc-300/60">{g.groupId.slice(-12)}</td>
+                      <td className="py-1 px-2 tabular-nums">
+                        <span className={g.ordersSent === g.ordersRequested ? "text-emerald-400" : "text-amber-400"}>{g.ordersSent}/{g.ordersRequested}</span>
+                      </td>
+                      <td className="py-1 px-2 font-mono text-[10px] text-emerald-300/70">{g.tickets?.join(", ") || "—"}</td>
+                      <td className="py-1 px-2 text-amber-300/70 text-[10px]">{g.selectedPlanName === "BALANCED" ? "متوازنة" : g.selectedPlanName ?? "—"}</td>
+                      <td className="py-1 px-2 text-cyan-300/70 text-[10px]">{g.targetPreference ?? "—"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
           </CardContent>
         </Card>

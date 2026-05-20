@@ -35,9 +35,10 @@ import {
 // Only THIS component re-renders every second, protecting the parent.
 
 function CountdownTimer({ targetMs }: { targetMs: number }) {
-  const [remaining, setRemaining] = useState(() => Math.max(0, targetMs - Date.now()));
+  const [remaining, setRemaining] = useState(0);
 
   useEffect(() => {
+    setRemaining(Math.max(0, targetMs - Date.now()));
     const id = setInterval(() => {
       const r = Math.max(0, targetMs - Date.now());
       setRemaining(r);
@@ -125,6 +126,10 @@ export function CandleSyncPanel({
 
   // Ref to count re-schedules after analysis done — triggers main effect re-run
   const [rescheduleCount, setRescheduleCount]   = useState(0);
+
+  // Guards all Date.now()-based renders — prevents server/client hydration mismatch
+  const [isHydrated, setIsHydrated]             = useState(false);
+  useEffect(() => { setIsHydrated(true); }, []);
 
   // Refs for cleanup
   const timerARef   = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -305,7 +310,7 @@ export function CandleSyncPanel({
           <div className="flex items-center justify-between gap-2">
             <span className="text-[10px] text-muted-foreground">المتبقي حتى إغلاق شمعة {tfLabel}</span>
             <span className="font-mono text-sm font-semibold text-amber-300/80">
-              {msLeft > 0 ? formatCountdown(msLeft) : "—"}
+              {isHydrated && msLeft > 0 ? formatCountdown(msLeft) : "—"}
             </span>
           </div>
           {selectedTimeframe && (
@@ -313,13 +318,13 @@ export function CandleSyncPanel({
               <div className="flex justify-between gap-1">
                 <span className="text-muted-foreground">إغلاق محلي</span>
                 <span className="font-mono text-foreground/70">
-                  {new Date(nextCandleCloseAt(selectedTimeframe) ?? 0).toLocaleTimeString(undefined, { hour12: false })}
+                  {isHydrated ? new Date(nextCandleCloseAt(selectedTimeframe) ?? 0).toLocaleTimeString(undefined, { hour12: false }) : "—"}
                 </span>
               </div>
               <div className="flex justify-between gap-1">
                 <span className="text-muted-foreground">UTC</span>
                 <span className="font-mono text-foreground/55">
-                  {new Date(nextCandleCloseAt(selectedTimeframe) ?? 0).toISOString().substring(11, 19)}
+                  {isHydrated ? new Date(nextCandleCloseAt(selectedTimeframe) ?? 0).toISOString().substring(11, 19) : "—"}
                 </span>
               </div>
             </div>
@@ -405,9 +410,9 @@ export function CandleSyncPanel({
             className="text-[10px] uppercase tracking-wider text-muted-foreground hover:text-foreground/60 flex items-center gap-1"
           >
             <span>{showTimeline ? "▾" : "▸"}</span>
-            سجل التوقيت ({timeline.length}/{TIMELINE_MAX})
+            سجل التوقيت ({isHydrated ? timeline.length : 0}/{TIMELINE_MAX})
           </button>
-          {timeline.length > 0 && (
+          {isHydrated && timeline.length > 0 && (
             <button
               type="button"
               onClick={() => onClearTimeline()}
