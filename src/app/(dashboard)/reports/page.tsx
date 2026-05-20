@@ -137,7 +137,10 @@ export default function ReportsPage() {
   const canUseConvex = !isConvexAuthLoading && isAuthenticated;
 
   const tradeHistoryDeals = useQuery(api.coreQueries.getMyTradeHistoryDeals, canUseConvex ? {} : "skip");
-  const activePositions = useQuery(api.coreQueries.getMyActiveMt5Positions, canUseConvex ? {} : "skip");
+  const freshPositionsResult = useQuery(api.coreQueries.getMyFreshActiveMt5Positions, canUseConvex ? {} : "skip");
+  const activePositions = freshPositionsResult?.positions ?? [];
+  const positionsFresh  = freshPositionsResult?.isFresh   ?? false;
+  const positionsLastSyncAt = freshPositionsResult?.lastSyncAt ?? null;
   const summary = useQuery(api.coreQueries.getMyRealMt5ReportSummary, canUseConvex ? {} : "skip");
   const syncHistoryMutation = useMutation(api.mt5Bridge.syncReadOnlyTradeHistoryFromLocalService);
   const syncSnapshotMutation = useMutation(api.mt5Bridge.syncReadOnlySnapshotFromLocalService);
@@ -692,57 +695,93 @@ export default function ReportsPage() {
           </div>
 
           <div className="space-y-3">
-            <h4 className="font-semibold text-amber-100/90 text-sm">A) الصفقات النشطة — من Convex (بعد مزامنة)</h4>
-            <div className="overflow-x-auto">
-              {convexEmptyOrLoading(activePositions, false) ??
-                (activeFiltered.length === 0 ? (
-                  <p className="text-muted-foreground px-2 py-4 text-sm">
-                    لا توجد صفقات نشطة حاليًا في MT5.
-                  </p>
+            {/* Heading + freshness badge */}
+            <div className="flex flex-wrap items-center gap-2">
+              <h4 className="font-semibold text-amber-100/90 text-sm">A) الصفقات النشطة — من Convex (بعد مزامنة)</h4>
+              {freshPositionsResult !== undefined && (
+                positionsFresh ? (
+                  <span className="inline-flex items-center rounded border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-[9px] font-medium text-emerald-400">حديثة</span>
                 ) : (
-                  <Table>
-                    <TableHeader>
-                      <TableRow className="border-amber-500/10 hover:bg-transparent">
-                        <TableHead className="text-foreground">الحالة</TableHead>
-                        <TableHead className="text-foreground">رقم التذكرة</TableHead>
-                        <TableHead className="text-foreground">الرمز</TableHead>
-                        <TableHead className="text-foreground">النوع</TableHead>
-                        <TableHead className="text-foreground">الحجم</TableHead>
-                        <TableHead className="text-foreground">سعر الدخول</TableHead>
-                        <TableHead className="text-foreground">السعر الحالي</TableHead>
-                        <TableHead className="text-foreground">وقف الخسارة</TableHead>
-                        <TableHead className="text-foreground">جني الربح</TableHead>
-                        <TableHead className="text-foreground">الربح/الخسارة العائم</TableHead>
-                        <TableHead className="text-foreground">التعليق</TableHead>
-                        <TableHead className="text-foreground">آخر مزامنة</TableHead>
+                  <span className="inline-flex items-center rounded border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-[9px] font-medium text-amber-400">قديمة · Stale</span>
+                )
+              )}
+              {positionsLastSyncAt && (
+                <span className="text-[9px] text-muted-foreground/60 tabular-nums">
+                  آخر مزامنة: {fmtTs(positionsLastSyncAt)}
+                </span>
+              )}
+            </div>
+            <div className="overflow-x-auto">
+              {/* Loading */}
+              {freshPositionsResult === undefined ? (
+                <p className="text-muted-foreground px-2 py-4 text-sm">جاري تحميل الصفقات النشطة من Convex…</p>
+              ) : !canUseConvex ? (
+                <p className="text-muted-foreground px-2 py-4 text-sm">{NO_MT5_DATA_AR}</p>
+              ) : !positionsFresh && positionsLastSyncAt === null ? (
+                /* Never synced */
+                <p className="text-muted-foreground px-2 py-4 text-sm">
+                  لم تتم مزامنة الصفقات النشطة بعد — اضغط "تحديث الصفقات النشطة من MT5".
+                </p>
+              ) : !positionsFresh ? (
+                /* Stale — hide old data, show warning */
+                <div className="rounded-md border border-amber-500/20 bg-amber-500/5 px-4 py-3">
+                  <p className="text-amber-300/90 text-sm">
+                    لا توجد صفقات نشطة حديثة من MT5. البيانات القديمة مخفية لأنها لا تمثل حالة المنصة الحالية.
+                  </p>
+                  {positionsLastSyncAt && (
+                    <p className="text-muted-foreground/60 text-xs mt-1 tabular-nums">
+                      آخر مزامنة: {fmtTs(positionsLastSyncAt)} — اضغط "تحديث الصفقات النشطة" للتحديث.
+                    </p>
+                  )}
+                </div>
+              ) : activeFiltered.length === 0 ? (
+                <p className="text-muted-foreground px-2 py-4 text-sm">
+                  لا توجد صفقات نشطة حاليًا في MT5.
+                </p>
+              ) : (
+                <Table>
+                  <TableHeader>
+                    <TableRow className="border-amber-500/10 hover:bg-transparent">
+                      <TableHead className="text-foreground">الحالة</TableHead>
+                      <TableHead className="text-foreground">رقم التذكرة</TableHead>
+                      <TableHead className="text-foreground">الرمز</TableHead>
+                      <TableHead className="text-foreground">النوع</TableHead>
+                      <TableHead className="text-foreground">الحجم</TableHead>
+                      <TableHead className="text-foreground">سعر الدخول</TableHead>
+                      <TableHead className="text-foreground">السعر الحالي</TableHead>
+                      <TableHead className="text-foreground">وقف الخسارة</TableHead>
+                      <TableHead className="text-foreground">جني الربح</TableHead>
+                      <TableHead className="text-foreground">الربح/الخسارة العائم</TableHead>
+                      <TableHead className="text-foreground">التعليق</TableHead>
+                      <TableHead className="text-foreground">آخر مزامنة</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {activeFiltered.map((row) => (
+                      <TableRow key={row._id} className="border-border/60">
+                        <TableCell>
+                          <Badge variant="outline" className="border-emerald-500/30 text-emerald-300">نشطة ✓</Badge>
+                        </TableCell>
+                        <TableCell className="tabular-nums text-muted-foreground text-xs">{row.ticket ?? "—"}</TableCell>
+                        <TableCell className="font-medium text-amber-100/90 tabular-nums">{row.symbol}</TableCell>
+                        <TableCell>
+                          <Badge variant="outline">{mapPositionType(row.type)}</Badge>
+                        </TableCell>
+                        <TableCell className="tabular-nums">{row.volume}</TableCell>
+                        <TableCell className="tabular-nums">{row.openPrice}</TableCell>
+                        <TableCell className="tabular-nums">{row.currentPrice}</TableCell>
+                        <TableCell className="tabular-nums">{fmtNum(row.stopLoss)}</TableCell>
+                        <TableCell className="tabular-nums">{fmtNum(row.takeProfit)}</TableCell>
+                        <TableCell className="tabular-nums">{fmtNum(row.profit)}</TableCell>
+                        <TableCell className="max-w-[160px] text-muted-foreground text-xs">{row.comment ?? "—"}</TableCell>
+                        <TableCell className="whitespace-nowrap text-muted-foreground text-xs tabular-nums">
+                          {fmtTs(row.capturedAt)}
+                        </TableCell>
                       </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {activeFiltered.map((row) => (
-                        <TableRow key={row._id} className="border-border/60">
-                          <TableCell>
-                            <Badge variant="outline" className="border-amber-500/30 text-amber-100/90">نشطة</Badge>
-                          </TableCell>
-                          <TableCell className="tabular-nums text-muted-foreground text-xs">{row.ticket ?? "—"}</TableCell>
-                          <TableCell className="font-medium text-amber-100/90 tabular-nums">{row.symbol}</TableCell>
-                          <TableCell>
-                            <Badge variant="outline">{mapPositionType(row.type)}</Badge>
-                          </TableCell>
-                          <TableCell className="tabular-nums">{row.volume}</TableCell>
-                          <TableCell className="tabular-nums">{row.openPrice}</TableCell>
-                          <TableCell className="tabular-nums">{row.currentPrice}</TableCell>
-                          <TableCell className="tabular-nums">{fmtNum(row.stopLoss)}</TableCell>
-                          <TableCell className="tabular-nums">{fmtNum(row.takeProfit)}</TableCell>
-                          <TableCell className="tabular-nums">{fmtNum(row.profit)}</TableCell>
-                          <TableCell className="max-w-[160px] text-muted-foreground text-xs">{row.comment ?? "—"}</TableCell>
-                          <TableCell className="whitespace-nowrap text-muted-foreground text-xs tabular-nums">
-                            {fmtTs(row.capturedAt)}
-                          </TableCell>
-                        </TableRow>
-                      ))}
-                    </TableBody>
-                  </Table>
-                ))}
+                    ))}
+                  </TableBody>
+                </Table>
+              )}
             </div>
           </div>
 

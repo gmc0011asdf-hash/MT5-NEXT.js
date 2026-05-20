@@ -445,6 +445,59 @@ export const getMyActiveMt5Positions = query({
   },
 });
 
+/**
+ * Fresh active positions — returns only positions from the LATEST snapshot
+ * sync run, so stale positions (e.g. from weeks-old syncs) are never shown.
+ *
+ * Uses monitoringStatus.syncRunId to identify the most recent sync, then
+ * filters mt5OpenPositions by that syncRunId. If the latest sync returned
+ * 0 open positions, the positions array will be empty — which is correct.
+ *
+ * Returns { positions, isFresh, lastSyncAt }:
+ *   isFresh  = lastSyncAt is within STALE_THRESHOLD_MS
+ *   positions = from the latest syncRunId only (may be [])
+ *   lastSyncAt = ms timestamp of the last snapshot sync
+ */
+const STALE_THRESHOLD_MS = 15 * 60 * 1_000; // 15 minutes
+
+export const getMyFreshActiveMt5Positions = query({
+  args: {},
+  handler: async (ctx) => {
+    const userId = await requireUserId(ctx);
+    if (!userId) return { positions: [], isFresh: false, lastSyncAt: null as number | null };
+
+    // monitoringStatus is upserted (one record per userId+service) — take(1) is enough
+    const statusRows = await ctx.db
+      .query("monitoringStatus")
+      .withIndex("by_userId_service", (q) =>
+        q.eq("userId", userId).eq("service", "mt5-local-readonly"),
+      )
+      .take(1);
+
+    const latest       = statusRows[0] ?? null;
+    const lastSyncAt   = latest?.checkedAt ?? null;
+    const latestRunId  = latest?.syncRunId ?? null;
+    const isFresh      = lastSyncAt !== null && (Date.now() - lastSyncAt) <= STALE_THRESHOLD_MS;
+
+    if (!latestRunId) {
+      return { positions: [], isFresh: false, lastSyncAt };
+    }
+
+    // Return only positions from the latest sync run
+    const rows = await ctx.db
+      .query("mt5OpenPositions")
+      .withIndex("by_userId", (q) => q.eq("userId", userId))
+      .order("desc")
+      .take(100);
+
+    const positions = rows.filter(
+      (r) => r.source === SOURCE_MT5_LOCAL && r.syncRunId === latestRunId,
+    );
+
+    return { positions, isFresh, lastSyncAt };
+  },
+});
+
 /** سجل صفقات MT5 (قراءة فقط) — آخر 100 حدثاً. */
 export const getMyTradeHistoryDeals = query({
   args: {},
