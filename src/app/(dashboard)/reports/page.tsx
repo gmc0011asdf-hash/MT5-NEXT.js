@@ -509,32 +509,134 @@ export default function ReportsPage() {
         </CardContent>
       </Card>
 
+      {/* ── Live MT5 History — Primary Source ─────────────────────────────── */}
+      <Card className={institutionalCardClass("p-0")}>
+        <CardHeader className="border-b border-amber-500/10 px-4 py-4 md:px-6">
+          <div className="flex items-center gap-2 flex-wrap">
+            <CardTitle className="card-title-inst text-sm">سجل MT5 المباشر — المصدر الأساسي</CardTitle>
+            <span className="inline-flex items-center rounded border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-[9px] font-medium text-emerald-400">مباشر</span>
+          </div>
+          <p className="text-muted-foreground text-xs mt-1">
+            يجلب مباشرة من MT5 ويجمع IN + OUT لكل position في صف واحد — كما يعرضها MT5 Terminal. لا يحتاج مزامنة Convex.
+          </p>
+        </CardHeader>
+        <CardContent className="px-4 py-4 space-y-3">
+          <div className="flex flex-wrap items-center gap-2">
+            <Button type="button" variant="outline" size="sm" disabled={liveFetchBusy} onClick={() => void fetchLiveHistory()}>
+              {liveFetchBusy ? "جاري الجلب…" : `جلب مباشر من MT5 (${historyDays} يوم)`}
+            </Button>
+            {liveSymbolOptions.length > 0 && (
+              <select className="rounded-md border border-amber-500/20 bg-background px-2 py-1.5 text-sm" value={liveSymFilter} onChange={(e) => setLiveSymFilter(e.target.value)}>
+                <option value="all">كل الرموز</option>
+                {liveSymbolOptions.map((s) => <option key={s} value={s}>{s}</option>)}
+              </select>
+            )}
+            {liveFetchMsg && <span className="text-muted-foreground text-xs">{liveFetchMsg}</span>}
+          </div>
+          {liveStats && (
+            <div className="rounded-md border border-zinc-700/30 bg-zinc-900/20 px-3 py-2 text-[10px] font-mono text-zinc-400/70 flex flex-wrap gap-3">
+              <span>صفقات خام: <span className="text-cyan-400">{liveStats.rawCount}</span></span>
+              <span>positions مجمّعة: <span className="text-amber-400">{liveStats.total}</span></span>
+              <span>مغلقة: <span className="text-emerald-400">{liveStats.closedCount}</span></span>
+              <span>مفتوحة: <span className="text-sky-400">{liveStats.openCount}</span></span>
+              <span>مدة: <span className="text-zinc-300">{historyDays} يوم</span></span>
+              <span>فلتر: <span className="text-zinc-300">{liveSymFilter}</span></span>
+            </div>
+          )}
+          {liveStats && liveStats.closedCount > 0 && (
+            <div className="grid gap-2 sm:grid-cols-3 xl:grid-cols-6">
+              <StatCard label="صفقات مغلقة"    value={String(liveStats.closedCount)} />
+              <StatCard label="رابحة"            value={String(liveStats.wins)} />
+              <StatCard label="خاسرة"           value={String(liveStats.losses)} />
+              <StatCard label="إجمالي الربح"    value={`$${liveStats.grossProfit.toFixed(2)}`} />
+              <StatCard label="إجمالي الخسارة" value={`$${liveStats.grossLoss.toFixed(2)}`} />
+              <StatCard label="صافي النتيجة"   value={`$${liveStats.netProfit.toFixed(2)}`} />
+            </div>
+          )}
+          {liveGroupedTrades === null ? (
+            <p className="text-muted-foreground text-sm text-center py-4">اضغط "جلب مباشر من MT5" لعرض سجل الصفقات المجمّعة.</p>
+          ) : liveGroupedTrades.length === 0 ? (
+            <p className="text-muted-foreground text-sm text-center py-4">لا توجد صفقات للرمز المختار في الفترة المحددة.</p>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="border-b border-border/30 text-muted-foreground">
+                    <th className="text-right pb-1.5 px-2">الحالة</th>
+                    <th className="text-right pb-1.5 px-2">الرمز</th>
+                    <th className="text-right pb-1.5 px-2">الاتجاه</th>
+                    <th className="text-right pb-1.5 px-2">الحجم</th>
+                    <th className="text-right pb-1.5 px-2">سعر الدخول</th>
+                    <th className="text-right pb-1.5 px-2">سعر الخروج</th>
+                    <th className="text-right pb-1.5 px-2">الربح</th>
+                    <th className="text-right pb-1.5 px-2">العمولة</th>
+                    <th className="text-right pb-1.5 px-2">وقت الإغلاق</th>
+                    <th className="text-right pb-1.5 px-2">التعليق</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {liveGroupedTrades.map((t) => (
+                    <tr key={t.positionId} className="border-b border-border/10">
+                      <td className="py-1 px-2">
+                        <Badge variant="outline" className={t.isOpen ? "border-sky-500/30 text-sky-300" : "border-zinc-500/30 text-zinc-400"}>
+                          {t.isOpen ? "مفتوحة" : "مغلقة"}
+                        </Badge>
+                      </td>
+                      <td className="py-1 px-2 font-semibold text-amber-100/90">{t.symbol}</td>
+                      <td className="py-1 px-2">
+                        <Badge variant="outline" className={t.direction === "BUY" ? "border-emerald-500/30 text-emerald-300" : "border-red-500/30 text-red-300"}>
+                          {t.direction === "BUY" ? "شراء" : t.direction === "SELL" ? "بيع" : t.direction}
+                        </Badge>
+                      </td>
+                      <td className="py-1 px-2 tabular-nums">{t.volume.toFixed(2)}</td>
+                      <td className="py-1 px-2 tabular-nums font-mono">{t.openPrice?.toFixed(2) ?? "—"}</td>
+                      <td className="py-1 px-2 tabular-nums font-mono">{t.closePrice?.toFixed(2) ?? "—"}</td>
+                      <td className={`py-1 px-2 tabular-nums font-mono font-semibold ${t.profit > 0 ? "text-emerald-400" : t.profit < 0 ? "text-red-400" : "text-zinc-400"}`}>
+                        {t.profit >= 0 ? "+" : ""}{t.profit.toFixed(2)}
+                      </td>
+                      <td className="py-1 px-2 tabular-nums text-zinc-400/70">{t.commission.toFixed(2)}</td>
+                      <td className="py-1 px-2 tabular-nums text-muted-foreground/60 text-[10px]">
+                        {t.closeTime ? fmtTs(t.closeTime) : t.openTime ? fmtTs(t.openTime) : "—"}
+                      </td>
+                      <td className="py-1 px-2 text-zinc-400/70 max-w-[160px] truncate">{t.comment || "—"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+          {liveGroupedTrades !== null && liveGroupedTrades.some((t) => t.comment?.startsWith("KING_GOLD")) && (
+            <div className="border-t border-border/15 pt-2">
+              <p className="text-[10px] text-amber-300/60 font-mono">
+                صفقات النظام KING_GOLD: {liveGroupedTrades.filter((t) => t.comment?.startsWith("KING_GOLD")).length}
+                {" — "}ربح: ${liveGroupedTrades.filter((t) => t.comment?.startsWith("KING_GOLD")).reduce((s, t) => s + t.profit, 0).toFixed(2)}
+              </p>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* ── Convex Archive — Raw Deals After Manual Sync ──────────────────── */}
       <Card className={institutionalCardClass("p-0")}>
         <CardHeader className="space-y-2 border-b border-amber-500/10 px-4 py-4 md:px-6">
-          <CardTitle className="card-title-inst">تقرير صفقات MT5 — قراءة فقط</CardTitle>
+          <div className="flex items-center gap-2 flex-wrap">
+            <CardTitle className="card-title-inst">أرشيف Convex — deals الخام بعد المزامنة</CardTitle>
+            <span className="inline-flex items-center rounded border border-zinc-500/30 bg-zinc-500/10 px-2 py-0.5 text-[9px] font-medium text-zinc-400">أرشيف</span>
+          </div>
           <p className="text-muted-foreground text-xs leading-relaxed">
-            هذا التقرير قراءة فقط من MT5 ولا توجد أي أوامر تداول.
+            يُعرض deals الخام المحفوظة في Convex بعد ضغط زر المزامنة — كل صفقة تظهر كـ IN + OUT منفصلين. للسجل الكامل المجمّع اضغط "جلب مباشر من MT5" في القسم أعلاه.
           </p>
         </CardHeader>
         <CardContent className="space-y-4 px-2 pb-4 md:px-4">
           <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-            <StatCard label="عدد الصفقات النشطة" value={String(summary?.activeCount ?? mt5Stats.activeCount)} />
-            <StatCard label="إجمالي الربح/الخسارة العائم" value={(summary?.floatingProfit ?? mt5Stats.floating).toFixed(2)} />
-            <StatCard label="عدد صفقات السجل" value={String(summary?.historyCount ?? mt5Stats.historyCount)} />
-            <StatCard label="عدد صفقات الشراء" value={String(summary?.buyCount ?? mt5Stats.buyCount)} />
-            <StatCard label="عدد صفقات البيع" value={String(summary?.sellCount ?? mt5Stats.sellCount)} />
-            <StatCard label="الصفقات الرابحة" value={String(mt5Stats.winners)} />
-            <StatCard label="الصفقات الخاسرة" value={String(mt5Stats.losers)} />
-            <StatCard label="إجمالي الربح" value={mt5Stats.totalProfit.toFixed(2)} />
-            <StatCard label="إجمالي الخسارة" value={mt5Stats.totalLoss.toFixed(2)} />
-            <StatCard label="صافي النتيجة" value={mt5Stats.net.toFixed(2)} />
-            <StatCard label="إجمالي العمولة" value={(summary?.totalCommission ?? 0).toFixed(2)} />
-            <StatCard label="إجمالي السواب" value={(summary?.totalSwap ?? 0).toFixed(2)} />
-            <StatCard label="إجمالي اللوت" value={mt5Stats.totalLot.toFixed(2)} />
+            <StatCard label="صفقات نشطة (Convex)" value={String(liveStats?.openCount ?? summary?.activeCount ?? mt5Stats.activeCount)} />
+            <StatCard label="ربح/خسارة عائم" value={(summary?.floatingProfit ?? mt5Stats.floating).toFixed(2)} />
+            <StatCard label="deals محفوظة في Convex" value={String(summary?.historyCount ?? mt5Stats.historyCount)} />
+            <StatCard label="صافي (بيانات مباشرة)" value={liveStats ? `$${liveStats.netProfit.toFixed(2)}` : "اجلب مباشر أولاً"} />
           </div>
 
           <div className="space-y-3">
-            <h4 className="font-semibold text-amber-100/90 text-sm">A) الصفقات النشطة من MT5</h4>
+            <h4 className="font-semibold text-amber-100/90 text-sm">A) الصفقات النشطة — من Convex (بعد مزامنة)</h4>
             <div className="overflow-x-auto">
               {convexEmptyOrLoading(activePositions, false) ??
                 (activeFiltered.length === 0 ? (
@@ -589,12 +691,12 @@ export default function ReportsPage() {
           </div>
 
           <div className="space-y-3">
-            <h4 className="font-semibold text-amber-100/90 text-sm">B) سجل الصفقات المغلقة من MT5 — قراءة فقط</h4>
+            <h4 className="font-semibold text-amber-100/90 text-sm">B) deals الخام من Convex — IN + OUT منفصلة (بعد المزامنة)</h4>
             <div className="overflow-x-auto">
               {convexEmptyOrLoading(tradeHistoryDeals, false) ??
                 (historyFiltered.length === 0 ? (
                   <p className="text-muted-foreground px-2 py-4 text-sm">
-                    لا يوجد سجل صفقات مغلقة بعد — اضغط سحب سجل الصفقات من MT5.
+                    لا يوجد سجل بعد — اضغط "سحب سجل الصفقات من MT5" في لوحة التحكم أعلاه.
                   </p>
                 ) : (
                   <Table>
@@ -716,137 +818,6 @@ export default function ReportsPage() {
           </CardContent>
         </Card>
       )}
-
-      {/* ── Live MT5 History — Direct Fetch (grouped by position) ─────────────── */}
-      <Card className={institutionalCardClass("p-0")}>
-        <CardHeader className="border-b border-amber-500/10 px-4 py-4 md:px-6">
-          <CardTitle className="card-title-inst text-sm">
-            سجل MT5 المباشر — جلب فوري بدون مزامنة Convex
-          </CardTitle>
-          <p className="text-muted-foreground text-xs mt-1">
-            يجمع صفقات IN + OUT لكل position في صف واحد — كما يعرضها MT5 Terminal.
-          </p>
-        </CardHeader>
-        <CardContent className="px-4 py-4 space-y-3">
-          {/* Controls */}
-          <div className="flex flex-wrap items-center gap-2">
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              disabled={liveFetchBusy}
-              onClick={() => void fetchLiveHistory()}
-            >
-              {liveFetchBusy ? "جاري الجلب…" : `جلب مباشر من MT5 (${historyDays} يوم)`}
-            </Button>
-            {liveSymbolOptions.length > 0 && (
-              <select
-                className="rounded-md border border-amber-500/20 bg-background px-2 py-1.5 text-sm"
-                value={liveSymFilter}
-                onChange={(e) => setLiveSymFilter(e.target.value)}
-              >
-                <option value="all">كل الرموز</option>
-                {liveSymbolOptions.map((s) => <option key={s} value={s}>{s}</option>)}
-              </select>
-            )}
-            {liveFetchMsg && (
-              <span className="text-muted-foreground text-xs">{liveFetchMsg}</span>
-            )}
-          </div>
-
-          {/* Debug panel */}
-          {liveStats && (
-            <div className="rounded-md border border-zinc-700/30 bg-zinc-900/20 px-3 py-2 text-[10px] font-mono text-zinc-400/70 flex flex-wrap gap-3">
-              <span>صفقات خام: <span className="text-cyan-400">{liveStats.rawCount}</span></span>
-              <span>مجمّعة (positions): <span className="text-amber-400">{liveStats.total}</span></span>
-              <span>مغلقة: <span className="text-emerald-400">{liveStats.closedCount}</span></span>
-              <span>مفتوحة: <span className="text-sky-400">{liveStats.openCount}</span></span>
-              <span>مدة: <span className="text-zinc-300">{historyDays} يوم</span></span>
-              <span>فلتر: <span className="text-zinc-300">{liveSymFilter}</span></span>
-            </div>
-          )}
-
-          {/* Stats cards */}
-          {liveStats && liveStats.closedCount > 0 && (
-            <div className="grid gap-2 sm:grid-cols-3 xl:grid-cols-6">
-              <StatCard label="صفقات مغلقة"    value={String(liveStats.closedCount)} />
-              <StatCard label="رابحة"            value={String(liveStats.wins)} />
-              <StatCard label="خاسرة"           value={String(liveStats.losses)} />
-              <StatCard label="إجمالي الربح"    value={`$${liveStats.grossProfit.toFixed(2)}`} />
-              <StatCard label="إجمالي الخسارة" value={`$${liveStats.grossLoss.toFixed(2)}`} />
-              <StatCard label="صافي النتيجة"   value={`$${liveStats.netProfit.toFixed(2)}`} />
-            </div>
-          )}
-
-          {/* Grouped trades table */}
-          {liveGroupedTrades === null ? (
-            <p className="text-muted-foreground text-sm text-center py-4">
-              اضغط "جلب مباشر من MT5" لعرض سجل الصفقات المجمّعة.
-            </p>
-          ) : liveGroupedTrades.length === 0 ? (
-            <p className="text-muted-foreground text-sm text-center py-4">
-              لا توجد صفقات للرمز المختار في الفترة المحددة.
-            </p>
-          ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full text-xs">
-                <thead>
-                  <tr className="border-b border-border/30 text-muted-foreground">
-                    <th className="text-right pb-1.5 px-2">الحالة</th>
-                    <th className="text-right pb-1.5 px-2">الرمز</th>
-                    <th className="text-right pb-1.5 px-2">الاتجاه</th>
-                    <th className="text-right pb-1.5 px-2">الحجم</th>
-                    <th className="text-right pb-1.5 px-2">سعر الدخول</th>
-                    <th className="text-right pb-1.5 px-2">سعر الخروج</th>
-                    <th className="text-right pb-1.5 px-2">الربح</th>
-                    <th className="text-right pb-1.5 px-2">العمولة</th>
-                    <th className="text-right pb-1.5 px-2">وقت الإغلاق</th>
-                    <th className="text-right pb-1.5 px-2">التعليق</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {liveGroupedTrades.map((t) => (
-                    <tr key={t.positionId} className="border-b border-border/10">
-                      <td className="py-1 px-2">
-                        <Badge variant="outline" className={t.isOpen ? "border-sky-500/30 text-sky-300" : "border-zinc-500/30 text-zinc-400"}>
-                          {t.isOpen ? "مفتوحة" : "مغلقة"}
-                        </Badge>
-                      </td>
-                      <td className="py-1 px-2 font-semibold text-amber-100/90">{t.symbol}</td>
-                      <td className="py-1 px-2">
-                        <Badge variant="outline" className={t.direction === "BUY" ? "border-emerald-500/30 text-emerald-300" : "border-red-500/30 text-red-300"}>
-                          {t.direction === "BUY" ? "شراء" : t.direction === "SELL" ? "بيع" : t.direction}
-                        </Badge>
-                      </td>
-                      <td className="py-1 px-2 tabular-nums">{t.volume.toFixed(2)}</td>
-                      <td className="py-1 px-2 tabular-nums font-mono">{t.openPrice?.toFixed(2) ?? "—"}</td>
-                      <td className="py-1 px-2 tabular-nums font-mono">{t.closePrice?.toFixed(2) ?? "—"}</td>
-                      <td className={`py-1 px-2 tabular-nums font-mono font-semibold ${t.profit > 0 ? "text-emerald-400" : t.profit < 0 ? "text-red-400" : "text-zinc-400"}`}>
-                        {t.profit >= 0 ? "+" : ""}{t.profit.toFixed(2)}
-                      </td>
-                      <td className="py-1 px-2 tabular-nums text-zinc-400/70">{t.commission.toFixed(2)}</td>
-                      <td className="py-1 px-2 tabular-nums text-muted-foreground/60 text-[10px]">
-                        {t.closeTime ? fmtTs(t.closeTime) : t.openTime ? fmtTs(t.openTime) : "—"}
-                      </td>
-                      <td className="py-1 px-2 text-zinc-400/70 max-w-[160px] truncate">{t.comment || "—"}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-
-          {/* KING_GOLD filter shortcut */}
-          {liveGroupedTrades !== null && liveGroupedTrades.some((t) => t.comment?.startsWith("KING_GOLD")) && (
-            <div className="border-t border-border/15 pt-2">
-              <p className="text-[10px] text-amber-300/60 font-mono">
-                صفقات النظام KING_GOLD: {liveGroupedTrades.filter((t) => t.comment?.startsWith("KING_GOLD")).length}
-                {" — "}ربح: ${liveGroupedTrades.filter((t) => t.comment?.startsWith("KING_GOLD")).reduce((s, t) => s + t.profit, 0).toFixed(2)}
-              </p>
-            </div>
-          )}
-        </CardContent>
-      </Card>
 
       {/* ── Gold Analysis Journal ────────────────────────────────────────────── */}
       {canUseConvex && (goldSnapshots?.length ?? 0) > 0 && (
