@@ -1084,7 +1084,9 @@ export default function ReportsPage() {
                     <th className="text-right pb-1.5 px-2">وقت</th>
                     <th className="text-right pb-1.5 px-2">groupId</th>
                     <th className="text-right pb-1.5 px-2">أوامر</th>
-                    <th className="text-right pb-1.5 px-2">تذاكر</th>
+                    <th className="text-right pb-1.5 px-2">تذاكر MT5</th>
+                    <th className="text-right pb-1.5 px-2">اللوت</th>
+                    <th className="text-right pb-1.5 px-2">المخاطرة $</th>
                     <th className="text-right pb-1.5 px-2">خطة</th>
                     <th className="text-right pb-1.5 px-2">هدف</th>
                   </tr>
@@ -1100,7 +1102,9 @@ export default function ReportsPage() {
                         <span className={g.ordersSent === g.ordersRequested ? "text-emerald-400" : "text-amber-400"}>{g.ordersSent}/{g.ordersRequested}</span>
                       </td>
                       <td className="py-1 px-2 font-mono text-[10px] text-emerald-300/70">{g.tickets?.join(", ") || "—"}</td>
-                      <td className="py-1 px-2 text-amber-300/70 text-[10px]">{g.selectedPlanName === "BALANCED" ? "متوازنة" : g.selectedPlanName ?? "—"}</td>
+                      <td className="py-1 px-2 tabular-nums text-zinc-300/80 text-[10px]">{g.totalLot != null ? g.totalLot.toFixed(2) : "—"}</td>
+                      <td className="py-1 px-2 tabular-nums text-zinc-300/80 text-[10px]">{g.totalRiskUsd != null ? `$${g.totalRiskUsd.toFixed(2)}` : "—"}</td>
+                      <td className="py-1 px-2 text-amber-300/70 text-[10px]">{g.selectedPlanName ?? "—"}</td>
                       <td className="py-1 px-2 text-cyan-300/70 text-[10px]">{g.targetPreference ?? "—"}</td>
                     </tr>
                   ))}
