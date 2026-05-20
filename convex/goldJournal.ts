@@ -14,6 +14,25 @@
 import { mutation, query } from "./_generated/server";
 import { v }               from "convex/values";
 
+// ─── Deduplication helpers ────────────────────────────────────────────────────
+
+/** Snapshots created within this window are candidates for deduplication. */
+const DEDUP_WINDOW_MS = 5 * 60 * 1_000; // 5 minutes
+
+/**
+ * Returns true when both values are absent, or when both are present and
+ * differ by no more than `tol`. Treats (undefined, undefined) as equal.
+ */
+function isCloseNum(
+  a: number | undefined,
+  b: number | undefined,
+  tol: number,
+): boolean {
+  if (a === undefined && b === undefined) return true;
+  if (a === undefined || b === undefined) return false;
+  return Math.abs(a - b) <= tol;
+}
+
 // ─── Analysis Snapshots ───────────────────────────────────────────────────────
 
 export const saveAnalysisSnapshot = mutation({
@@ -43,12 +62,44 @@ export const saveAnalysisSnapshot = mutation({
   handler: async (ctx, args) => {
     const identity = await ctx.auth.getUserIdentity();
     if (!identity) return null;
+
+    // ── Server-side dedup: prevent duplicate snapshots within DEDUP_WINDOW_MS ──
+    // Reads at most 20 recent records via a bounded index scan — safe at scale.
+    const windowStart = Date.now() - DEDUP_WINDOW_MS;
+    const recents = await ctx.db
+      .query("goldAnalysisSnapshots")
+      .withIndex("by_userId_createdAt", (q) =>
+        q.eq("userId", identity.subject).gte("createdAt", windowStart),
+      )
+      .order("desc")
+      .take(20);
+
+    const dup = recents.find((s) =>
+      s.symbol         === args.symbol          &&
+      s.timeframe      === args.timeframe        &&
+      s.analysisStatus === args.analysisStatus   &&
+      s.direction      === args.direction        &&
+      s.grade          === args.grade            &&
+      s.targetPreference  === args.targetPreference &&
+      s.selectedPlanName  === args.selectedPlanName &&
+      isCloseNum(s.probability, args.probability, 0.001) &&
+      isCloseNum(s.entry,       args.entry,       0.01)  &&
+      isCloseNum(s.stopLoss,    args.stopLoss,    0.01)  &&
+      isCloseNum(s.takeProfit,  args.takeProfit,  0.01)  &&
+      isCloseNum(s.lot,         args.lot,         0.001) &&
+      isCloseNum(s.riskUsd,     args.riskUsd,     0.01)  &&
+      isCloseNum(s.rrRatio,     args.rrRatio,     0.01)
+    );
+
+    if (dup) return dup._id; // return existing id — no new document created
+    // ─────────────────────────────────────────────────────────────────────────
+
     const id = await ctx.db.insert("goldAnalysisSnapshots", {
       ...args,
-      userId:     identity.subject,
+      userId:      identity.subject,
       wasExecuted: false,
-      createdAt:  Date.now(),
-      source:     "gold-lab",
+      createdAt:   Date.now(),
+      source:      "gold-lab",
     });
     return id;
   },

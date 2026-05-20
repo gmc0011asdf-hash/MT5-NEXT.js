@@ -3651,8 +3651,16 @@ function TradePreviewPanel({
   useEffect(() => {
     if (mode !== "gold") return;
     if (!result || !isAuthenticated) return;
-    // Only save when a genuinely new analysis result appears
-    const key = `${result.symbol}-${result.selectedTimeframe}-${result.status}`;
+    // Client-side pre-filter: skip obvious duplicates before hitting Convex.
+    // Server-side dedup in goldJournal.saveAnalysisSnapshot is the authoritative guard.
+    const key = [
+      result.symbol,
+      result.selectedTimeframe ?? "",
+      result.status,
+      result.direction ?? "",
+      result.entry?.toFixed(2) ?? "0",
+      result.stopLoss?.toFixed(2) ?? "0",
+    ].join("|");
     if (prevResultSymbolRef.current === key) return;
     prevResultSymbolRef.current = key;
     void saveAnalysisSnapshot({
