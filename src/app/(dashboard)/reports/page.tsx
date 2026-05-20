@@ -61,6 +61,77 @@ function mapEntry(value: string | undefined) {
   return "غير محدد";
 }
 
+// ── Live MT5 History types ────────────────────────────────────────────────────
+
+type RawMT5Deal = {
+  ticket:      number;
+  position_id: number;
+  symbol:      string;
+  type:        number;
+  entry:       number;
+  volume:      number;
+  price:       number;
+  profit:      number;
+  commission:  number;
+  swap:        number;
+  time:        number;
+  comment?:    string;
+};
+
+type GroupedMT5Trade = {
+  positionId:  string;
+  symbol:      string;
+  direction:   string;
+  volume:      number;
+  openPrice:   number | null;
+  openTime:    number | null;
+  closePrice:  number | null;
+  closeTime:   number | null;
+  profit:      number;
+  commission:  number;
+  swap:        number;
+  net:         number;
+  comment:     string;
+  isOpen:      boolean;
+};
+
+/** Groups raw MT5 deals (IN + OUT legs) into complete position-level trades. */
+function groupDealsIntoTrades(deals: RawMT5Deal[]): GroupedMT5Trade[] {
+  const map = new Map<string, RawMT5Deal[]>();
+  for (const d of deals) {
+    if (!d.symbol) continue; // skip balance / deposit deals
+    const key = String(d.position_id || d.ticket);
+    if (!map.has(key)) map.set(key, []);
+    map.get(key)!.push(d);
+  }
+  return [...map.entries()]
+    .map(([posId, group]) => {
+      const inD  = group.find((d) => d.entry === 0);
+      const outD = group.find((d) => d.entry === 1);
+      const profit     = group.reduce((s, d) => s + d.profit, 0);
+      const commission = group.reduce((s, d) => s + (d.commission || 0), 0);
+      const swap       = group.reduce((s, d) => s + (d.swap || 0), 0);
+      const t = inD?.type ?? group[0]?.type;
+      return {
+        positionId: posId,
+        symbol:     group[0].symbol,
+        direction:  t === 0 ? "BUY" : t === 1 ? "SELL" : String(t ?? "?"),
+        volume:     inD?.volume ?? group[0]?.volume ?? 0,
+        openPrice:  inD?.price  ?? null,
+        openTime:   inD?.time   ?? null,
+        closePrice: outD?.price ?? null,
+        closeTime:  outD?.time  ?? null,
+        profit,
+        commission,
+        swap,
+        net:     profit + commission + swap,
+        comment: outD?.comment ?? inD?.comment ?? "",
+        isOpen:  !outD,
+      };
+    })
+    .sort((a, b) => (b.closeTime ?? b.openTime ?? 0) - (a.closeTime ?? a.openTime ?? 0));
+}
+
 export default function ReportsPage() {
   const { isLoading: isConvexAuthLoading, isAuthenticated } = useConvexAuth();
   const canUseConvex = !isConvexAuthLoading && isAuthenticated;
@@ -86,6 +157,13 @@ export default function ReportsPage() {
   const [activeSyncBusy, setActiveSyncBusy] = useState(false);
   const [historySyncMessage, setHistorySyncMessage] = useState<string | null>(null);
   const [activeSyncMessage, setActiveSyncMessage] = useState<string | null>(null);
+
+  // ── Live MT5 History — direct fetch, no Convex ────────────────────────────
+  const [liveRawDeals,  setLiveRawDeals]  = useState<RawMT5Deal[] | null>(null);
+  const [liveFetchBusy, setLiveFetchBusy] = useState(false);
+  const [liveFetchMsg,  setLiveFetchMsg]  = useState<string | null>(null);
+  const [liveSymFilter, setLiveSymFilter] = useState("all");
+
   const mt5Stats = useMemo(() => {
     const active = activePositions ?? [];
     const history = tradeHistoryDeals ?? [];
@@ -198,6 +276,59 @@ export default function ReportsPage() {
       byTarget:     groups,
     };
   }, [tradeHistoryDeals]);
+
+  // ── Live MT5 derived data ─────────────────────────────────────────────────
+  const liveGroupedTrades = useMemo(() => {
+    if (!liveRawDeals) return null;
+    const trades = groupDealsIntoTrades(liveRawDeals);
+    return liveSymFilter === "all" ? trades : trades.filter((t) => t.symbol === liveSymFilter);
+  }, [liveRawDeals, liveSymFilter]);
+
+  const liveSymbolOptions = useMemo(() => {
+    if (!liveRawDeals) return [];
+    return [...new Set(liveRawDeals.filter((d) => d.symbol).map((d) => d.symbol))].sort();
+  }, [liveRawDeals]);
+
+  const liveStats = useMemo(() => {
+    if (!liveGroupedTrades) return null;
+    const closed = liveGroupedTrades.filter((t) => !t.isOpen);
+    return {
+      rawCount:    liveRawDeals?.length ?? 0,
+      total:       liveGroupedTrades.length,
+      openCount:   liveGroupedTrades.filter((t) => t.isOpen).length,
+      closedCount: closed.length,
+      wins:        closed.filter((t) => t.profit > 0).length,
+      losses:      closed.filter((t) => t.profit < 0).length,
+      grossProfit: closed.filter((t) => t.profit > 0).reduce((s, t) => s + t.profit, 0),
+      grossLoss:   closed.filter((t) => t.profit < 0).reduce((s, t) => s + t.profit, 0),
+      netProfit:   closed.reduce((s, t) => s + t.net, 0),
+      commission:  closed.reduce((s, t) => s + t.commission, 0),
+      swap:        closed.reduce((s, t) => s + t.swap, 0),
+    };
+  }, [liveGroupedTrades, liveRawDeals]);
+
+  async function fetchLiveHistory() {
+    setLiveFetchBusy(true);
+    setLiveFetchMsg(null);
+    try {
+      const res = await fetch(
+        `/api/mt5-readonly/history-deals?days=${encodeURIComponent(historyDays)}`,
+        { cache: "no-store" },
+      );
+      const data = (await res.json()) as { connected: boolean; deals?: RawMT5Deal[]; error?: string };
+      if (data.connected && Array.isArray(data.deals)) {
+        setLiveRawDeals(data.deals);
+        const grouped = groupDealsIntoTrades(data.deals);
+        setLiveFetchMsg(`✓ جُلب ${data.deals.length} صفقة خام → ${grouped.length} صفقة مجمّعة — آخر ${historyDays} يوم`);
+      } else {
+        setLiveFetchMsg(data.error ?? "فشل الاتصال بـ MT5 أو الخدمة غير متاحة");
+      }
+    } catch {
+      setLiveFetchMsg("خطأ في الاتصال بالخدمة المحلية");
+    } finally {
+      setLiveFetchBusy(false);
+    }
+  }
 
   async function pullTradeHistoryFromMt5() {
     setHistorySyncMessage(null);
@@ -585,6 +716,137 @@ export default function ReportsPage() {
           </CardContent>
         </Card>
       )}
+
+      {/* ── Live MT5 History — Direct Fetch (grouped by position) ─────────────── */}
+      <Card className={institutionalCardClass("p-0")}>
+        <CardHeader className="border-b border-amber-500/10 px-4 py-4 md:px-6">
+          <CardTitle className="card-title-inst text-sm">
+            سجل MT5 المباشر — جلب فوري بدون مزامنة Convex
+          </CardTitle>
+          <p className="text-muted-foreground text-xs mt-1">
+            يجمع صفقات IN + OUT لكل position في صف واحد — كما يعرضها MT5 Terminal.
+          </p>
+        </CardHeader>
+        <CardContent className="px-4 py-4 space-y-3">
+          {/* Controls */}
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={liveFetchBusy}
+              onClick={() => void fetchLiveHistory()}
+            >
+              {liveFetchBusy ? "جاري الجلب…" : `جلب مباشر من MT5 (${historyDays} يوم)`}
+            </Button>
+            {liveSymbolOptions.length > 0 && (
+              <select
+                className="rounded-md border border-amber-500/20 bg-background px-2 py-1.5 text-sm"
+                value={liveSymFilter}
+                onChange={(e) => setLiveSymFilter(e.target.value)}
+              >
+                <option value="all">كل الرموز</option>
+                {liveSymbolOptions.map((s) => <option key={s} value={s}>{s}</option>)}
+              </select>
+            )}
+            {liveFetchMsg && (
+              <span className="text-muted-foreground text-xs">{liveFetchMsg}</span>
+            )}
+          </div>
+
+          {/* Debug panel */}
+          {liveStats && (
+            <div className="rounded-md border border-zinc-700/30 bg-zinc-900/20 px-3 py-2 text-[10px] font-mono text-zinc-400/70 flex flex-wrap gap-3">
+              <span>صفقات خام: <span className="text-cyan-400">{liveStats.rawCount}</span></span>
+              <span>مجمّعة (positions): <span className="text-amber-400">{liveStats.total}</span></span>
+              <span>مغلقة: <span className="text-emerald-400">{liveStats.closedCount}</span></span>
+              <span>مفتوحة: <span className="text-sky-400">{liveStats.openCount}</span></span>
+              <span>مدة: <span className="text-zinc-300">{historyDays} يوم</span></span>
+              <span>فلتر: <span className="text-zinc-300">{liveSymFilter}</span></span>
+            </div>
+          )}
+
+          {/* Stats cards */}
+          {liveStats && liveStats.closedCount > 0 && (
+            <div className="grid gap-2 sm:grid-cols-3 xl:grid-cols-6">
+              <StatCard label="صفقات مغلقة"    value={String(liveStats.closedCount)} />
+              <StatCard label="رابحة"            value={String(liveStats.wins)} />
+              <StatCard label="خاسرة"           value={String(liveStats.losses)} />
+              <StatCard label="إجمالي الربح"    value={`$${liveStats.grossProfit.toFixed(2)}`} />
+              <StatCard label="إجمالي الخسارة" value={`$${liveStats.grossLoss.toFixed(2)}`} />
+              <StatCard label="صافي النتيجة"   value={`$${liveStats.netProfit.toFixed(2)}`} />
+            </div>
+          )}
+
+          {/* Grouped trades table */}
+          {liveGroupedTrades === null ? (
+            <p className="text-muted-foreground text-sm text-center py-4">
+              اضغط "جلب مباشر من MT5" لعرض سجل الصفقات المجمّعة.
+            </p>
+          ) : liveGroupedTrades.length === 0 ? (
+            <p className="text-muted-foreground text-sm text-center py-4">
+              لا توجد صفقات للرمز المختار في الفترة المحددة.
+            </p>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="border-b border-border/30 text-muted-foreground">
+                    <th className="text-right pb-1.5 px-2">الحالة</th>
+                    <th className="text-right pb-1.5 px-2">الرمز</th>
+                    <th className="text-right pb-1.5 px-2">الاتجاه</th>
+                    <th className="text-right pb-1.5 px-2">الحجم</th>
+                    <th className="text-right pb-1.5 px-2">سعر الدخول</th>
+                    <th className="text-right pb-1.5 px-2">سعر الخروج</th>
+                    <th className="text-right pb-1.5 px-2">الربح</th>
+                    <th className="text-right pb-1.5 px-2">العمولة</th>
+                    <th className="text-right pb-1.5 px-2">وقت الإغلاق</th>
+                    <th className="text-right pb-1.5 px-2">التعليق</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {liveGroupedTrades.map((t) => (
+                    <tr key={t.positionId} className="border-b border-border/10">
+                      <td className="py-1 px-2">
+                        <Badge variant="outline" className={t.isOpen ? "border-sky-500/30 text-sky-300" : "border-zinc-500/30 text-zinc-400"}>
+                          {t.isOpen ? "مفتوحة" : "مغلقة"}
+                        </Badge>
+                      </td>
+                      <td className="py-1 px-2 font-semibold text-amber-100/90">{t.symbol}</td>
+                      <td className="py-1 px-2">
+                        <Badge variant="outline" className={t.direction === "BUY" ? "border-emerald-500/30 text-emerald-300" : "border-red-500/30 text-red-300"}>
+                          {t.direction === "BUY" ? "شراء" : t.direction === "SELL" ? "بيع" : t.direction}
+                        </Badge>
+                      </td>
+                      <td className="py-1 px-2 tabular-nums">{t.volume.toFixed(2)}</td>
+                      <td className="py-1 px-2 tabular-nums font-mono">{t.openPrice?.toFixed(2) ?? "—"}</td>
+                      <td className="py-1 px-2 tabular-nums font-mono">{t.closePrice?.toFixed(2) ?? "—"}</td>
+                      <td className={`py-1 px-2 tabular-nums font-mono font-semibold ${t.profit > 0 ? "text-emerald-400" : t.profit < 0 ? "text-red-400" : "text-zinc-400"}`}>
+                        {t.profit >= 0 ? "+" : ""}{t.profit.toFixed(2)}
+                      </td>
+                      <td className="py-1 px-2 tabular-nums text-zinc-400/70">{t.commission.toFixed(2)}</td>
+                      <td className="py-1 px-2 tabular-nums text-muted-foreground/60 text-[10px]">
+                        {t.closeTime ? fmtTs(t.closeTime) : t.openTime ? fmtTs(t.openTime) : "—"}
+                      </td>
+                      <td className="py-1 px-2 text-zinc-400/70 max-w-[160px] truncate">{t.comment || "—"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          {/* KING_GOLD filter shortcut */}
+          {liveGroupedTrades !== null && liveGroupedTrades.some((t) => t.comment?.startsWith("KING_GOLD")) && (
+            <div className="border-t border-border/15 pt-2">
+              <p className="text-[10px] text-amber-300/60 font-mono">
+                صفقات النظام KING_GOLD: {liveGroupedTrades.filter((t) => t.comment?.startsWith("KING_GOLD")).length}
+                {" — "}ربح: ${liveGroupedTrades.filter((t) => t.comment?.startsWith("KING_GOLD")).reduce((s, t) => s + t.profit, 0).toFixed(2)}
+              </p>
+            </div>
+          )}
+        </CardContent>
+      </Card>
 
       {/* ── Gold Analysis Journal ────────────────────────────────────────────── */}
       {canUseConvex && (goldSnapshots?.length ?? 0) > 0 && (
