@@ -307,6 +307,60 @@ export default function ReportsPage() {
     };
   }, [liveGroupedTrades, liveRawDeals]);
 
+  // ── Convex Archive — group raw deals by positionId (same logic as live) ──
+  // Convex stores type/entry as strings ("0","1"); position key is camelCase.
+  const convexGroupedTrades = useMemo(() => {
+    const deals = tradeHistoryDeals ?? [];
+    if (deals.length === 0) return [];
+    const map = new Map<string, typeof deals[number][]>();
+    for (const d of deals) {
+      if (!d.symbol) continue;
+      const key = d.positionId ?? d.dealTicket;
+      if (!map.has(key)) map.set(key, []);
+      map.get(key)!.push(d);
+    }
+    return [...map.entries()]
+      .map(([posId, group]) => {
+        const inD  = group.find((d) => d.entry === "0");
+        const outD = group.find((d) => d.entry === "1");
+        const profit     = group.reduce((s, d) => s + d.profit, 0);
+        const commission = group.reduce((s, d) => s + (d.commission ?? 0), 0);
+        const swap       = group.reduce((s, d) => s + (d.swap ?? 0), 0);
+        const t = inD?.type ?? group[0]?.type;
+        return {
+          positionId: posId,
+          symbol:     group[0].symbol,
+          direction:  t === "0" ? "BUY" : t === "1" ? "SELL" : (t ?? "?"),
+          volume:     inD?.volume ?? group[0].volume,
+          openPrice:  inD?.price  ?? null,
+          openTime:   inD?.time   ?? null,
+          closePrice: outD?.price ?? null,
+          closeTime:  outD?.time  ?? null,
+          profit,
+          commission,
+          swap,
+          net:    profit + commission + swap,
+          comment: outD?.comment ?? inD?.comment ?? "",
+          isOpen: !outD,
+        };
+      })
+      .sort((a, b) => (b.closeTime ?? b.openTime ?? 0) - (a.closeTime ?? a.openTime ?? 0));
+  }, [tradeHistoryDeals]);
+
+  const convexGroupedStats = useMemo(() => {
+    const closed = convexGroupedTrades.filter((t) => !t.isOpen);
+    return {
+      total:       convexGroupedTrades.length,
+      closedCount: closed.length,
+      openCount:   convexGroupedTrades.filter((t) => t.isOpen).length,
+      wins:        closed.filter((t) => t.profit > 0).length,
+      losses:      closed.filter((t) => t.profit < 0).length,
+      grossProfit: closed.filter((t) => t.profit > 0).reduce((s, t) => s + t.profit, 0),
+      grossLoss:   closed.filter((t) => t.profit < 0).reduce((s, t) => s + t.profit, 0),
+      netProfit:   closed.reduce((s, t) => s + t.net, 0),
+    };
+  }, [convexGroupedTrades]);
+
   async function fetchLiveHistory() {
     setLiveFetchBusy(true);
     setLiveFetchMsg(null);
@@ -624,15 +678,17 @@ export default function ReportsPage() {
             <span className="inline-flex items-center rounded border border-zinc-500/30 bg-zinc-500/10 px-2 py-0.5 text-[9px] font-medium text-zinc-400">أرشيف</span>
           </div>
           <p className="text-muted-foreground text-xs leading-relaxed">
-            يُعرض deals الخام المحفوظة في Convex بعد ضغط زر المزامنة — كل صفقة تظهر كـ IN + OUT منفصلين. للسجل الكامل المجمّع اضغط "جلب مباشر من MT5" في القسم أعلاه.
+            صفقات مجمّعة من deals الخام المحفوظة في Convex — يظهر كل position كصف واحد (IN + OUT مدموجان). يُحدَّث بالضغط على زر المزامنة أدناه.
           </p>
         </CardHeader>
         <CardContent className="space-y-4 px-2 pb-4 md:px-4">
-          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-            <StatCard label="صفقات نشطة (Convex)" value={String(liveStats?.openCount ?? summary?.activeCount ?? mt5Stats.activeCount)} />
-            <StatCard label="ربح/خسارة عائم" value={(summary?.floatingProfit ?? mt5Stats.floating).toFixed(2)} />
-            <StatCard label="deals محفوظة في Convex" value={String(summary?.historyCount ?? mt5Stats.historyCount)} />
-            <StatCard label="صافي (بيانات مباشرة)" value={liveStats ? `$${liveStats.netProfit.toFixed(2)}` : "اجلب مباشر أولاً"} />
+          <div className="grid gap-3 sm:grid-cols-3 xl:grid-cols-6">
+            <StatCard label="positions محفوظة" value={String(convexGroupedStats.total)} />
+            <StatCard label="مغلقة"             value={String(convexGroupedStats.closedCount)} />
+            <StatCard label="رابحة"              value={String(convexGroupedStats.wins)} />
+            <StatCard label="خاسرة"             value={String(convexGroupedStats.losses)} />
+            <StatCard label="إجمالي الربح"      value={`$${convexGroupedStats.grossProfit.toFixed(2)}`} />
+            <StatCard label="صافي Convex"       value={`$${convexGroupedStats.netProfit.toFixed(2)}`} />
           </div>
 
           <div className="space-y-3">
@@ -691,69 +747,58 @@ export default function ReportsPage() {
           </div>
 
           <div className="space-y-3">
-            <h4 className="font-semibold text-amber-100/90 text-sm">B) deals الخام من Convex — IN + OUT منفصلة (بعد المزامنة)</h4>
+            <h4 className="font-semibold text-amber-100/90 text-sm">B) سجل الصفقات المجمّعة — من Convex (بعد المزامنة)</h4>
             <div className="overflow-x-auto">
               {convexEmptyOrLoading(tradeHistoryDeals, false) ??
-                (historyFiltered.length === 0 ? (
+                (convexGroupedTrades.length === 0 ? (
                   <p className="text-muted-foreground px-2 py-4 text-sm">
                     لا يوجد سجل بعد — اضغط "سحب سجل الصفقات من MT5" في لوحة التحكم أعلاه.
                   </p>
                 ) : (
-                  <Table>
-                    <TableHeader>
-                      <TableRow className="border-amber-500/10 hover:bg-transparent">
-                        <TableHead className="text-foreground">الحالة</TableHead>
-                        <TableHead className="text-foreground">رقم الصفقة</TableHead>
-                        <TableHead className="text-foreground">الرمز</TableHead>
-                        <TableHead className="text-foreground">النوع</TableHead>
-                        <TableHead className="text-foreground">الدخول/الخروج</TableHead>
-                        <TableHead className="text-foreground">الحجم</TableHead>
-                        <TableHead className="text-foreground">السعر</TableHead>
-                        <TableHead className="text-foreground">الربح</TableHead>
-                        <TableHead className="text-foreground">العمولة</TableHead>
-                        <TableHead className="text-foreground">السواب</TableHead>
-                        <TableHead className="text-foreground">الصافي</TableHead>
-                        <TableHead className="text-foreground">الوقت</TableHead>
-                        <TableHead className="text-foreground">التعليق</TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {historyFiltered.map((row) => {
-                        const entry = mapEntry(row.entry);
-                        const net = row.profit + (row.commission ?? 0) + (row.swap ?? 0) + (row.fee ?? 0);
-                        return (
-                          <TableRow key={row._id} className="border-border/60">
-                            <TableCell>
-                              <Badge variant="outline" className="border-amber-500/30 text-amber-100/90">
-                                {entry === "خروج / مغلقة" ? "مغلقة" : entry}
-                              </Badge>
-                            </TableCell>
-                            <TableCell className="tabular-nums text-muted-foreground text-xs">{row.dealTicket}</TableCell>
-                            <TableCell className="font-medium text-amber-100/90 tabular-nums">{row.symbol}</TableCell>
-                            <TableCell>
-                              <Badge variant="outline">{mapDealType(row.type)}</Badge>
-                            </TableCell>
-                            <TableCell className="text-muted-foreground text-sm">{entry}</TableCell>
-                            <TableCell className="tabular-nums">{row.volume}</TableCell>
-                            <TableCell className="tabular-nums">{row.price}</TableCell>
-                            <TableCell>
-                              <Badge variant={row.profit >= 0 ? "outline" : "secondary"}>
-                                {row.profit >= 0 ? "رابحة" : "خاسرة"}
-                              </Badge>
-                              <span className="mr-2 tabular-nums">{row.profit.toFixed(2)}</span>
-                            </TableCell>
-                            <TableCell className="tabular-nums">{(row.commission ?? 0).toFixed(2)}</TableCell>
-                            <TableCell className="tabular-nums">{(row.swap ?? 0).toFixed(2)}</TableCell>
-                            <TableCell className="tabular-nums">{net.toFixed(2)}</TableCell>
-                            <TableCell className="whitespace-nowrap text-muted-foreground text-xs tabular-nums">
-                              {fmtTs(row.time)}
-                            </TableCell>
-                            <TableCell className="max-w-[220px] text-muted-foreground text-xs">{row.comment ?? "—"}</TableCell>
-                          </TableRow>
-                        );
-                      })}
-                    </TableBody>
-                  </Table>
+                  <table className="w-full text-xs">
+                    <thead>
+                      <tr className="border-b border-border/30 text-muted-foreground">
+                        <th className="text-right pb-1.5 px-2">الحالة</th>
+                        <th className="text-right pb-1.5 px-2">الرمز</th>
+                        <th className="text-right pb-1.5 px-2">الاتجاه</th>
+                        <th className="text-right pb-1.5 px-2">الحجم</th>
+                        <th className="text-right pb-1.5 px-2">سعر الدخول</th>
+                        <th className="text-right pb-1.5 px-2">سعر الخروج</th>
+                        <th className="text-right pb-1.5 px-2">الربح</th>
+                        <th className="text-right pb-1.5 px-2">العمولة</th>
+                        <th className="text-right pb-1.5 px-2">وقت الإغلاق</th>
+                        <th className="text-right pb-1.5 px-2">التعليق</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {convexGroupedTrades.map((t) => (
+                        <tr key={t.positionId} className="border-b border-border/10">
+                          <td className="py-1 px-2">
+                            <Badge variant="outline" className={t.isOpen ? "border-sky-500/30 text-sky-300" : "border-zinc-500/30 text-zinc-400"}>
+                              {t.isOpen ? "مفتوحة" : "مغلقة"}
+                            </Badge>
+                          </td>
+                          <td className="py-1 px-2 font-semibold text-amber-100/90">{t.symbol}</td>
+                          <td className="py-1 px-2">
+                            <Badge variant="outline" className={t.direction === "BUY" ? "border-emerald-500/30 text-emerald-300" : "border-red-500/30 text-red-300"}>
+                              {t.direction === "BUY" ? "شراء" : t.direction === "SELL" ? "بيع" : t.direction}
+                            </Badge>
+                          </td>
+                          <td className="py-1 px-2 tabular-nums">{t.volume.toFixed(2)}</td>
+                          <td className="py-1 px-2 tabular-nums font-mono">{t.openPrice?.toFixed(2) ?? "—"}</td>
+                          <td className="py-1 px-2 tabular-nums font-mono">{t.closePrice?.toFixed(2) ?? "—"}</td>
+                          <td className={`py-1 px-2 tabular-nums font-mono font-semibold ${t.profit > 0 ? "text-emerald-400" : t.profit < 0 ? "text-red-400" : "text-zinc-400"}`}>
+                            {t.profit >= 0 ? "+" : ""}{t.profit.toFixed(2)}
+                          </td>
+                          <td className="py-1 px-2 tabular-nums text-zinc-400/70">{t.commission.toFixed(2)}</td>
+                          <td className="py-1 px-2 tabular-nums text-muted-foreground/60 text-[10px]">
+                            {t.closeTime ? fmtTs(t.closeTime) : t.openTime ? fmtTs(t.openTime) : "—"}
+                          </td>
+                          <td className="py-1 px-2 text-zinc-400/70 max-w-[160px] truncate">{t.comment || "—"}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
                 ))}
             </div>
           </div>
