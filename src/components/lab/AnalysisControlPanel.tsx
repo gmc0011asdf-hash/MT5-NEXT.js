@@ -3413,9 +3413,19 @@ function TradePreviewPanel({
   // Tracks which planType the user last selected so we can re-select after preference change
   const lastSelectedPlanTypeRef = useRef<string | null>(null);
 
+  // Pending Order guard: LIMIT/STOP plans must not be sent to MT5 as MARKET.
+  // Pending Orders are not enabled in this stage — block MT5 execution entirely.
+  const PENDING_ORDER_TYPES = new Set<string>([
+    "BUY_LIMIT_PREVIEW", "SELL_LIMIT_PREVIEW",
+    "BUY_STOP_PREVIEW",  "SELL_STOP_PREVIEW",
+  ]);
+  const isEffectivePlanPendingType =
+    mode === "gold" && PENDING_ORDER_TYPES.has(effectivePreview.orderType ?? "");
+
   // Gold gate: زر يُفتح عند استيفاء الشروط الفنية — يستخدم effectivePreview
   const canOpenGoldModal =
     mode === "gold" &&
+    !isEffectivePlanPendingType &&        // Pending Orders blocked in this stage
     effectivePreview.allowed &&
     priceActionGuard.status !== "BLOCK" &&
     !settings.killSwitchEnabled &&
@@ -3456,6 +3466,7 @@ function TradePreviewPanel({
   // Gold gate: Hard Blocks — تمنع دائماً في STRICT و EXPERIMENTAL
   const goldHardBlockReasons: string[] = [];
   if (mode === "gold") {
+    if (isEffectivePlanPendingType)                                            goldHardBlockReasons.push("خطة Pending Order (LIMIT/STOP) — إرسال أوامر معلقة إلى MT5 غير مفعّل في هذه المرحلة");
     if (!effectivePreview.allowed)                                             goldHardBlockReasons.push(!selectedGoldPlan ? "لا توجد خطة صفقة صالحة — اختر خطة مهنية" : "الخطة المختارة محظورة");
     if (settings.killSwitchEnabled)                                            goldHardBlockReasons.push("Kill Switch مفعّل — التنفيذ موقوف");
     if (settings.executionMode === "READ_ONLY")                               goldHardBlockReasons.push("التنفيذ مغلق من الإعدادات");
@@ -3809,6 +3820,10 @@ function TradePreviewPanel({
 
     // ── Client-side precheck — Hard Blocks (both modes) ──────────────────────
     const hardBlockReasons: string[] = [];
+    // Pending Order guard — belt-and-suspenders (canOpenGoldModal already blocks)
+    if (PENDING_ORDER_TYPES.has(effectivePreview.orderType ?? "")) {
+      hardBlockReasons.push("خطة Pending Order (LIMIT/STOP) — إرسال أوامر معلقة إلى MT5 غير مفعّل في هذه المرحلة");
+    }
     if (!effectivePreview.allowed)                                          hardBlockReasons.push(selectedGoldPlan ? "الخطة المختارة محظورة" : "لا توجد خطة صفقة صالحة");
     if (settings.killSwitchEnabled)                                         hardBlockReasons.push("Kill Switch مفعّل — التنفيذ موقوف");
     if (settings.executionMode === "READ_ONLY")                             hardBlockReasons.push("وضع التنفيذ مقيّد — التنفيذ مغلق");
@@ -4559,6 +4574,20 @@ function TradePreviewPanel({
               ) : (
                 <div className="rounded-md border border-amber-500/15 bg-amber-500/5 px-2.5 py-1.5 text-[10px] text-amber-300/60">
                   ⚠ لم يتم اختيار خطة مهنية — هذه خطة تحليل أولية
+                </div>
+              )}
+
+              {/* Pending Order notice — shown when plan requires LIMIT/STOP entry */}
+              {isEffectivePlanPendingType && (
+                <div className="rounded-md border border-orange-500/30 bg-orange-500/8 px-3 py-2.5 space-y-1">
+                  <p className="text-orange-300/90 text-[11px] font-semibold">
+                    ⚠ هذه خطة Pending Order ({ORDER_TYPE_LABEL[effectivePreview.orderType as keyof typeof ORDER_TYPE_LABEL] ?? effectivePreview.orderType})
+                  </p>
+                  <p className="text-orange-300/60 text-[10px]">
+                    إرسال أوامر LIMIT/STOP إلى MT5 غير مفعّل في هذه المرحلة.
+                    يمكن حفظها كخطة مستقبلية عبر قسم الخطط المعلّقة أدناه.
+                    للتنفيذ الفوري اختر خطة MARKET (Balanced أو Aggressive).
+                  </p>
                 </div>
               )}
 
