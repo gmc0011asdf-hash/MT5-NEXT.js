@@ -8,6 +8,7 @@
  */
 
 import { AnalysisControlPanel } from "@/components/lab/AnalysisControlPanel";
+import { GoldStatusCard }       from "@/components/lab/GoldStatusCard";
 
 export default function LabPage() {
   return (
