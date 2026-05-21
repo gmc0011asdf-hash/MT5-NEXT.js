@@ -3391,6 +3391,25 @@ function TradePreviewPanel({
     experimentalRRFloor?:   number;
     rrStatus?:              "pass" | "soft_warn" | "hard_reject";
   } | null>(null);
+
+  // Pre-flight SL/TP validation result — shown as debug after validation runs
+  const [stopsValidationDebug, setStopsValidationDebug] = useState<{
+    bid:            number;
+    ask:            number;
+    refPrice:       number;
+    refPriceLabel:  "ASK" | "BID";
+    stopsLevel:     number;
+    minStopDist:    number;
+    sl:             number;
+    tp:             number;
+    slDistance:     number;
+    tpDistance:     number;
+    slOk:           boolean;
+    tpOk:           boolean;
+    validationResult: "pass" | "fail";
+    errors:         string[];
+  } | null>(null);
+
   // Tracks which planType the user last selected so we can re-select after preference change
   const lastSelectedPlanTypeRef = useRef<string | null>(null);
 
@@ -3833,6 +3852,105 @@ function TradePreviewPanel({
     // EXPERIMENTAL: soft blocks are warnings — execution proceeds
     setGoldPrecheckIsWarning(softBlockReasons.length > 0);
     setGoldPrecheckFailed(softBlockReasons.length > 0 ? softBlockReasons : []);
+
+    // ── Pre-flight: validate SL/TP vs live market price (Hard Block) ─────────
+    // MT5 measures SL/TP distance from current ASK (BUY) or BID (SELL).
+    // If the price moved since analysis, MT5 returns INVALID_STOPS.
+    // We catch this BEFORE sending so the user sees a clear Arabic message.
+    setGoldOrdering(true);  // lock button immediately during async preflight
+    setGoldSendStage("جارٍ التحقق من صلاحية SL/TP مع السعر الحالي...");
+    setStopsValidationDebug(null);
+
+    const _pfSymbol = result.symbol ?? "XAUUSD";
+    const _pfDir    = effectivePreview.direction === "bullish" ? "BUY" : "SELL";
+    const _pfSL     = effectivePreview.stopLoss  as number;
+    const _pfTP     = effectivePreview.takeProfit as number;
+
+    // 1. Fetch fresh tick — fall back to analysis-time tick if snapshot fails
+    let _freshBid: number | null = result.currentBid ?? null;
+    let _freshAsk: number | null = result.currentAsk ?? null;
+    try {
+      const _snapRes = await fetch("/api/mt5-readonly/snapshot", { cache: "no-store" });
+      if (_snapRes.ok) {
+        const _snapData = (await _snapRes.json()) as {
+          ok: boolean;
+          snapshot?: { ticks?: Array<{ symbol: string; bid?: number; ask?: number }> };
+        };
+        const _t = _snapData.snapshot?.ticks?.find((t) => t.symbol === _pfSymbol);
+        if (_t?.bid && _t?.ask) { _freshBid = _t.bid; _freshAsk = _t.ask; }
+      }
+    } catch { /* fall back to analysis-time prices */ }
+
+    if (!_freshBid || !_freshAsk) {
+      setGoldSendStage(null);
+      setGoldOrdering(false);
+      setGoldPrecheckIsWarning(false);
+      setGoldPrecheckFailed(["لا يمكن جلب السعر الحالي من MT5 — تحقق من الاتصال"]);
+      return;
+    }
+
+    // 2. Fetch stops_level + point size for the symbol (best-effort)
+    let _stopsLvlPts = 0;
+    let _pointSz     = 0.01; // XAUUSD safe default
+    try {
+      const _symRes = await fetch(
+        `/api/mt5-readonly/symbols?visibleOnly=false&search=${encodeURIComponent(_pfSymbol)}`,
+        { cache: "no-store" },
+      );
+      if (_symRes.ok) {
+        const _symData = (await _symRes.json()) as { symbols?: Array<Record<string, unknown>> };
+        const _sym     = (_symData.symbols ?? []).find((s) => s["name"] === _pfSymbol);
+        if (_sym) {
+          if (typeof _sym["stops_level"] === "number") _stopsLvlPts = _sym["stops_level"] as number;
+          if (typeof _sym["point"]       === "number" && (_sym["point"] as number) > 0) _pointSz = _sym["point"] as number;
+        }
+      }
+    } catch { /* use defaults */ }
+
+    // 3. Validate SL/TP against reference price
+    const _refPx    = _pfDir === "BUY" ? _freshAsk : _freshBid;
+    const _refLabel = _pfDir === "BUY" ? "ASK" : "BID";
+    const _minPts   = _stopsLvlPts > 0 ? _stopsLvlPts : 10; // 10pt safe floor if stops_level unknown
+    const _minDist  = parseFloat((_minPts * _pointSz).toFixed(5));
+
+    const _slDist = parseFloat(Math.abs(_refPx - _pfSL).toFixed(5));
+    const _tpDist = parseFloat(Math.abs(_refPx - _pfTP).toFixed(5));
+    const _slSide = _pfDir === "BUY" ? _pfSL < _refPx : _pfSL > _refPx;
+    const _tpSide = _pfDir === "BUY" ? _pfTP > _refPx : _pfTP < _refPx;
+    const _slOk   = _slSide && _slDist >= _minDist;
+    const _tpOk   = _tpSide && _tpDist >= _minDist;
+
+    const _pfErrors: string[] = [];
+    if (!_slSide)            _pfErrors.push(`SL (${_pfSL.toFixed(5)}) على الجانب الخاطئ من ${_refLabel} (${_refPx.toFixed(5)})`);
+    else if (_slDist < _minDist) _pfErrors.push(`مسافة SL ${_slDist.toFixed(5)} < الحد الأدنى ${_minDist.toFixed(5)} (${_minPts} نقطة)`);
+    if (!_tpSide)            _pfErrors.push(`TP (${_pfTP.toFixed(5)}) على الجانب الخاطئ من ${_refLabel} (${_refPx.toFixed(5)})`);
+    else if (_tpDist < _minDist) _pfErrors.push(`مسافة TP ${_tpDist.toFixed(5)} < الحد الأدنى ${_minDist.toFixed(5)} (${_minPts} نقطة)`);
+
+    setStopsValidationDebug({
+      bid: _freshBid, ask: _freshAsk, refPrice: _refPx, refPriceLabel: _refLabel,
+      stopsLevel: _minPts, minStopDist: _minDist,
+      sl: _pfSL, tp: _pfTP,
+      slDistance: _slDist, tpDistance: _tpDist,
+      slOk: _slOk, tpOk: _tpOk,
+      validationResult: _pfErrors.length === 0 ? "pass" : "fail",
+      errors: _pfErrors,
+    });
+
+    if (_pfErrors.length > 0) {
+      setGoldSendStage(null);
+      setGoldOrdering(false);
+      setGoldPrecheckIsWarning(false);
+      setGoldPrecheckFailed([
+        "Hard Block — SL/TP غير صالح مع سعر السوق الحالي:",
+        `${_refLabel}: ${_refPx.toFixed(5)} | stops_level: ${_minPts} نقطة | minDist: ${_minDist.toFixed(5)}`,
+        ..._pfErrors,
+      ]);
+      return;
+    }
+
+    // Pre-flight passed ✓
+    setGoldSendStage(null);
+    // ─────────────────────────────────────────────────────────────────────────
 
     // ── Generate execution group ID ──────────────────────────────────────
     const _ts      = new Date();
@@ -5405,6 +5523,39 @@ function TradePreviewPanel({
                   <p className="text-[10px] text-red-300/60 pt-1">
                     تحقق: MT5_DEMO_EXECUTION_ENABLED=true في .env.local ثم أعد تشغيل الخادم
                   </p>
+                )}
+              </div>
+            )}
+
+            {/* تشخيص SL/TP — يظهر بعد pre-flight validation */}
+            {stopsValidationDebug != null && (
+              <div className={`rounded-md border px-3 py-2 space-y-1.5 text-[10px] font-mono ${
+                stopsValidationDebug.validationResult === "pass"
+                  ? "border-emerald-500/20 bg-emerald-500/5"
+                  : "border-red-500/20 bg-red-500/5"
+              }`}>
+                <p className={`text-[9px] uppercase tracking-wider font-semibold ${
+                  stopsValidationDebug.validationResult === "pass" ? "text-emerald-400/70" : "text-red-400/70"
+                }`}>
+                  {stopsValidationDebug.validationResult === "pass" ? "✓ فحص SL/TP — صالح" : "✗ فحص SL/TP — مرفوض"}
+                </p>
+                <div className="grid grid-cols-2 gap-x-4 gap-y-0.5 text-zinc-400/70">
+                  <span>BID:</span><span className="text-zinc-300/80">{stopsValidationDebug.bid.toFixed(5)}</span>
+                  <span>ASK:</span><span className="text-zinc-300/80">{stopsValidationDebug.ask.toFixed(5)}</span>
+                  <span>مرجع ({stopsValidationDebug.refPriceLabel}):</span><span className="text-amber-300/80">{stopsValidationDebug.refPrice.toFixed(5)}</span>
+                  <span>stops_level:</span><span className="text-zinc-300/70">{stopsValidationDebug.stopsLevel} نقطة</span>
+                  <span>minDist:</span><span className="text-zinc-300/70">{stopsValidationDebug.minStopDist.toFixed(5)}</span>
+                  <span>SL:</span><span className={stopsValidationDebug.slOk ? "text-emerald-400/80" : "text-red-400/80"}>{stopsValidationDebug.sl.toFixed(5)}</span>
+                  <span>SL dist:</span><span className={stopsValidationDebug.slOk ? "text-emerald-400/70" : "text-red-400/70"}>{stopsValidationDebug.slDistance.toFixed(5)} {stopsValidationDebug.slOk ? "✓" : "✗"}</span>
+                  <span>TP:</span><span className={stopsValidationDebug.tpOk ? "text-emerald-400/80" : "text-red-400/80"}>{stopsValidationDebug.tp.toFixed(5)}</span>
+                  <span>TP dist:</span><span className={stopsValidationDebug.tpOk ? "text-emerald-400/70" : "text-red-400/70"}>{stopsValidationDebug.tpDistance.toFixed(5)} {stopsValidationDebug.tpOk ? "✓" : "✗"}</span>
+                </div>
+                {stopsValidationDebug.errors.length > 0 && (
+                  <div className="space-y-0.5 pt-1 border-t border-red-500/10">
+                    {stopsValidationDebug.errors.map((e, i) => (
+                      <p key={i} className="text-red-400/70">• {e}</p>
+                    ))}
+                  </div>
                 )}
               </div>
             )}
