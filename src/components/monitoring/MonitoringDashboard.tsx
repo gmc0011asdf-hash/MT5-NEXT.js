@@ -61,13 +61,13 @@ export function MonitoringDashboard() {
         <h2 className="page-title">لوحة المراقبة</h2>
         <p className="label-secondary mt-1">
           {snap.phase === "live"
-            ? "بيانات من واجهة البرمجة (قراءة فقط)."
+            ? "بيانات من واجهة البرمجة — التنفيذ محكوم بالقواعد."
             : snap.phase === "mock"
               ? "وضع العرض التجريبي — تعذّر تحميل البيانات الحية أو لم يُضبط العنوان."
               : "جاري التحميل…"}
         </p>
         <p className="mt-1 text-muted-foreground text-xs">
-          قراءة فقط — لا توجد أوامر تنفيذ من هذه الواجهة.
+          التنفيذ يتم فقط بعد موافقة القواعد واللجان.
         </p>
       </div>
 
@@ -139,7 +139,7 @@ export function MonitoringDashboard() {
               <Card className={institutionalCardClass("p-4")}>
                 <CardHeader className="p-0 pb-2">
                   <CardTitle className="card-title-inst">مختبر — آخر القرارات</CardTitle>
-                  <p className="text-muted-foreground text-xs">قراءة فقط.</p>
+                  <p className="text-muted-foreground text-xs">للتحليل والمراقبة.</p>
                 </CardHeader>
                 <CardContent className="p-0">
                   {snap.phase === "live" && snap.live.lab.last_decisions?.length ? (

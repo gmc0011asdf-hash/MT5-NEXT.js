@@ -438,4 +438,86 @@ export default defineSchema({
     .index("by_user_reviewedAt", ["userId", "reviewedAt"])
     .index("by_finalImpact",     ["finalImpact"])
     .index("by_finalDecision",   ["finalDecision"]),
+
+  // ── Gold Execution Journal ────────────────────────────────────────────────
+
+  goldAnalysisSnapshots: defineTable({
+    userId:               v.string(),
+    symbol:               v.string(),
+    timeframe:            v.optional(v.string()),
+    direction:            v.optional(v.string()),
+    analysisStatus:       v.optional(v.string()),
+    grade:                v.optional(v.string()),
+    probability:          v.optional(v.number()),
+    hardBlockCount:       v.optional(v.number()),
+    softBlockCount:       v.optional(v.number()),
+    targetPreference:     v.optional(v.string()),
+    selectedPlanName:     v.optional(v.string()),
+    entry:                v.optional(v.number()),
+    stopLoss:             v.optional(v.number()),
+    takeProfit:           v.optional(v.number()),
+    lot:                  v.optional(v.number()),
+    riskUsd:              v.optional(v.number()),
+    rrRatio:              v.optional(v.number()),
+    actionPlanType:       v.optional(v.string()),
+    executionPolicy:      v.optional(v.string()),
+    recommendationStatus: v.optional(v.string()),
+    profile:              v.optional(v.string()),
+    reasonSummary:        v.optional(v.string()),
+    wasExecuted:          v.optional(v.boolean()),
+    createdAt:            v.number(),
+    source:               v.string(),
+  })
+    .index("by_userId",            ["userId"])
+    .index("by_userId_createdAt",  ["userId", "createdAt"])
+    .index("by_userId_symbol",     ["userId", "symbol"]),
+
+  goldExecutionGroups: defineTable({
+    userId:              v.string(),
+    groupId:             v.string(),
+    analysisSnapshotId:  v.optional(v.id("goldAnalysisSnapshots")),
+    symbol:              v.string(),
+    direction:           v.optional(v.string()),
+    targetPreference:    v.optional(v.string()),
+    selectedPlanName:    v.optional(v.string()),
+    profile:             v.optional(v.string()),
+    timeframe:           v.optional(v.string()),
+    totalRiskUsd:        v.optional(v.number()),
+    totalLot:            v.optional(v.number()),
+    ordersRequested:     v.number(),
+    ordersSent:          v.number(),
+    tickets:             v.optional(v.array(v.number())),
+    partialSuccess:      v.optional(v.boolean()),
+    createdAt:           v.number(),
+    source:              v.string(),
+  })
+    .index("by_userId",            ["userId"])
+    .index("by_userId_createdAt",  ["userId", "createdAt"])
+    .index("by_groupId",           ["groupId"]),
+
+  goldPendingPlans: defineTable({
+    userId:               v.string(),
+    analysisSnapshotId:   v.optional(v.id("goldAnalysisSnapshots")),
+    pendingType:          v.string(),  // SELL_LIMIT | BUY_LIMIT | SELL_STOP | BUY_STOP
+    status:               v.string(),  // WATCHING | READY_TO_SEND | CANCELED | EXPIRED
+    symbol:               v.string(),
+    timeframe:            v.optional(v.string()),
+    direction:            v.optional(v.string()),
+    triggerPrice:         v.number(),
+    stopLoss:             v.number(),
+    takeProfit1:          v.optional(v.number()),
+    takeProfit2:          v.optional(v.number()),
+    takeProfit3:          v.optional(v.number()),
+    lot:                  v.optional(v.number()),
+    riskUsd:              v.optional(v.number()),
+    conditionText:        v.optional(v.string()),
+    reason:               v.optional(v.string()),
+    targetPreference:     v.optional(v.string()),
+    expiryTime:           v.optional(v.number()),
+    createdAt:            v.number(),
+    source:               v.string(),
+  })
+    .index("by_userId",            ["userId"])
+    .index("by_userId_status",     ["userId", "status"])
+    .index("by_userId_createdAt",  ["userId", "createdAt"]),
 });

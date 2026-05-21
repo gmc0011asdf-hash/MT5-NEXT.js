@@ -7,6 +7,7 @@ import {
   Database,
   FileText,
   FlaskConical,
+  Gem,
   Globe,
   HeartPulse,
   LayoutDashboard,
@@ -48,11 +49,20 @@ export const NAV_GROUPS: NavGroup[] = [
     ],
   },
   {
+    id: "gold",
+    title: "منصة الذهب",
+    icon: Gem,
+    items: [
+      { label: "Gold Command Center", href: "/gold",              icon: Gem },
+      { label: "Gold Strategy Lab",   href: "/gold/strategy-lab", icon: FlaskConical },
+    ],
+  },
+  {
     id: "analysis",
     title: "التحليل والمختبر",
     icon: FlaskConical,
     items: [
-      { label: "المختبر", href: "/lab/mt5", icon: FlaskConical },
+      { label: "MT5 General Lab", href: "/lab/mt5", icon: FlaskConical },
     ],
   },
   {
@@ -81,7 +91,9 @@ export const NAV_GROUPS: NavGroup[] = [
 // Legacy flat list kept for any existing consumers
 export const NAV_ITEMS: NavItem[] = [
   { label: "لوحة التحكم", href: "/dashboard", icon: LayoutDashboard },
-  { label: "المختبر", href: "/lab/mt5", icon: FlaskConical },
+  { label: "Gold Command Center", href: "/gold",              icon: Gem },
+  { label: "Gold Strategy Lab",   href: "/gold/strategy-lab", icon: FlaskConical },
+  { label: "MT5 General Lab",     href: "/lab/mt5",           icon: FlaskConical },
   { label: "سجل القرارات", href: "/decision-journal", icon: BookOpen },
   { label: "التقارير", href: "/reports", icon: FileText },
   { label: "صحة النظام", href: "/system-health", icon: HeartPulse },
@@ -102,8 +114,15 @@ export const NAV_SECTIONS: NavSection[] = [
     items: [{ label: "لوحة التحكم", href: "/dashboard", icon: LayoutDashboard }],
   },
   {
-    title: "التداول والتحليل",
-    items: [{ label: "المختبر", href: "/lab/mt5", icon: FlaskConical }],
+    title: "منصة الذهب",
+    items: [
+      { label: "Gold Command Center", href: "/gold",              icon: Gem },
+      { label: "Gold Strategy Lab",   href: "/gold/strategy-lab", icon: FlaskConical },
+    ],
+  },
+  {
+    title: "التحليل والمختبر",
+    items: [{ label: "MT5 General Lab", href: "/lab/mt5", icon: FlaskConical }],
   },
   {
     title: "التقارير والاختبار",

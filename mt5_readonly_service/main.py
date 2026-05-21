@@ -1016,6 +1016,13 @@ class DemoOrderRequest(BaseModel):
     executionEnabled:           bool = False   # contract value — remains False
     manualConfirmation:         bool = False   # must be True from explicit user action
     manualLot:                  float | None = None  # A26.5: user override for estimatedLot
+    # Multi-target split execution (optional)
+    comment_override: str | None = None  # overrides default comment (max 31 chars for MT5)
+    targetLabel:      str | None = None  # "TP1" | "TP2" | "TP3"
+    groupId:          str | None = None  # execution group identifier
+    # Execution policy — affects RR floor
+    executionPolicy:  str | None = None  # "STRICT" | "EXPERIMENTAL"
+    minRequiredRR:    float | None = None  # user's configured minRewardRiskRatio (default 1.5)
 
 
 def _validate_demo_order(req: DemoOrderRequest) -> str | None:
@@ -1043,9 +1050,29 @@ def _validate_demo_order(req: DemoOrderRequest) -> str | None:
     # ── Order type ────────────────────────────────────────────────────────────
     if req.orderType not in _DEMO_ORDER_TYPE_MAP:
         return f"orderType غير مدعوم: {req.orderType}"
-    # ── RR ────────────────────────────────────────────────────────────────────
-    if req.rrRatio is not None and req.rrRatio < 1.5:
-        return f"rrRatio {req.rrRatio:.2f} أقل من الحد الأدنى 1.5"
+    # ── RR — context-aware floor ──────────────────────────────────────────────
+    if req.rrRatio is not None:
+        policy = (req.executionPolicy or "STRICT").upper()
+        label  = (req.targetLabel or "").upper()
+
+        if policy == "EXPERIMENTAL":
+            # Lower floors per target label in experimental mode
+            if label == "TP1":
+                rr_floor = 0.50
+            elif label == "TP3":
+                rr_floor = 1.00
+            else:  # TP2 or single order
+                rr_floor = 0.80
+        else:
+            # STRICT: use client-provided minRequiredRR or 1.5 hard floor
+            rr_floor = float(req.minRequiredRR) if req.minRequiredRR is not None else 1.5
+
+        if req.rrRatio < rr_floor:
+            return (
+                f"rrRatio {req.rrRatio:.2f} أقل من الحد الأدنى "
+                f"{rr_floor:.2f} ({policy}"
+                + (f" — {label}" if label else "") + ")"
+            )
     # ── SL/TP direction sanity ────────────────────────────────────────────────
     is_buy = "BUY" in req.orderType
     if is_buy:
@@ -1131,7 +1158,8 @@ def demo_order_send(payload: DemoOrderRequest) -> JSONResponse:
             content={
                 "ok": False,
                 "accepted": False,
-                "error": "Demo execution disabled — set MT5_DEMO_EXECUTION_ENABLED=1",
+                "errorCode": "PYTHON_MT5_EXECUTION_ENV_DISABLED",
+                "error": "Demo execution disabled — set MT5_DEMO_EXECUTION_ENABLED=1 in Python process environment",
                 "demoOnly": True,
             },
         )
@@ -1141,7 +1169,7 @@ def demo_order_send(payload: DemoOrderRequest) -> JSONResponse:
     if val_err:
         return Utf8JsonResponse(
             status_code=400,
-            content={"ok": False, "accepted": False, "error": val_err, "demoOnly": True},
+            content={"ok": False, "accepted": False, "errorCode": "VALIDATION_ERROR", "error": val_err, "demoOnly": True},
         )
 
     # ── Gate 3: MT5 initialise (no read-only policy) ──────────────────────────
@@ -1149,7 +1177,7 @@ def demo_order_send(payload: DemoOrderRequest) -> JSONResponse:
     if not ok:
         return Utf8JsonResponse(
             status_code=503,
-            content={"ok": False, "accepted": False, "error": err or "MT5 غير متاح", "demoOnly": True},
+            content={"ok": False, "accepted": False, "errorCode": "MT5_INIT_FAILED", "error": err or "MT5 غير متاح", "demoOnly": True},
         )
 
     try:
@@ -1275,7 +1303,7 @@ def demo_order_send(payload: DemoOrderRequest) -> JSONResponse:
             "tp":        float(payload.takeProfit),     # type: ignore[arg-type]
             "deviation": 20,
             "magic":     26200,        # A26.2 magic number
-            "comment":   "KING_MT5_DEMO_A26_2",
+            "comment":   (payload.comment_override or "KING_MT5_DEMO_A26_2")[:31],
             "type_time": mt5.ORDER_TIME_GTC,
         }
 
@@ -1324,8 +1352,15 @@ def demo_order_send(payload: DemoOrderRequest) -> JSONResponse:
                 "accepted":           accepted,
                 "ticket":             int(mt5_result.order) if accepted else None,
                 "retcode":            int(mt5_result.retcode),
+                "mt5Retcode":         int(mt5_result.retcode),
                 "retcodeText":        _retcode_text(int(mt5_result.retcode)),
                 "message":            getattr(mt5_result, "comment", ""),
+                "mt5Comment":         getattr(mt5_result, "comment", ""),
+                # Top-level request echo (for client verification)
+                "requestedVolume":    exec_lot,
+                "requestedPrice":     round(exec_price, 5),
+                "requestedSL":        round(float(payload.stopLoss), 5),       # type: ignore[arg-type]
+                "requestedTP":        round(float(payload.takeProfit), 5),     # type: ignore[arg-type]
                 "fillingModeUsed":    _filling_mode_name(filling_mode_used),
                 "fillingModesTried":  [_filling_mode_name(m) for m in filling_modes_tried],
                 "symbolFillingMode":  symbol_filling_mask,

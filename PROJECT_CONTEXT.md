@@ -3,7 +3,7 @@
 
 > **⚠️ هذا الملف يجب أن يُقرأ قبل أي تنفيذ في هذا المشروع.**  
 > أي وكيل أو مطور يبدأ يجب أن يقرأ هذا الملف أولاً.  
-> آخر تحديث: 2026-05-04
+> آخر تحديث: 2026-05-17 (تحديث ما بعد المراجعة الأمنية - بدء مرحلة Fix-0)
 
 ---
 
@@ -58,8 +58,23 @@ Institutional-grade analytical trading system — informational analysis only.
 | A10 | Read-only Queries — 6 queries | ✅ منجز |
 | A11 | UI → Convex — ربط الصفحة بـ useQuery | ✅ منجز |
 | DOCS-1 | Markdown Cleanup Plan | ✅ منجز |
-| DOCS-2 | Reorganize docs + PROJECT_CONTEXT + Skills | ✅ هذه المرحلة |
+| DOCS-2 | Reorganize docs + PROJECT_CONTEXT + Skills | ✅ منجز |
 | Convex AI | تثبيت Convex AI Skills | ✅ منجز |
+
+---
+
+## 4.5. الحالة الأمنية وخطة الإصلاح (Security & Fixes Roadmap)
+بناءً على المراجعة الأمنية والمعمارية الأخيرة، المشروع في حالة **Read-only Foundation** ممتازة، لكنه يحتاج إلى إصلاحات تنظيمية وأمنية عاجلة قبل المضي قدماً:
+
+- **الخطورة P0:** غياب المصادقة (Authentication) عن مسارات البروكسي في `api/mt5-readonly`.
+- **الخطورة P1:** الحاجة إلى عزل البيانات في جداول Convex باستخدام `userId` (مثل `mt5MarketTicks`).
+- **المخاطر التشغيلية:** نمو غير محدود للجداول (Unbounded Growth) يتطلب وظائف تنظيف مجدولة (Cron Jobs).
+
+**المراحل الإصلاحية الحالية (يجب تنفيذها بالترتيب وبموافقة مسبقة):**
+- [✅] **Fix-0:** إعداد البيئة وتوثيق `.env.local.example` وتحديث السياق.
+- [⏳] **Fix-1:** تأمين مسارات الـ Proxy بـ Clerk Auth وعزل بيانات Convex بـ userId.
+- [⏳] **Fix-2:** تحسين قاعدة البيانات عبر إضافة وظائف تنظيف دورية (Cron Jobs).
+- [⏳] **Fix-3:** استكمال واجهات الـ Frontend الناقصة وتنظيف المشاكل البصرية الطفيفة.
 
 ---
 

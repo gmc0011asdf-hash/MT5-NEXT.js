@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useAction, useMutation, useQuery } from "convex/react";
 import { useConvexAuth } from "convex/react";
 import { api } from "../../../../convex/_generated/api";
@@ -22,7 +22,7 @@ interface ServiceCard {
 }
 
 const SERVICES: ServiceCard[] = [
-  { name: "MT5 Read-only Bridge",  nameAr: "جسر MT5 (قراءة فقط)",  status: "healthy",      note: "متصل — وضع القراءة فقط. لا يُنفّذ تداول." },
+  { name: "MT5 Execution Bridge",  nameAr: "جسر MT5 للتنفيذ المحكوم",  status: "healthy",      note: "متصل — تنفيذ MT5 محكوم بالقواعد." },
   { name: "OKX Connector",         nameAr: "موصّل OKX",              status: "placeholder",  note: "غير مفعّل — عنصر نائب للمرحلة القادمة." },
   { name: "Convex Database",       nameAr: "قاعدة بيانات Convex",    status: "healthy",      note: "متصل — يعمل بشكل طبيعي." },
   { name: "Clerk Auth",            nameAr: "مصادقة Clerk",           status: "healthy",      note: "مفعّل — نظام المصادقة يعمل." },
@@ -560,6 +560,198 @@ function NewsPanel() {
   );
 }
 
+// ─── Local Runtime Diagnostics ───────────────────────────────────────────────
+
+type RuntimeInfo = {
+  mt5ServiceUrl:    string;
+  executionEnabled: boolean;
+  pythonHealth:     "ok" | "unreachable" | "error";
+  mt5Connected:     boolean;
+  timestamp:        number;
+};
+
+type ConnectionStatus = {
+  connected:    boolean;
+  balance:      number | null;
+  equity:       number | null;
+  free_margin:  number | null;
+  account_login:number | null;
+  server:       string | null;
+  currency:     string | null;
+  error?:       string;
+};
+
+function RuntimeDiagnosticsPanel() {
+  const [info,   setInfo]   = useState<RuntimeInfo | null>(null);
+  const [conn,   setConn]   = useState<ConnectionStatus | null>(null);
+  const [execPolicy, setExecPolicy] = useState<string>("STRICT");
+  const [loading, setLoading] = useState(false);
+  const [error,   setError]   = useState<string | null>(null);
+
+  // Read execution policy from localStorage (client only)
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem("mt5-demo-exec-settings-v1");
+      if (raw) {
+        const s = JSON.parse(raw) as Record<string, unknown>;
+        setExecPolicy(typeof s.executionPolicy === "string" ? s.executionPolicy : "STRICT");
+      }
+    } catch { /* ignore */ }
+  }, []);
+
+  async function runChecks() {
+    setLoading(true);
+    setError(null);
+    try {
+      const [infoRes, connRes] = await Promise.all([
+        fetch("/api/runtime/info",                         { cache: "no-store" }),
+        fetch("/api/mt5-readonly/connection-status",       { cache: "no-store" }),
+      ]);
+      setInfo((await infoRes.json())  as RuntimeInfo);
+      setConn((await connRes.json())  as ConnectionStatus);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "فشل الاتصال");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  const healthColor = (h: RuntimeInfo["pythonHealth"] | undefined) =>
+    h === "ok" ? "text-emerald-300" : h === "error" ? "text-amber-300" : "text-red-300";
+
+  const boolBadge = (v: boolean | undefined, trueLabel = "نعم ✓", falseLabel = "لا ✗") => (
+    <span className={`font-semibold ${v ? "text-emerald-300" : "text-red-300"}`}>
+      {v ? trueLabel : falseLabel}
+    </span>
+  );
+
+  return (
+    <div className="rounded-xl border border-sky-500/20 bg-sky-500/5 p-5 space-y-4" dir="rtl">
+      <div className="flex items-center justify-between gap-3">
+        <div>
+          <p className="font-semibold text-foreground">تشخيص التشغيل المحلي — Local Runtime Diagnostics</p>
+          <p className="text-xs text-muted-foreground mt-0.5">
+            فحص اتصال Python Bridge + Next.js + إعدادات التنفيذ — قراءة فقط
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={() => void runChecks()}
+          disabled={loading}
+          className={`inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-sm font-medium transition-colors ${
+            loading
+              ? "border-border text-muted-foreground cursor-not-allowed"
+              : "border-sky-500/40 bg-sky-500/10 text-sky-300 hover:bg-sky-500/20 cursor-pointer"
+          }`}
+        >
+          <RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />
+          {loading ? "جارٍ الفحص…" : "فحص الاتصال"}
+        </button>
+      </div>
+
+      {error && (
+        <div className="rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-300">
+          خطأ: {error}
+        </div>
+      )}
+
+      {/* Results grid */}
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+
+        {/* Python Bridge */}
+        <div className="rounded-lg border border-border bg-card/50 p-3 space-y-2">
+          <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">Python MT5 Bridge</p>
+          <div className="space-y-1 text-xs">
+            <div className="flex justify-between">
+              <span className="text-muted-foreground">MT5_SERVICE_URL</span>
+              <span className="font-mono text-foreground/80 text-[10px]">{info?.mt5ServiceUrl ?? "—"}</span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-muted-foreground">Python Bridge Health</span>
+              <span className={`font-semibold ${healthColor(info?.pythonHealth)}`}>
+                {info?.pythonHealth ?? "—"}
+              </span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-muted-foreground">MT5 متصل (Python)</span>
+              {info ? boolBadge(info.mt5Connected, "متصل ✓", "غير متصل ✗") : <span className="text-muted-foreground">—</span>}
+            </div>
+          </div>
+        </div>
+
+        {/* Next.js → Python */}
+        <div className="rounded-lg border border-border bg-card/50 p-3 space-y-2">
+          <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">Next.js → Python Proxy</p>
+          <div className="space-y-1 text-xs">
+            <div className="flex justify-between">
+              <span className="text-muted-foreground">MT5 متصل (Next)</span>
+              {conn ? boolBadge(conn.connected, "متصل ✓", "غير متصل ✗") : <span className="text-muted-foreground">—</span>}
+            </div>
+            {conn?.connected && (
+              <>
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">حساب</span>
+                  <span className="font-mono text-foreground/80">{conn.account_login ?? "—"}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">الرصيد</span>
+                  <span className="font-mono text-foreground/80">
+                    {conn.balance != null ? `${conn.balance.toFixed(2)} ${conn.currency ?? ""}` : "—"}
+                  </span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">حقوق الملكية</span>
+                  <span className="font-mono text-foreground/80">
+                    {conn.equity != null ? `${conn.equity.toFixed(2)} ${conn.currency ?? ""}` : "—"}
+                  </span>
+                </div>
+              </>
+            )}
+            {conn?.error && (
+              <p className="text-red-300/80 text-[10px] leading-relaxed">{conn.error}</p>
+            )}
+          </div>
+        </div>
+
+        {/* Execution settings */}
+        <div className="rounded-lg border border-border bg-card/50 p-3 space-y-2">
+          <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">إعدادات التنفيذ</p>
+          <div className="space-y-1 text-xs">
+            <div className="flex justify-between">
+              <span className="text-muted-foreground">MT5_DEMO_EXECUTION_ENABLED</span>
+              {info ? boolBadge(info.executionEnabled, "true ✓", "false ✗") : <span className="text-muted-foreground">—</span>}
+            </div>
+            <div className="flex justify-between">
+              <span className="text-muted-foreground">سياسة التنفيذ (localStorage)</span>
+              <span className={`font-semibold text-[11px] ${execPolicy === "EXPERIMENTAL" ? "text-violet-300" : "text-emerald-300/80"}`}>
+                {execPolicy}
+              </span>
+            </div>
+          </div>
+        </div>
+
+        {/* Diagnostics hint */}
+        <div className="rounded-lg border border-border bg-card/50 p-3 space-y-2">
+          <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">فحص يدوي</p>
+          <div className="text-[10px] text-muted-foreground/70 space-y-1.5 font-mono">
+            <p>curl.exe http://127.0.0.1:8010/health</p>
+            <p>curl.exe http://localhost:3000/api/mt5-readonly/connection-status</p>
+          </div>
+          {info?.timestamp && (
+            <p className="text-[9px] text-muted-foreground/40">
+              آخر فحص: {new Date(info.timestamp).toLocaleTimeString("ar-SA", { hour12: false })}
+            </p>
+          )}
+        </div>
+      </div>
+
+      <p className="text-[9px] text-muted-foreground/40 border-t border-border/30 pt-2">
+        عرض فقط — لا يغيّر أي إعداد — لا توجد secrets في هذا القسم.
+      </p>
+    </div>
+  );
+}
+
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
 export default function SystemHealthPage() {
@@ -573,9 +765,9 @@ export default function SystemHealthPage() {
       <div className="rounded-xl border border-amber-500/20 bg-amber-500/5 p-4 text-amber-200/90 text-sm flex items-start gap-3">
         <AlertCircle className="h-5 w-5 text-amber-500 shrink-0 mt-0.5" />
         <div>
-          <p className="font-semibold mb-1">Read-only / لا يوجد تنفيذ تداول</p>
+          <p className="font-semibold mb-1">MT5 Governed · التنفيذ حسب الحوكمة</p>
           <p className="opacity-80">
-            بعض الخدمات حقيقية وبعضها Placeholder حسب المرحلة. هذه الشاشة للمراقبة فقط ولا يوجد تنفيذ تداول.
+            بعض الخدمات حقيقية وبعضها Placeholder حسب المرحلة. التنفيذ يتم فقط بعد موافقة القواعد واللجان.
           </p>
         </div>
       </div>
@@ -596,6 +788,8 @@ export default function SystemHealthPage() {
       </div>
 
       <NewsPanel />
+
+      <RuntimeDiagnosticsPanel />
     </div>
   );
 }

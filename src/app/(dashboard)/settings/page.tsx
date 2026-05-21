@@ -20,6 +20,7 @@ import { api } from "../../../../convex/_generated/api";
 import {
   type DemoExecutionSettings,
   type ExecutionMode,
+  type ExecutionPolicy,
   DEFAULT_DEMO_SETTINGS,
   EXECUTION_MODE_LABELS,
   loadDemoSettings,
@@ -101,8 +102,14 @@ export default function SettingsPage() {
   const syncSnapshotMutation = useMutation(api.mt5Bridge.syncReadOnlySnapshotFromLocalService);
   const updateSymbolMutation = useMutation(api.mt5Bridge.updateMySymbolSetting);
 
-  const mt5Symbols = useQuery(api.coreQueries.getMyMt5SymbolsWithSettings, canUseConvex ? {} : "skip");
-  const auditEvents = useQuery(api.coreQueries.getMyAuditEvents, canUseConvex ? {} : "skip");
+  // Fix-2: getMyMt5SymbolsWithSettings is heavy (reads ~500 symbol docs) — make it lazy
+  const [cloudSymbolsRequested, setCloudSymbolsRequested] = useState(false);
+  const mt5Symbols = useQuery(
+    api.coreQueries.getMyMt5SymbolsWithSettings,
+    canUseConvex && cloudSymbolsRequested ? {} : "skip",
+  );
+  const [showAuditLog, setShowAuditLog] = useState(false);
+  const auditEvents = useQuery(api.coreQueries.getMyAuditEvents, showAuditLog && canUseConvex ? {} : "skip");
   const mt5Summary = useQuery(api.coreQueries.getMyMt5ReadOnlySummary, canUseConvex ? {} : "skip");
   const governance = useQuery(api.coreQueries.getMyGovernanceState, canUseConvex ? {} : "skip");
 
@@ -123,6 +130,26 @@ export default function SettingsPage() {
 
   useEffect(() => {
     setDemoSettings(loadDemoSettings());
+  }, []);
+
+  // ── Local symbols fallback (when Convex auth is unavailable) ───────────────
+  const LOCAL_SYMBOLS_KEY = "mt5:selectedAnalysisSymbols";
+  type LocalSymbolRow = { name: string; description?: string };
+  const [localApiSymbols, setLocalApiSymbols] = useState<LocalSymbolRow[]>([]);
+  const [localApiLoading, setLocalApiLoading] = useState(false);
+  const [localApiError, setLocalApiError] = useState<string | null>(null);
+  const [localSelectedSymbols, setLocalSelectedSymbols] = useState<Set<string>>(new Set());
+
+  useEffect(() => {
+    try {
+      const stored = localStorage.getItem(LOCAL_SYMBOLS_KEY);
+      if (stored) {
+        const parsed = JSON.parse(stored) as unknown;
+        if (Array.isArray(parsed)) {
+          setLocalSelectedSymbols(new Set(parsed.filter((s): s is string => typeof s === "string")));
+        }
+      }
+    } catch { /* ignore */ }
   }, []);
 
   const filteredSymbols = useMemo(() => {
@@ -227,7 +254,7 @@ export default function SettingsPage() {
         acc += chunk.length;
         setSyncProgress(`جاري مزامنة الأزواج: ${acc} / ${total}`);
       }
-      setSyncMessage("تمت مزامنة الرموز الظاهرة في MT5 (قراءة فقط).");
+      setSyncMessage("تمت مزامنة الرموز الظاهرة في MT5.");
     } catch {
       setSyncMessage("فشل الاتصال بالخدمة المحلية أو الخادم.");
     } finally {
@@ -256,6 +283,38 @@ export default function SettingsPage() {
     setDemoSettings((prev) => {
       const next = { ...prev, [key]: value };
       saveDemoSettings(next);
+      return next;
+    });
+  }
+
+  async function fetchSymbolsLocally() {
+    setLocalApiLoading(true);
+    setLocalApiError(null);
+    try {
+      const res = await fetch("/api/mt5-readonly/symbols?visibleOnly=true", { cache: "no-store" });
+      const payload = (await res.json()) as Record<string, unknown>;
+      if (!res.ok || payload.connected === false) {
+        setLocalApiError(typeof payload.error === "string" ? payload.error : "فشل جلب الرموز من الخدمة المحلية.");
+        return;
+      }
+      const list = dedupeSymbolsByName(Array.isArray(payload.symbols) ? payload.symbols : []);
+      setLocalApiSymbols(
+        list
+          .map((r) => ({ name: String(r.name ?? ""), description: r.description != null ? String(r.description) : undefined }))
+          .filter((r) => r.name.length > 0),
+      );
+    } catch {
+      setLocalApiError("فشل الاتصال بخدمة MT5 المحلية.");
+    } finally {
+      setLocalApiLoading(false);
+    }
+  }
+
+  function toggleLocalSymbol(name: string) {
+    setLocalSelectedSymbols((prev) => {
+      const next = new Set(prev);
+      if (next.has(name)) { next.delete(name); } else { next.add(name); }
+      try { localStorage.setItem(LOCAL_SYMBOLS_KEY, JSON.stringify([...next])); } catch { /* ignore */ }
       return next;
     });
   }
@@ -339,7 +398,7 @@ export default function SettingsPage() {
       if (canUseConvex) {
         await syncSnapshotAfterConnect();
       }
-      setConnectMessage("تم الاتصال بمنصة MT5 بنجاح (قراءة فقط).");
+      setConnectMessage("تم الاتصال بمنصة MT5 بنجاح.");
     } catch (e) {
       const reason = e instanceof Error ? e.message : "فشل الاتصال بخدمة MT5 المحلية.";
       setConnectMessage(reason);
@@ -361,7 +420,7 @@ export default function SettingsPage() {
 
       <Section title="إعدادات MT5">
         <p className="rounded-xl border border-amber-500/20 bg-amber-500/5 px-3 py-2 text-amber-100/90 text-xs leading-relaxed mb-4">
-          اتصال قراءة فقط. لا يتم تنفيذ أي أوامر تداول.
+          اتصال MT5 للتحليل والتنفيذ المحكوم.
         </p>
         <div className="grid gap-4 md:grid-cols-2">
           <div className="space-y-2">
@@ -440,12 +499,12 @@ export default function SettingsPage() {
             <div>Free Margin: <span className="tabular-nums">{connectionStatus.free_margin ?? "—"}</span></div>
             <div>العملة: {connectionStatus.currency ?? "—"}</div>
             <div>الرافعة: <span className="tabular-nums">{connectionStatus.leverage ?? "—"}</span></div>
-            <div>وضع القراءة فقط: {connectionStatus.read_only ? "نعم" : "لا"}</div>
+            <div>حالة تنفيذ النظام: {connectionStatus.read_only ? "مقيّد" : "مفعّل"}</div>
           </div>
         ) : null}
       </Section>
 
-      <Section title="إعدادات OKX — قراءة فقط (Placeholder)">
+      <Section title="إعدادات OKX — Placeholder">
         <p className="rounded-xl border border-amber-500/20 bg-amber-500/5 px-3 py-2 text-amber-100/90 text-xs leading-relaxed mb-4">
           هذا القسم مجرد عنصر نائب (Placeholder). سيتم تفعيل الاتصال بواجهة برمجة التطبيقات (API) الخاصة بـ OKX لاحقاً.
         </p>
@@ -453,7 +512,7 @@ export default function SettingsPage() {
           <Field label="API Key" placeholder="مخفي (عنصر نائب)" />
           <Field label="Secret Key" placeholder="مخفي (عنصر نائب)" />
           <Field label="Passphrase" placeholder="مخفي (عنصر نائب)" />
-          <Field label="وضع الاتصال" value="قراءة فقط (مخطط له)" />
+          <Field label="وضع الاتصال" value="Placeholder (مخطط له)" />
         </div>
         <div className="flex flex-wrap items-center gap-3 mt-4">
           <Button type="button" variant="outline" disabled>
@@ -463,23 +522,51 @@ export default function SettingsPage() {
       </Section>
 
       <Section title="إعدادات الرموز والأزواج (Symbols)">
-        <p className="rounded-xl border border-amber-500/20 bg-amber-500/5 px-3 py-2 text-amber-100/90 text-xs leading-relaxed mb-4">
+        <p className="rounded-xl border border-amber-500/20 bg-amber-500/5 px-3 py-2 text-amber-100/90 text-xs leading-relaxed mb-2">
           تظهر هنا فقط الرموز المعروضة في Market Watch داخل MT5. لإضافة رمز جديد، أظهره أولًا في MT5 ثم أعد المزامنة.
         </p>
+        <p className="rounded-xl border border-zinc-500/20 bg-zinc-500/5 px-3 py-2 text-zinc-300/80 text-xs mb-4">
+          Convex usage guard: الرموز السحابية لا تُحمَّل تلقائياً — اضغط &quot;تحميل&quot; أو &quot;مزامنة&quot; عند الحاجة.
+        </p>
         <div className="flex flex-wrap items-center gap-3 mb-4">
-          <Button
-            type="button"
-            variant="outline"
-            disabled={!canUseConvex || syncBusy}
-            onClick={() => void syncPairsFromMt5()}
-          >
-            {syncBusy ? "جاري المزامنة…" : "مزامنة الرموز الظاهرة في MT5"}
-          </Button>
+          {canUseConvex ? (
+            <div className="flex flex-wrap gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                disabled={syncBusy}
+                onClick={() => { setCloudSymbolsRequested(true); void syncPairsFromMt5(); }}
+              >
+                {syncBusy ? "جاري المزامنة…" : "مزامنة الرموز وحفظها في السحابة"}
+              </Button>
+              {!cloudSymbolsRequested && (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  onClick={() => setCloudSymbolsRequested(true)}
+                >
+                  تحميل الرموز من السحابة فقط
+                </Button>
+              )}
+            </div>
+          ) : (
+            <Button
+              type="button"
+              variant="outline"
+              disabled={localApiLoading}
+              onClick={() => void fetchSymbolsLocally()}
+            >
+              {localApiLoading ? "جاري الجلب…" : "جلب الرموز من MT5 المحلي"}
+            </Button>
+          )}
           {syncProgress ? (
             <span className="text-muted-foreground text-xs leading-snug tabular-nums">{syncProgress}</span>
           ) : null}
           {syncMessage ? (
             <span className="text-muted-foreground text-xs leading-snug">{syncMessage}</span>
+          ) : null}
+          {localApiError ? (
+            <span className="text-rose-300/90 text-xs leading-snug">{localApiError}</span>
           ) : null}
         </div>
 
@@ -498,7 +585,72 @@ export default function SettingsPage() {
         </div>
 
         {!canUseConvex && !isConvexAuthLoading ? (
-          <p className="text-muted-foreground text-sm">سجّل الدخول لمزامنة الأزواج من الخدمة المحلية.</p>
+          <div className="space-y-3">
+            <div className="rounded-xl border border-amber-500/20 bg-amber-500/5 px-3 py-2 text-amber-200/90 text-sm">
+              الحفظ السحابي غير متاح حاليًا — يمكن استخدام الاختيار المحلي مؤقتًا.
+            </div>
+            {localApiSymbols.length > 0 && !localApiSymbols.some((s) => s.name === "XAUUSD") && (
+              <div className="rounded-xl border border-rose-500/20 bg-rose-500/5 px-3 py-2 text-rose-200/90 text-sm">
+                XAUUSD غير ظاهر في Market Watch — فعّله من MT5 ثم أعد المزامنة.
+              </div>
+            )}
+            {localApiSymbols.some((s) => s.name === "XAUUSD") && (
+              <div className="rounded-xl border border-amber-400/30 bg-amber-400/10 px-3 py-2 text-amber-100 text-sm font-medium">
+                ✓ XAUUSD ظاهر في Market Watch
+              </div>
+            )}
+            {localApiSymbols.length === 0 ? (
+              <p className="text-muted-foreground text-sm">
+                اضغط &quot;جلب الرموز من MT5 المحلي&quot; لعرض الأزواج المتاحة.
+              </p>
+            ) : (
+              <div className="space-y-2">
+                <div className="overflow-x-auto rounded-xl border border-amber-500/10">
+                  <Table>
+                    <TableHeader>
+                      <TableRow className="border-amber-500/10 hover:bg-transparent">
+                        <TableHead className="text-foreground">الرمز</TableHead>
+                        <TableHead className="text-foreground">الوصف</TableHead>
+                        <TableHead className="text-foreground">للمختبر (محلي)</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {localApiSymbols.slice(0, DISPLAY_ROW_CAP).map((row) => (
+                        <TableRow
+                          key={row.name}
+                          className={`border-border/60 ${row.name === "XAUUSD" ? "bg-amber-500/5" : ""}`}
+                        >
+                          <TableCell className={`font-medium tabular-nums ${row.name === "XAUUSD" ? "text-amber-300" : "text-amber-100/90"}`}>
+                            {row.name === "XAUUSD" && <span className="ml-1">★</span>}
+                            {row.name}
+                          </TableCell>
+                          <TableCell className="max-w-[200px] text-muted-foreground text-xs">
+                            {row.description ?? "—"}
+                          </TableCell>
+                          <TableCell>
+                            <SymbolToggleSwitch
+                              checked={localSelectedSymbols.has(row.name)}
+                              label={`اختيار ${row.name} للمختبر محلياً`}
+                              onToggle={() => toggleLocalSymbol(row.name)}
+                            />
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
+                {localSelectedSymbols.size > 0 && (
+                  <p className="text-xs text-muted-foreground">
+                    الأزواج المختارة محلياً ({localSelectedSymbols.size}): {[...localSelectedSymbols].join(" · ")}
+                  </p>
+                )}
+              </div>
+            )}
+          </div>
+        ) : !cloudSymbolsRequested ? (
+          <p className="text-muted-foreground text-sm">
+            اضغط &quot;تحميل الرموز من السحابة فقط&quot; لعرض الأزواج المخزنة — أو &quot;مزامنة&quot; للتحديث.
+          </p>
         ) : isConvexAuthLoading || mt5Symbols === undefined ? (
           <p className="text-muted-foreground text-sm">جاري تحميل بيانات الأزواج…</p>
         ) : mt5Symbols.length === 0 ? (
@@ -590,10 +742,10 @@ export default function SettingsPage() {
         </div>
       </Section>
 
-      {/* ── A25: Demo Execution Guard Settings ──────────────────────────────── */}
-      <Section title="إعدادات تنفيذ MT5 التجريبي">
+      {/* ── A25: MT5 Platform Execution Settings ─────────────────────────────── */}
+      <Section title="إعدادات تنفيذ MT5 عبر النظام">
         <p className="rounded-xl border border-red-500/20 bg-red-500/5 px-3 py-2 text-red-200/90 text-xs leading-relaxed mb-4">
-          ⚠ هذه الإعدادات للتنفيذ التجريبي Demo فقط — لا تنفيذ تداول حقيقي — لا order_send —
+          ⚠ هذه الإعدادات للتنفيذ عبر منصة MT5 — محكوم بقواعد الحوكمة والحراس — لا order_send —
           الإعدادات محفوظة محلياً (localStorage) ولا تُرسَل إلى أي سيرفر.
         </p>
 
@@ -638,23 +790,27 @@ export default function SettingsPage() {
 
           <div className="flex items-center justify-between rounded-xl border border-border/60 px-4 py-3">
             <div>
-              <p className="text-sm font-medium">تأكيد حساب Demo</p>
+              <p className="text-sm font-medium">تأكيد مراجعة التنفيذ</p>
               <p className="text-xs text-muted-foreground">
-                يجب تأكيده يدوياً — لا يمكن اكتشافه تلقائياً
+                يجب تأكيده يدوياً قبل إرسال الأمر لـ MT5
               </p>
             </div>
             <SymbolToggleSwitch
               checked={demoSettings.isConfirmedDemo}
-              label="تأكيد حساب Demo"
+              label="تأكيد مراجعة التنفيذ"
               onToggle={() => updateDemoSetting("isConfirmedDemo", !demoSettings.isConfirmedDemo)}
             />
           </div>
         </div>
 
+        {demoSettings.killSwitchEnabled && (
+          <p className="rounded-md border border-red-500/20 bg-red-500/5 px-3 py-2 text-xs text-red-300">
+            ⛔ Kill Switch مفعّل — زر التنفيذ في /gold سيبقى معطّلًا ما دام Kill Switch مفعّلًا. أوقفه للسماح بالتنفيذ عند اكتمال الشروط.
+          </p>
+        )}
         {!demoSettings.isConfirmedDemo && (
           <p className="rounded-md border border-amber-500/20 bg-amber-500/5 px-3 py-2 text-xs text-amber-300">
-            ⚠ لن يتم السماح بالتنفيذ إلا على حساب Demo مؤكد.
-            تحقق من نوع حسابك في MT5 قبل التفعيل.
+            ⚠ يجب تأكيد مراجعة التنفيذ قبل إرسال الأمر لـ MT5 — فعّل هذا الخيار بعد مراجعة إعدادات المنصة.
           </p>
         )}
 
@@ -752,13 +908,50 @@ export default function SettingsPage() {
           />
         </div>
 
+        {/* سياسة التنفيذ */}
+        <div className="space-y-2">
+          <label className="text-xs font-medium text-muted-foreground">سياسة التنفيذ</label>
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+            {(["STRICT", "EXPERIMENTAL"] as ExecutionPolicy[]).map((policy) => (
+              <button
+                key={policy}
+                type="button"
+                onClick={() => updateDemoSetting("executionPolicy", policy)}
+                className={`rounded-lg border px-4 py-3 text-right transition-colors ${
+                  demoSettings.executionPolicy === policy
+                    ? policy === "STRICT"
+                      ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-200"
+                      : "border-violet-500/40 bg-violet-500/10 text-violet-200"
+                    : "border-border/40 bg-card/30 text-muted-foreground hover:border-border/70"
+                }`}
+              >
+                <p className="text-sm font-bold">
+                  {policy === "STRICT" ? "تنفيذ صارم" : "تجارب تنفيذ محكومة"}
+                </p>
+                <p className="text-[10px] mt-0.5 leading-tight opacity-80">
+                  {policy === "STRICT"
+                    ? "أي BLOCK من الحراس يمنع التنفيذ — افتراضي"
+                    : "يسمح بتجاوز Soft Blocks — Hard Blocks محفوظة دائماً"}
+                </p>
+              </button>
+            ))}
+          </div>
+          {demoSettings.executionPolicy === "EXPERIMENTAL" && (
+            <p className="text-[10px] text-violet-300/70 leading-relaxed">
+              ⚠ وضع التجارب: يسمح بتنفيذ إشارات ضعيفة (درجة C، احتمال منخفض، WARN كثيرة) —
+              Hard Blocks (Kill Switch، Spread، Tick، SL، TP، RR &lt; 1.0) لا تُتجاوز أبداً.
+            </p>
+          )}
+        </div>
+
         {/* ملخص الإعدادات */}
         <div className="rounded-lg border border-border bg-muted/5 px-4 py-3 text-xs text-muted-foreground space-y-1">
           <p className="font-semibold text-foreground/80 mb-1.5">ملخص الإعدادات الحالية</p>
           <p>الوضع: <span className="text-amber-300">{EXECUTION_MODE_LABELS[demoSettings.executionMode]}</span></p>
           <p>Kill Switch: <span className={demoSettings.killSwitchEnabled ? "text-red-300" : "text-emerald-300"}>{demoSettings.killSwitchEnabled ? "مفعّل" : "معطّل"}</span></p>
-          <p>حساب Demo مؤكد: <span className={demoSettings.isConfirmedDemo ? "text-emerald-300" : "text-amber-300"}>{demoSettings.isConfirmedDemo ? "نعم ✓" : "لا ✗"}</span></p>
+          <p>مراجعة التنفيذ مؤكدة: <span className={demoSettings.isConfirmedDemo ? "text-emerald-300" : "text-amber-300"}>{demoSettings.isConfirmedDemo ? "نعم ✓" : "لا ✗"}</span></p>
           <p>حد المخاطرة: <span className="text-foreground">${demoSettings.maxRiskUsdPerTrade} — RR ≥ {demoSettings.minRewardRiskRatio} — سبريد ≤ {demoSettings.maxSpreadPoints} pts</span></p>
+          <p>سياسة التنفيذ: <span className={demoSettings.executionPolicy === "EXPERIMENTAL" ? "text-violet-300" : "text-emerald-300/80"}>{demoSettings.executionPolicy === "EXPERIMENTAL" ? "تجارب محكومة" : "صارم"}</span></p>
           <p className="text-[10px] text-muted-foreground/50 pt-1">الإعدادات تُخزَّن محلياً فقط — لا ترسل لأي سيرفر — لا تنفيذ في A25</p>
         </div>
       </Section>
@@ -803,6 +996,16 @@ export default function SettingsPage() {
         </p>
         {!canUseConvex && !isConvexAuthLoading ? (
           <p className="text-muted-foreground text-sm">سجّل الدخول لعرض سجل التدقيق.</p>
+        ) : !showAuditLog ? (
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="border-amber-500/25 bg-amber-500/5 text-amber-100 hover:bg-amber-500/10"
+            onClick={() => setShowAuditLog(true)}
+          >
+            تحميل سجل التدقيق
+          </Button>
         ) : isConvexAuthLoading || auditEvents === undefined ? (
           <p className="text-muted-foreground text-sm">جاري تحميل سجل التدقيق…</p>
         ) : auditEvents.length === 0 ? (
@@ -820,7 +1023,7 @@ export default function SettingsPage() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {auditEvents.slice(0, 50).map((row) => (
+                {auditEvents.slice(0, 20).map((row) => (
                   <TableRow key={row._id} className="border-border/60">
                     <TableCell className="whitespace-nowrap text-muted-foreground text-xs tabular-nums">
                       {new Date(row.createdAt).toLocaleString("ar-SA", { hour12: false })}
@@ -853,10 +1056,10 @@ export default function SettingsPage() {
 
       <Section title="جاهزية مرحلة العقول واللجان">
         <p className="text-muted-foreground text-xs leading-relaxed mb-4">
-          قائمة تحقق للقراءة فقط قبل تشغيل مرحلة العقول واللجان.
+          قائمة التحقق قبل تشغيل مرحلة العقول واللجان.
         </p>
         <div className="grid gap-2 text-sm">
-          <CheckItem label="اتصال MT5 قراءة فقط" ok={mt5Summary?.hasRealMt5LocalData === true} />
+          <CheckItem label="اتصال MT5 للتحليل" ok={mt5Summary?.hasRealMt5LocalData === true} />
           <CheckItem label="مزامنة الحساب" ok={Boolean(mt5Summary?.latestAccountSnapshot)} />
           <CheckItem label="مزامنة الأسعار" ok={(mt5Summary?.lastSyncAt ?? 0) > 0} />
           <CheckItem label="مزامنة الصفقات النشطة" ok={(mt5Summary?.openPositionsCount ?? 0) >= 0} />

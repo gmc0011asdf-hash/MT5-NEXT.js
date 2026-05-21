@@ -52,6 +52,12 @@ export default function ConvexTestPage() {
 
   return (
     <div className="max-w-3xl space-y-4" dir="rtl">
+      <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-2 text-amber-200/90 text-sm font-medium">
+        ⚠️ [تجريبي — أدوات التطوير فقط] هذه الصفحة مخصصة لبيئة التطوير ولا تظهر في الإنتاج.
+      </div>
+      <div className="rounded-xl border border-zinc-500/20 bg-zinc-500/5 px-4 py-2 text-zinc-300/80 text-xs">
+        Convex usage guard: التحديث التلقائي محدود في التطوير — البيانات المعروضة تحديث مباشر خفيف فقط.
+      </div>
       <div>
         <h1 className="font-semibold text-2xl text-foreground">اختبار Convex</h1>
         <p className="text-muted-foreground text-sm">قراءة وكتابة تجريبية عبر بيانات مصادقة Clerk + Convex</p>

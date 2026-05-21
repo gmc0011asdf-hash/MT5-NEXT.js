@@ -15,18 +15,19 @@ export default function ConvexCorePage() {
   const { isLoading: isConvexAuthLoading, isAuthenticated } = useConvexAuth();
   const canUseConvex = !isConvexAuthLoading && isAuthenticated;
 
-  const account = useQuery(
-    api.coreQueries.getMyLatestAccountSnapshot,
-    canUseConvex ? {} : "skip",
-  );
-  const ticks = useQuery(api.coreQueries.getLatestMarketTicks, canUseConvex ? {} : "skip");
-  const signals = useQuery(api.coreQueries.getMyLatestSignals, canUseConvex ? {} : "skip");
-  const positions = useQuery(api.coreQueries.getMyOpenPositions, canUseConvex ? {} : "skip");
-  const protection = useQuery(api.coreQueries.getMyProtectionEvents, canUseConvex ? {} : "skip");
-  const governance = useQuery(api.coreQueries.getMyGovernanceState, canUseConvex ? {} : "skip");
-  const monitoring = useQuery(api.coreQueries.getMyMonitoringStatus, canUseConvex ? {} : "skip");
-  const audit = useQuery(api.coreQueries.getMyAuditEvents, canUseConvex ? {} : "skip");
-  const mt5Summary = useQuery(api.coreQueries.getMyMt5ReadOnlySummary, canUseConvex ? {} : "skip");
+  // Fix-2: guard all 9 queries behind a manual load button to reduce Convex bandwidth
+  const [dataLoaded, setDataLoaded] = useState(false);
+  const queryArg = canUseConvex && dataLoaded ? {} : "skip";
+
+  const account   = useQuery(api.coreQueries.getMyLatestAccountSnapshot, queryArg);
+  const ticks     = useQuery(api.coreQueries.getLatestMarketTicks,        queryArg);
+  const signals   = useQuery(api.coreQueries.getMyLatestSignals,          queryArg);
+  const positions = useQuery(api.coreQueries.getMyOpenPositions,          queryArg);
+  const protection = useQuery(api.coreQueries.getMyProtectionEvents,      queryArg);
+  const governance = useQuery(api.coreQueries.getMyGovernanceState,       queryArg);
+  const monitoring = useQuery(api.coreQueries.getMyMonitoringStatus,      queryArg);
+  const audit      = useQuery(api.coreQueries.getMyAuditEvents,           queryArg);
+  const mt5Summary = useQuery(api.coreQueries.getMyMt5ReadOnlySummary,    queryArg);
 
   const seedCoreDemoData = useMutation(api.coreSeed.seedCoreDemoData);
   const demoSyncReadOnlySnapshotsFromMt5Stub = useMutation(
@@ -111,6 +112,12 @@ export default function ConvexCorePage() {
 
   return (
     <div className="max-w-4xl space-y-4" dir="rtl">
+      <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-2 text-amber-200/90 text-sm font-medium">
+        ⚠️ [تجريبي — أدوات التطوير فقط] هذه الصفحة مخصصة لبيئة التطوير ولا تظهر في الإنتاج. البيانات المعروضة قد تكون تجريبية.
+      </div>
+      <div className="rounded-xl border border-zinc-500/20 bg-zinc-500/5 px-4 py-2 text-zinc-300/80 text-xs">
+        Convex usage guard: التحديث التلقائي محدود — البيانات لا تُجلب إلا عند الضغط على &quot;تحميل البيانات&quot;.
+      </div>
       <div>
         <h1 className="font-semibold text-2xl text-foreground">اختبار قاعدة النظام في Convex</h1>
         <p className="text-muted-foreground text-sm">
@@ -123,6 +130,15 @@ export default function ConvexCorePage() {
         <p className="mt-2 text-amber-200/85 text-sm leading-relaxed">
           تُفضَّل لقطات المصدر المحلي mt5-local-readonly عند توفرها؛ البيانات التجريبية أدناه للاختبار فقط.
         </p>
+        {canUseConvex && !dataLoaded && (
+          <button
+            type="button"
+            onClick={() => setDataLoaded(true)}
+            className="mt-3 rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-2 text-sm text-amber-200 hover:bg-amber-500/20 transition-colors"
+          >
+            تحميل بيانات قاعدة النظام (يدوي)
+          </button>
+        )}
       </div>
 
       {canUseConvex && mt5Summary?.hasRealMt5LocalData && (

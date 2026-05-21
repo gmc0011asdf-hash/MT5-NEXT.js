@@ -78,10 +78,10 @@ export function AppHeader() {
       </div>
       <Separator className="my-3 border-amber-500/10" />
       <div className="flex min-w-0 flex-wrap items-center gap-2">
-        <StatusBadge variant="neutral">قراءة فقط</StatusBadge>
+        <StatusBadge variant="neutral">محكوم بالقواعد</StatusBadge>
         {!mt5Connected ? (
           <span className="text-muted-foreground text-xs leading-relaxed">
-            افتح منصة MT5 وشغّل خدمة القراءة المحلية
+            افتح منصة MT5 وشغّل خدمة MT5 المحلية
           </span>
         ) : (
           <>
@@ -124,7 +124,7 @@ export function AppHeader() {
           الرموز: Market Watch
         </Badge>
         <Badge variant="outline" className="border-border text-muted-foreground">
-          الشموع: MT5 Read-only
+          الشموع: MT5 محكوم
         </Badge>
       </div>
     </header>

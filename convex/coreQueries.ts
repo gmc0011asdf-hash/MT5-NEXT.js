@@ -54,10 +54,12 @@ export const getMyLatestAccountSnapshot = query({
   handler: async (ctx) => {
     const userId = await requireUserId(ctx);
     if (!userId) return null;
+    // Fix-2: limit reads — 20 latest snapshots are enough to find the most recent local one
     const rows = await ctx.db
       .query("mt5AccountSnapshots")
       .withIndex("by_userId", (q) => q.eq("userId", userId))
-      .collect();
+      .order("desc")
+      .take(20);
     return pickLatestAccountSnapshot(rows);
   },
 });
@@ -67,13 +69,15 @@ export const getMyLatestRealMt5AccountSnapshot = query({
   handler: async (ctx) => {
     const userId = await requireUserId(ctx);
     if (!userId) return null;
+    // Fix-2: limit reads
     const rows = await ctx.db
       .query("mt5AccountSnapshots")
       .withIndex("by_userId", (q) => q.eq("userId", userId))
-      .collect();
+      .order("desc")
+      .take(20);
     const locals = rows.filter((r) => r.source === SOURCE_MT5_LOCAL);
     if (locals.length === 0) return null;
-    return [...locals].sort((a, b) => b.capturedAt - a.capturedAt)[0] ?? null;
+    return locals[0] ?? null; // already ordered desc
   },
 });
 
@@ -83,11 +87,12 @@ export const getLatestMarketTicks = query({
     const userId = await requireUserId(ctx);
     if (!userId) return [];
 
+    // Fix-2: was 500 — we only need ~12 unique symbols, 50 rows is sufficient
     const rows = await ctx.db
       .query("mt5MarketTicks")
       .withIndex("by_capturedAt")
       .order("desc")
-      .take(500);
+      .take(50);
 
     const localBySymbol = new Map<string, Doc<"mt5MarketTicks">>();
     const otherBySymbol = new Map<string, Doc<"mt5MarketTicks">>();
@@ -120,11 +125,12 @@ export const getLatestRealMt5MarketTicks = query({
   handler: async (ctx) => {
     const userId = await requireUserId(ctx);
     if (!userId) return [];
+    // Fix-2: was 1000 — the single biggest bandwidth source. 50 covers all broker symbols.
     const rows = await ctx.db
       .query("mt5MarketTicks")
       .withIndex("by_capturedAt")
       .order("desc")
-      .take(1000);
+      .take(50);
     const locals = rows.filter((r) => r.source === SOURCE_MT5_LOCAL);
     const bySymbol = new Map<string, Doc<"mt5MarketTicks">>();
     for (const row of locals) {
@@ -179,10 +185,12 @@ export const getMyOpenPositions = query({
   handler: async (ctx) => {
     const userId = await requireUserId(ctx);
     if (!userId) return [];
+    // Fix-2: limit reads — open positions are typically < 50
     const rows = await ctx.db
       .query("mt5OpenPositions")
       .withIndex("by_userId", (q) => q.eq("userId", userId))
-      .collect();
+      .order("desc")
+      .take(50);
     return resolveLocalOpenPositions(rows);
   },
 });
@@ -198,31 +206,34 @@ export const getMyMt5ReadOnlySummary = query({
       .withIndex("by_userId", (q) => q.eq("userId", userId))
       .unique();
 
+    // Fix-2: limit reads — 20 latest snapshots cover the most recent sync
     const snapshots = await ctx.db
       .query("mt5AccountSnapshots")
       .withIndex("by_userId", (q) => q.eq("userId", userId))
-      .collect();
+      .order("desc")
+      .take(20);
 
     const localSnapshots = snapshots.filter((s) => s.source === SOURCE_MT5_LOCAL);
-    const latestAccountSnapshot =
-      localSnapshots.length > 0
-        ? [...localSnapshots].sort((a, b) => b.capturedAt - a.capturedAt)[0]
-        : null;
+    const latestAccountSnapshot = localSnapshots[0] ?? null; // already ordered desc
 
+    // Fix-2: limit reads — 100 positions covers any realistic open position set
     const posRows = await ctx.db
       .query("mt5OpenPositions")
       .withIndex("by_userId", (q) => q.eq("userId", userId))
-      .collect();
+      .order("desc")
+      .take(100);
 
     const resolvedPositions = resolveLocalOpenPositions(posRows);
 
     const openPositionsCount = resolvedPositions.length;
     const totalFloatingProfit = resolvedPositions.reduce((sum, p) => sum + p.profit, 0);
 
+    // Fix-2: limit reads — 20 monitoring rows is more than enough
     const monitoringRows = await ctx.db
       .query("monitoringStatus")
       .withIndex("by_userId", (q) => q.eq("userId", userId))
-      .collect();
+      .order("desc")
+      .take(20);
 
     const mt5Rows = monitoringRows
       .filter((m) => m.service === "mt5-local-readonly")
@@ -264,11 +275,13 @@ export const getMyProtectionEvents = query({
   handler: async (ctx) => {
     const userId = await requireUserId(ctx);
     if (!userId) return [];
+    // Fix-2: limit reads at DB level instead of collect+sort+slice in memory
     const rows = await ctx.db
       .query("protectionEvents")
       .withIndex("by_userId", (q) => q.eq("userId", userId))
-      .collect();
-    return rows.sort((a, b) => b.createdAt - a.createdAt).slice(0, 15);
+      .order("desc")
+      .take(15);
+    return rows;
   },
 });
 
@@ -289,11 +302,13 @@ export const getMyCommitteeReports = query({
   handler: async (ctx) => {
     const userId = await requireUserId(ctx);
     if (!userId) return [];
+    // Fix-2: limit reads at DB level
     const rows = await ctx.db
       .query("committeeReports")
       .withIndex("by_userId", (q) => q.eq("userId", userId))
-      .collect();
-    return rows.sort((a, b) => b.createdAt - a.createdAt).slice(0, 20);
+      .order("desc")
+      .take(20);
+    return rows;
   },
 });
 
@@ -302,11 +317,13 @@ export const getMyMonitoringStatus = query({
   handler: async (ctx) => {
     const userId = await requireUserId(ctx);
     if (!userId) return [];
+    // Fix-2: limit reads at DB level instead of collect+sort
     const rows = await ctx.db
       .query("monitoringStatus")
       .withIndex("by_userId", (q) => q.eq("userId", userId))
-      .collect();
-    return rows.sort((a, b) => b.checkedAt - a.checkedAt);
+      .order("desc")
+      .take(20);
+    return rows;
   },
 });
 
@@ -315,11 +332,13 @@ export const getMyAuditEvents = query({
   handler: async (ctx) => {
     const userId = await requireUserId(ctx);
     if (!userId) return [];
+    // Fix-2: limit reads at DB level instead of collect+sort+slice
     const rows = await ctx.db
       .query("auditEvents")
       .withIndex("by_userId", (q) => q.eq("userId", userId))
-      .collect();
-    return rows.sort((a, b) => b.createdAt - a.createdAt).slice(0, 25);
+      .order("desc")
+      .take(30);
+    return rows;
   },
 });
 
@@ -330,17 +349,18 @@ export const getMyMt5SymbolsWithSettings = query({
     const userId = await requireUserId(ctx);
     if (!userId) return [];
 
+    // Fix-2: was 25_000 each — a broker's Market Watch rarely exceeds 500 visible symbols
     const [visibleRows, legacyRows] = await Promise.all([
       ctx.db
         .query("mt5Symbols")
         .withIndex("by_source_capturedAt", (q) => q.eq("source", SOURCE_MT5_MARKET_WATCH_VISIBLE))
         .order("desc")
-        .take(25_000),
+        .take(500),
       ctx.db
         .query("mt5Symbols")
         .withIndex("by_source_capturedAt", (q) => q.eq("source", SOURCE_MT5_LOCAL_CATALOG))
         .order("desc")
-        .take(25_000),
+        .take(500),
     ]);
     const catalogRows = [...visibleRows, ...legacyRows].filter(
       (row) => row.selectedInMarketWatch === true || row.source === SOURCE_MT5_MARKET_WATCH_VISIBLE,
@@ -383,17 +403,18 @@ export const getMyEnabledLabSymbols = query({
       .query("userSymbolSettings")
       .withIndex("by_userId", (q) => q.eq("userId", userId))
       .collect();
+    // Fix-2: was 25_000 each — reduced to match getMyMt5SymbolsWithSettings limit
     const [visibleRows, legacyRows] = await Promise.all([
       ctx.db
         .query("mt5Symbols")
         .withIndex("by_source_capturedAt", (q) => q.eq("source", SOURCE_MT5_MARKET_WATCH_VISIBLE))
         .order("desc")
-        .take(25_000),
+        .take(500),
       ctx.db
         .query("mt5Symbols")
         .withIndex("by_source_capturedAt", (q) => q.eq("source", SOURCE_MT5_LOCAL_CATALOG))
         .order("desc")
-        .take(25_000),
+        .take(500),
     ]);
     const visibleNames = new Set(
       [...visibleRows, ...legacyRows]
@@ -413,12 +434,67 @@ export const getMyActiveMt5Positions = query({
   handler: async (ctx) => {
     const userId = await requireUserId(ctx);
     if (!userId) return [];
+    // Fix-2: limit reads — 100 covers any realistic open position count
     const rows = await ctx.db
       .query("mt5OpenPositions")
       .withIndex("by_userId", (q) => q.eq("userId", userId))
-      .collect();
+      .order("desc")
+      .take(100);
     const locals = rows.filter((r) => r.source === SOURCE_MT5_LOCAL);
     return resolveLocalOpenPositions(locals);
+  },
+});
+
+/**
+ * Fresh active positions — returns only positions from the LATEST snapshot
+ * sync run, so stale positions (e.g. from weeks-old syncs) are never shown.
+ *
+ * Uses monitoringStatus.syncRunId to identify the most recent sync, then
+ * filters mt5OpenPositions by that syncRunId. If the latest sync returned
+ * 0 open positions, the positions array will be empty — which is correct.
+ *
+ * Returns { positions, isFresh, lastSyncAt }:
+ *   isFresh  = lastSyncAt is within STALE_THRESHOLD_MS
+ *   positions = from the latest syncRunId only (may be [])
+ *   lastSyncAt = ms timestamp of the last snapshot sync
+ */
+const STALE_THRESHOLD_MS = 15 * 60 * 1_000; // 15 minutes
+
+export const getMyFreshActiveMt5Positions = query({
+  args: {},
+  handler: async (ctx) => {
+    const userId = await requireUserId(ctx);
+    if (!userId) return { positions: [], isFresh: false, lastSyncAt: null as number | null };
+
+    // monitoringStatus is upserted (one record per userId+service) — take(1) is enough
+    const statusRows = await ctx.db
+      .query("monitoringStatus")
+      .withIndex("by_userId_service", (q) =>
+        q.eq("userId", userId).eq("service", "mt5-local-readonly"),
+      )
+      .take(1);
+
+    const latest       = statusRows[0] ?? null;
+    const lastSyncAt   = latest?.checkedAt ?? null;
+    const latestRunId  = latest?.syncRunId ?? null;
+    const isFresh      = lastSyncAt !== null && (Date.now() - lastSyncAt) <= STALE_THRESHOLD_MS;
+
+    if (!latestRunId) {
+      return { positions: [], isFresh: false, lastSyncAt };
+    }
+
+    // Return only positions from the latest sync run
+    const rows = await ctx.db
+      .query("mt5OpenPositions")
+      .withIndex("by_userId", (q) => q.eq("userId", userId))
+      .order("desc")
+      .take(100);
+
+    const positions = rows.filter(
+      (r) => r.source === SOURCE_MT5_LOCAL && r.syncRunId === latestRunId,
+    );
+
+    return { positions, isFresh, lastSyncAt };
   },
 });
 
@@ -434,6 +510,40 @@ export const getMyTradeHistoryDeals = query({
       .order("desc")
       .take(300);
     return rows.filter((r) => r.source === SOURCE_MT5_LOCAL).slice(0, 300);
+  },
+});
+
+/** Returns metadata about the last history sync — used to show freshness in /reports. */
+export const getMyHistorySyncMeta = query({
+  args: {},
+  handler: async (ctx) => {
+    const userId = await requireUserId(ctx);
+    const empty = { lastSyncAt: null as number | null, lastSyncRunId: null as string | null, dealCount: 0, isFresh: false };
+    if (!userId) return empty;
+
+    // monitoringStatus is upserted per (userId, service) — one row, take(1) is enough
+    const statusRows = await ctx.db
+      .query("monitoringStatus")
+      .withIndex("by_userId_service", (q) =>
+        q.eq("userId", userId).eq("service", "mt5-local-history-readonly"),
+      )
+      .take(1);
+
+    const latest       = statusRows[0] ?? null;
+    const lastSyncAt   = latest?.checkedAt ?? null;
+    const lastSyncRunId = latest?.syncRunId ?? null;
+
+    const rows = await ctx.db
+      .query("mt5TradeHistoryDeals")
+      .withIndex("by_userId_time", (q) => q.eq("userId", userId))
+      .order("desc")
+      .take(300);
+    const dealCount = rows.filter((r) => r.source === SOURCE_MT5_LOCAL).length;
+
+    const HISTORY_STALE_MS = 30 * 60 * 1_000; // 30 minutes
+    const isFresh = lastSyncAt !== null && (Date.now() - lastSyncAt) <= HISTORY_STALE_MS;
+
+    return { lastSyncAt, lastSyncRunId, dealCount, isFresh };
   },
 });
 
