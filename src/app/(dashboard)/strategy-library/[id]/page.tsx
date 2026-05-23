@@ -486,10 +486,12 @@ function SignalLogForm({
   const [sl, setSl]               = useState("");
   const [tp1, setTp1]             = useState("");
   const [tp2, setTp2]             = useState("");
-  const [timeframe, setTimeframe] = useState("H1");
-  const [notes, setNotes]         = useState("");
-  const [saving, setSaving]       = useState(false);
-  const [error, setError]         = useState("");
+  const [timeframe, setTimeframe]       = useState("H1");
+  const [notes, setNotes]               = useState("");
+  const [rulesMatchedRaw, setRulesMatchedRaw] = useState("");
+  const [rulesMissedRaw,  setRulesMissedRaw]  = useState("");
+  const [saving, setSaving]             = useState(false);
+  const [error, setError]               = useState("");
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -511,11 +513,12 @@ function SignalLogForm({
         tp1Price:     tp1N,
         tp2Price:     tp2 ? parseFloat(tp2) : undefined,
         mode:         "SHADOW",
-        rulesMatched: [],
-        rulesMissed:  [],
+        rulesMatched: rulesMatchedRaw.split(",").map((r) => r.trim()).filter(Boolean),
+        rulesMissed:  rulesMissedRaw.split(",").map((r) => r.trim()).filter(Boolean),
         notes:        notes || undefined,
       });
       setEntry(""); setSl(""); setTp1(""); setTp2(""); setNotes("");
+      setRulesMatchedRaw(""); setRulesMissedRaw("");
       onSaved();
     } catch (err) {
       setError(err instanceof Error ? err.message : "حدث خطأ");
@@ -576,6 +579,29 @@ function SignalLogForm({
             />
           </div>
         ))}
+      </div>
+
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+        <div className="space-y-0.5">
+          <FieldLabel className="text-[11px]">قواعد تحققت (مفصولة بفاصلة)</FieldLabel>
+          <Input
+            value={rulesMatchedRaw}
+            onChange={(e) => setRulesMatchedRaw(e.target.value)}
+            placeholder="EMA, Trend, Session..."
+            className="border-emerald-500/20 bg-muted/20 text-xs"
+            dir="ltr"
+          />
+        </div>
+        <div className="space-y-0.5">
+          <FieldLabel className="text-[11px]">قواعد ناقصة (مفصولة بفاصلة)</FieldLabel>
+          <Input
+            value={rulesMissedRaw}
+            onChange={(e) => setRulesMissedRaw(e.target.value)}
+            placeholder="Volume, Structure..."
+            className="border-rose-500/20 bg-muted/20 text-xs"
+            dir="ltr"
+          />
+        </div>
       </div>
 
       <div className="space-y-0.5">
@@ -713,6 +739,18 @@ function ShadowModeSection({ strategyId }: { strategyId: Id<"strategies"> }) {
                   Avg RR: <span className="tabular-nums text-amber-100/80 font-medium">{activeExp.avgRR.toFixed(2)}</span>
                 </span>
               ) : null}
+              {signals && signals.length > 0 ? (() => {
+                const withRules = signals.filter((s) => s.rulesMatched.length > 0 || s.rulesMissed.length > 0);
+                if (withRules.length === 0) return null;
+                const fullyCompliant = withRules.filter((s) => s.rulesMissed.length === 0).length;
+                const rate = Math.round((fullyCompliant / withRules.length) * 100);
+                return (
+                  <span>
+                    امتثال: <span className={`tabular-nums font-medium ${rate >= 80 ? "text-emerald-400" : rate >= 60 ? "text-amber-300" : "text-rose-400"}`}>{rate}%</span>
+                    <span className="text-muted-foreground/50 ms-0.5">({withRules.length})</span>
+                  </span>
+                );
+              })() : null}
               {activeExp.violations > 0 ? (
                 <span className="text-rose-300">مخالفات: {activeExp.violations}</span>
               ) : null}
@@ -804,6 +842,16 @@ function ShadowModeSection({ strategyId }: { strategyId: Id<"strategies"> }) {
                   </div>
                   {sig.notes ? (
                     <p className="mt-1 text-muted-foreground/60 text-[11px]">{sig.notes}</p>
+                  ) : null}
+                  {(sig.rulesMatched.length > 0 || sig.rulesMissed.length > 0) ? (
+                    <div className="mt-1 flex flex-wrap gap-1">
+                      {sig.rulesMatched.map((r) => (
+                        <span key={r} className="rounded-full bg-emerald-500/15 text-emerald-400 px-1.5 py-0.5 text-[10px]">✓ {r}</span>
+                      ))}
+                      {sig.rulesMissed.map((r) => (
+                        <span key={r} className="rounded-full bg-rose-500/15 text-rose-400 px-1.5 py-0.5 text-[10px]">✗ {r}</span>
+                      ))}
+                    </div>
                   ) : null}
                   <div className="mt-2">
                     <SignalOutcomeButton signal={sig} />
