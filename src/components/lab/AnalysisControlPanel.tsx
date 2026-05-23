@@ -6258,13 +6258,30 @@ export function AnalysisControlPanel({
 
             {/* الفريمات المرشحة */}
             {timeframeMode === "auto" && (
-              <div className="flex flex-col gap-1 sm:col-span-2">
-                <label className="text-sm font-medium text-muted-foreground">الفريمات المرشحة</label>
+              <div className="flex flex-col gap-1.5 sm:col-span-2">
+                <div className="flex flex-wrap items-baseline gap-2">
+                  <label className="text-sm font-medium text-muted-foreground">الفريمات المرشحة للتقييم</label>
+                  <span className="text-[10px] text-muted-foreground/50">تُقيَّم بالتوازي · يُختار الأعلى درجةً في: الترند + الزخم + RSI + حداثة البيانات</span>
+                </div>
                 <div className="flex flex-wrap gap-1">
                   {CANDIDATE_TIMEFRAMES.map((tf) => (
                     <Button key={tf} type="button" size="sm" variant={candidateTFs.has(tf) ? "default" : "outline"} onClick={() => toggleCandidateTF(tf)} disabled={busy} className="min-w-[3rem]">{tf}</Button>
                   ))}
                 </div>
+                {/* حدود الجِدَّة لكل فريم */}
+                <p className="text-[10px] text-muted-foreground/45 leading-relaxed">
+                  حد الجِدَّة: M1=3د · M5=10د · M15=30د · M30=1س · H1=2س · H4=8س · D1=36س — الفريمات الأقدم من الحد أو ذات الترند المحايد تُستبعد تلقائياً.
+                </p>
+                {/* تحذير السوق المغلق */}
+                {result?.marketStateAnalysis?.marketOpen === false && (
+                  <p className="text-[11px] font-medium text-amber-300/80 rounded px-2 py-1 border border-amber-500/20 bg-amber-500/5">
+                    ⚠ السوق مغلق — فريمات M15/H1 بياناتها قديمة. أضف{" "}
+                    <strong>H4</strong> أو <strong>D1</strong> للحصول على تحليل ضمن حد الجِدَّة.
+                  </p>
+                )}
+                <p className="text-[10px] text-muted-foreground/40">
+                  الوضع اليدوي يتجاهل شرط الترند ويحلل الفريم المحدد مباشرةً.
+                </p>
               </div>
             )}
 
@@ -6516,14 +6533,40 @@ export function AnalysisControlPanel({
                   )
                 )}
 
+                {/* ── تشخيص الوضع التلقائي عند عدم اختيار أي فريم ─── */}
+                {timeframeMode === "auto" && result.selectedTimeframe === null && result.evaluatedTimeframes.length > 0 && (
+                  <div className="rounded-md border border-amber-500/25 bg-amber-500/5 px-3 py-2.5 space-y-1.5">
+                    <p className="text-xs font-semibold text-amber-300/90">
+                      الوضع التلقائي — لم يُختر أي فريم زمني
+                    </p>
+                    <p className="text-[11px] text-amber-200/65 leading-relaxed">
+                      قُيِّمت الفريمات [{result.evaluatedTimeframes.join(" · ")}] ورُفضت جميعها. الأسباب المحتملة:
+                    </p>
+                    <ul className="space-y-0.5 text-[11px] text-muted-foreground/75">
+                      <li>• <strong className="text-muted-foreground/90">بيانات قديمة</strong> — السوق مغلق أو لم تتم مزامنة الشموع حديثاً (حد M15=30د · H1=2س · H4=8س)</li>
+                      <li>• <strong className="text-muted-foreground/90">ترند محايد</strong> — لا اتجاه صاعد أو هابط واضح في هذه الفريمات حالياً</li>
+                    </ul>
+                    <p className="text-[11px] text-amber-200/60 border-t border-amber-500/15 pt-1.5">
+                      الحل: أضف{" "}
+                      <strong className="text-amber-200/85">H4</strong> أو{" "}
+                      <strong className="text-amber-200/85">D1</strong> للفريمات المرشحة —
+                      أو انتقل للوضع{" "}
+                      <strong className="text-amber-200/85">اليدوي</strong>{" "}
+                      لتحليل فريم محدد بغض النظر عن الترند.
+                    </p>
+                  </div>
+                )}
+
                 {/* الإطارات المقيّمة */}
                 {result.evaluatedTimeframes.length > 0 && (
                   <div>
-                    <p className="mb-1 text-xs text-muted-foreground">الإطارات المقيّمة:</p>
+                    <p className="mb-1 text-xs text-muted-foreground">
+                      الإطارات المقيّمة{timeframeMode === "auto" && result.selectedTimeframe ? " — ✓ اختير الأفضل" : ""}:
+                    </p>
                     <div className="flex flex-wrap gap-1">
                       {result.evaluatedTimeframes.map((tf) => (
                         <Badge key={tf} variant={tf === result.selectedTimeframe ? "default" : "outline"} className="text-xs">
-                          {tf}
+                          {tf}{tf === result.selectedTimeframe ? " ✓" : ""}
                         </Badge>
                       ))}
                     </div>
