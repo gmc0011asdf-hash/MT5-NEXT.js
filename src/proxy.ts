@@ -1,9 +1,8 @@
 import { clerkMiddleware, createRouteMatcher } from "@clerk/nextjs/server";
 import type { NextRequest } from "next/server";
 
-// Pages that require a signed-in Clerk session.
-// /api/mt5-readonly/* is intentionally NOT listed here — the routes are publicly
-// reachable. Convex persistence inside each route handles its own auth check.
+// Pages and API routes that require a signed-in Clerk session.
+// /api/mt5-readonly/* routes also include per-handler auth() checks (defense-in-depth).
 const isProtectedRoute = createRouteMatcher([
   "/dashboard(.*)",
   "/lab(.*)",
@@ -13,6 +12,8 @@ const isProtectedRoute = createRouteMatcher([
   "/settings(.*)",
   "/convex-test(.*)",
   "/convex-core(.*)",
+  "/api/mt5-readonly(.*)",
+  "/api/lab(.*)",
 ]);
 
 // Next.js 16 renamed middleware to "proxy". The file must export either a

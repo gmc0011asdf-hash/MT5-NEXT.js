@@ -4,6 +4,7 @@
  */
 
 import { NextRequest, NextResponse } from "next/server";
+import { auth } from "@clerk/nextjs/server";
 
 export const dynamic = "force-dynamic";
 
@@ -12,6 +13,9 @@ const LOCAL_BASE = `${MT5_SERVICE_BASE}/readonly/symbols`;
 const FETCH_TIMEOUT_MS = 8000;
 
 export async function GET(request: NextRequest) {
+  const { userId } = await auth();
+  if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
   const u = new URL(LOCAL_BASE);
   const sp = request.nextUrl.searchParams;
   u.searchParams.set("visibleOnly", sp.get("visibleOnly") ?? "true");

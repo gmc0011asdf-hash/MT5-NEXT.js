@@ -5,6 +5,7 @@
  */
 
 import { NextResponse } from "next/server";
+import { auth } from "@clerk/nextjs/server";
 
 export const dynamic = "force-dynamic";
 
@@ -12,6 +13,9 @@ const MT5_SERVICE_BASE  = process.env.MT5_SERVICE_URL ?? "http://127.0.0.1:8010"
 const FETCH_TIMEOUT_MS  = 8_000;
 
 export async function GET(): Promise<NextResponse> {
+  const { userId } = await auth();
+  if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
   const controller = new AbortController();
   const timeoutId  = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
 

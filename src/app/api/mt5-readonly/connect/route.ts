@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { auth } from "@clerk/nextjs/server";
 
 export const dynamic = "force-dynamic";
 
@@ -7,6 +8,9 @@ const LOCAL_CONNECT_URL = `${MT5_SERVICE_BASE}/connect`;
 const FETCH_TIMEOUT_MS = 8000;
 
 export async function POST(request: Request) {
+  const { userId } = await auth();
+  if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
   let body: unknown;
   try {
     body = await request.json();

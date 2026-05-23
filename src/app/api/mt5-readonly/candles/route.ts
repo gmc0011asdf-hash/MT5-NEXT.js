@@ -136,8 +136,8 @@ function buildAuthDiagnostics(
   const azp = claims?.azp ?? undefined;
   const subPresent = !!claims?.sub;
 
-  const convexExpectedDomain = "https://national-ant-59.clerk.accounts.dev";
-  const issDomainMatch = typeof iss === "string" && iss.startsWith(convexExpectedDomain);
+  const convexExpectedDomain = process.env.CLERK_FRONTEND_API_URL ?? "(not configured)";
+  const issDomainMatch = typeof iss === "string" && convexExpectedDomain !== "(not configured)" && iss.startsWith(convexExpectedDomain);
   const audIsConvex =
     aud === "convex" ||
     (Array.isArray(aud) && aud.includes("convex"));
@@ -374,6 +374,9 @@ async function persistCandlesToConvex(
 // ---------------------------------------------------------------------------
 
 export async function GET(request: NextRequest) {
+  const { userId } = await auth();
+  if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
   const sp = request.nextUrl.searchParams;
   const wantDebugAuth = sp.get("debugAuth") === "1";
 
