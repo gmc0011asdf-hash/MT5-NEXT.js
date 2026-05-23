@@ -487,6 +487,7 @@ function SignalLogForm({
   const [tp1, setTp1]             = useState("");
   const [tp2, setTp2]             = useState("");
   const [timeframe, setTimeframe]       = useState("H1");
+  const [lot,       setLot]             = useState("");
   const [notes, setNotes]               = useState("");
   const [rulesMatchedRaw, setRulesMatchedRaw] = useState("");
   const [rulesMissedRaw,  setRulesMissedRaw]  = useState("");
@@ -511,13 +512,14 @@ function SignalLogForm({
         entryPrice:   entryN,
         slPrice:      slN,
         tp1Price:     tp1N,
-        tp2Price:     tp2 ? parseFloat(tp2) : undefined,
+        tp2Price:      tp2  ? parseFloat(tp2)  : undefined,
+        calculatedLot: lot  ? parseFloat(lot)  : undefined,
         mode:         "SHADOW",
         rulesMatched: rulesMatchedRaw.split(",").map((r) => r.trim()).filter(Boolean),
         rulesMissed:  rulesMissedRaw.split(",").map((r) => r.trim()).filter(Boolean),
         notes:        notes || undefined,
       });
-      setEntry(""); setSl(""); setTp1(""); setTp2(""); setNotes("");
+      setEntry(""); setSl(""); setTp1(""); setTp2(""); setLot(""); setNotes("");
       setRulesMatchedRaw(""); setRulesMissedRaw("");
       onSaved();
     } catch (err) {
@@ -558,20 +560,21 @@ function SignalLogForm({
         </select>
       </div>
 
-      <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
         {(
           [
-            { label: "سعر الدخول", value: entry, set: setEntry },
-            { label: "Stop Loss",  value: sl,    set: setSl    },
-            { label: "TP1",        value: tp1,   set: setTp1   },
-            { label: "TP2",        value: tp2,   set: setTp2   },
+            { label: "سعر الدخول", value: entry, set: setEntry, step: "0.01" },
+            { label: "Stop Loss",  value: sl,    set: setSl,    step: "0.01" },
+            { label: "TP1",        value: tp1,   set: setTp1,   step: "0.01" },
+            { label: "TP2",        value: tp2,   set: setTp2,   step: "0.01" },
+            { label: "Lot (افتراضي)", value: lot, set: setLot,  step: "0.01" },
           ] as const
-        ).map(({ label, value, set }) => (
+        ).map(({ label, value, set, step }) => (
           <div key={label} className="space-y-0.5">
             <FieldLabel className="text-[11px]">{label}</FieldLabel>
             <Input
               type="number"
-              step="0.01"
+              step={step}
               value={value}
               onChange={(e) => (set as (v: string) => void)(e.target.value)}
               className="h-7 border-amber-500/20 bg-muted/20 text-xs"
@@ -836,6 +839,11 @@ function ShadowModeSection({ strategyId }: { strategyId: Id<"strategies"> }) {
                     </span>
                     <span className="text-xs tabular-nums text-rose-300/80">SL {sig.slPrice}</span>
                     <span className="text-xs tabular-nums text-emerald-300/80">TP {sig.tp1Price}</span>
+                    {sig.calculatedLot != null ? (
+                      <span className="text-xs tabular-nums text-muted-foreground/70">
+                        Lot <span className="text-amber-100/60">{sig.calculatedLot}</span>
+                      </span>
+                    ) : null}
                     <span className="text-muted-foreground/50 text-[11px] ms-auto">
                       {new Date(sig.signalTime).toLocaleString("ar-SA", { hour12: false, month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}
                     </span>
