@@ -3,7 +3,7 @@
  * Multi-Timeframe Consensus Engine.
  * No trading execution — no order_send — read-only analysis.
  *
- * Hierarchy: H4 (سياق) > H1 (هيكل) > M30 (تأكيد) > M15 (توقيت)
+ * Hierarchy: D1 (توجه يومي) > H4 (سياق) > H1 (هيكل) > M30 (تأكيد) > M15 (توقيت)
  */
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -43,14 +43,15 @@ type TFIndicator = {
 
 // Weights: higher timeframe = more weight in alignment score
 const TF_WEIGHTS: Record<string, number> = {
+  D1:  50,
   H4:  40,
   H1:  30,
   M30: 20,
   M15: 10,
 };
 
-const HIGHER_TFS  = ["H4", "H1"] as const;   // sياق و هيكل
-const CONTEXT_TFS = ["H4", "H1", "M30", "M15"] as const;
+const HIGHER_TFS  = ["D1", "H4", "H1"] as const;   // توجه يومي + سياق + هيكل
+const CONTEXT_TFS = ["D1", "H4", "H1", "M30", "M15"] as const;
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -105,15 +106,24 @@ export function analyzeMultiTimeframeConsensus(
   // ── 2. Entry TF bias ──────────────────────────────────────────────────────
   const entryTFBias: TFBias = extractBias(indicators[entryTimeframe]);
 
-  // ── 3. Higher TF bias (H4 dominates, then H1) ────────────────────────────
+  // ── 3. Higher TF bias (D1 dominates, then H4, then H1) ──────────────────
+  const d1Bias = extractBias(indicators["D1"]);
   const h4Bias = extractBias(indicators["H4"]);
   const h1Bias = extractBias(indicators["H1"]);
+  const d1Available = d1Bias !== "unknown";
   const h4Available = h4Bias !== "unknown";
   const h1Available = h1Bias !== "unknown";
 
   let higherTimeframeBias: MultiTimeframeConsensus["higherTimeframeBias"];
-  if (!h4Available && !h1Available) {
+  if (!d1Available && !h4Available && !h1Available) {
     higherTimeframeBias = "unknown";
+  } else if (d1Available) {
+    // D1 is the primary context; flag mixed if H4 contradicts
+    if (h4Available && h4Bias !== "neutral" && d1Bias !== "neutral" && h4Bias !== d1Bias) {
+      higherTimeframeBias = "mixed";
+    } else {
+      higherTimeframeBias = d1Bias as "bullish" | "bearish" | "neutral";
+    }
   } else if (h4Available && h1Available) {
     if (h4Bias === h1Bias)                                    higherTimeframeBias = h4Bias as "bullish" | "bearish" | "neutral";
     else if (h4Bias !== "neutral" && h1Bias !== "neutral")    higherTimeframeBias = "mixed";
@@ -153,28 +163,37 @@ export function analyzeMultiTimeframeConsensus(
     : 0;
 
   // ── 6. Verdict ────────────────────────────────────────────────────────────
-  const h4Opposes = h4Available && biasOpposesEntry(h4Bias, entryTFBias);
-  const h1Opposes = h1Available && biasOpposesEntry(h1Bias, entryTFBias);
+  const d1Opposes  = d1Available && biasOpposesEntry(d1Bias, entryTFBias);
+  const d1Confirms = d1Available && biasConfirmsEntry(d1Bias, entryTFBias);
+  const h4Opposes  = h4Available && biasOpposesEntry(h4Bias, entryTFBias);
+  const h1Opposes  = h1Available && biasOpposesEntry(h1Bias, entryTFBias);
   const h4Confirms = h4Available && biasConfirmsEntry(h4Bias, entryTFBias);
   const h1Confirms = h1Available && biasConfirmsEntry(h1Bias, entryTFBias);
 
   let verdict: MultiTimeframeConsensus["verdict"];
 
   if (entryTFBias === "unknown") {
-    // Can't assess alignment without entry direction
     verdict = "WARN";
     warnings.push("اتجاه فريم الدخول غير متاح — لا يمكن حساب توافق الفريمات");
+  } else if (d1Opposes && h4Opposes) {
+    // D1 + H4 both opposing: strongest block signal
+    verdict = "BLOCK";
+    blockers.push(
+      `D1 (${biasLabel(d1Bias)}) و H4 (${biasLabel(h4Bias)}) كلاهما يعارضان الاتجاه (${biasLabel(entryTFBias)})`,
+    );
   } else if (h4Opposes && h1Opposes) {
     verdict = "BLOCK";
     blockers.push(
       `H4 (${biasLabel(h4Bias)}) و H1 (${biasLabel(h1Bias)}) كلاهما يعارضان اتجاه الدخول (${biasLabel(entryTFBias)})`,
     );
   } else if (h4Opposes && !h1Available) {
-    // H4 opposing with no H1 data — treat as BLOCK (H4 is the strongest context)
     verdict = "BLOCK";
     blockers.push(
       `H4 (${biasLabel(h4Bias)}) يعارض الدخول و H1 غير متاح للتأكيد`,
     );
+  } else if (d1Opposes) {
+    verdict = "WARN";
+    warnings.push(`D1 (${biasLabel(d1Bias)}) يعارض الدخول — توجه اليومي عكس الاتجاه`);
   } else if (h4Opposes) {
     verdict = "WARN";
     warnings.push(`H4 (${biasLabel(h4Bias)}) يعارض الدخول — مراجعة السياق العام مطلوبة`);
@@ -182,14 +201,23 @@ export function analyzeMultiTimeframeConsensus(
     verdict = "WARN";
     warnings.push(`H1 (${biasLabel(h1Bias)}) يعارض الدخول و H4 غير متاح`);
   } else if (
+    (!d1Available || d1Bias === "neutral") &&
     (!h4Available || h4Bias === "neutral") &&
     (!h1Available || h1Bias === "neutral")
   ) {
     verdict = "WARN";
-    warnings.push("H4 و H1 محايدان — السياق العام غير واضح لاتجاه الدخول");
+    warnings.push("D1 و H4 و H1 محايدان — السياق العام غير واضح لاتجاه الدخول");
+  } else if (d1Confirms && h4Confirms && h1Confirms) {
+    verdict = "PASS";
+    reasons.push(`D1 (${biasLabel(d1Bias)}) و H4 (${biasLabel(h4Bias)}) و H1 (${biasLabel(h1Bias)}) يؤكدان الاتجاه ✓`);
+  } else if (d1Confirms && h4Confirms) {
+    verdict = "PASS";
+    reasons.push(`D1 (${biasLabel(d1Bias)}) و H4 (${biasLabel(h4Bias)}) يؤكدان الاتجاه ✓`);
+    if (h1Bias === "neutral") warnings.push("H1 محايد");
   } else if (h4Confirms && h1Confirms) {
     verdict = "PASS";
     reasons.push(`H4 (${biasLabel(h4Bias)}) و H1 (${biasLabel(h1Bias)}) يؤكدان الاتجاه ✓`);
+    if (d1Available && d1Bias === "neutral") warnings.push("D1 محايد — التوجه اليومي غير حاسم");
   } else if (h4Confirms) {
     verdict = "PASS";
     reasons.push(`H4 (${biasLabel(h4Bias)}) يدعم الاتجاه ✓`);

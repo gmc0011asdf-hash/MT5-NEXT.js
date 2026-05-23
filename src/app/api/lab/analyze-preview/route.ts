@@ -594,7 +594,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   // ── B5: Multi-Timeframe Consensus ────────────────────────────────────────
   // Fetch any MTF timeframes not already in indicatorResults, then run consensus.
   try {
-    const MTF_TFS = ["M15", "M30", "H1", "H4"] as const;
+    const MTF_TFS = ["M15", "M30", "H1", "H4", "D1"] as const;
     const mtfIndicators: Record<string, { status: string; trendBias?: string; candleCount?: number }> = {
       ...indicatorResults,
     };
