@@ -263,8 +263,6 @@ function scoreTimeframe(ind: IndicatorResult, now: number, spreadPoints: number)
 
   // Penalise wide spread relative to ATR
   if (ind.atr14 !== undefined && ind.atr14 > 0 && spreadPoints > 0) {
-    const spreadAsPrice = spreadPoints * (ind.ema20 ?? 0) * 0; // placeholder — we only have point spread
-    void spreadAsPrice;
     if (spreadPoints > 50) score -= 15;
   }
 
@@ -309,9 +307,14 @@ function computeMinimalIndicators(
   timeframe?: string,
 ): IndicatorResult {
   if (candles.length < 5) return { status: "insufficient_data" };
-  const closes = candles.map((c) => c.close);
+  // Exclude the current open candle — only completed candles are used for SMA/lastClose/lastCandle.
+  // ATR and recentHigh/Low still use the full array for broader context.
+  const closedForCalc = candles.slice(0, -1);
+  if (closedForCalc.length < 4) return { status: "insufficient_data" };
 
-  // ATR14 — True Range average
+  const closes = closedForCalc.map((c) => c.close);
+
+  // ATR14 — True Range average (uses all candles for a wider window)
   const trWindow = candles.slice(Math.max(0, candles.length - 15));
   let trSum = 0; let trCount = 0;
   for (let i = 1; i < trWindow.length; i++) {
@@ -328,13 +331,13 @@ function computeMinimalIndicators(
   const recentHigh = Math.max(...recent20.map((c) => c.high));
   const recentLow  = Math.min(...recent20.map((c) => c.low));
   const lastClose  = closes[closes.length - 1]!;
-  const lastCandle = candles[candles.length - 1]!;
+  const lastCandle = closedForCalc[closedForCalc.length - 1]!;
 
   const sma20Closes = closes.slice(-20);
   const sma20 = sma20Closes.reduce((a, b) => a + b, 0) / sma20Closes.length;
   const trendBias =
-    lastClose > sma20 * 1.001 ? "BULLISH" :
-    lastClose < sma20 * 0.999 ? "BEARISH" : "NEUTRAL";
+    lastClose > sma20 * 1.001 ? "bullish" :
+    lastClose < sma20 * 0.999 ? "bearish" : "neutral";
 
   return {
     status:          "ok",
@@ -836,8 +839,8 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
 
   reasons.push(
     direction === "bullish"
-      ? `ترند صاعد (EMA20 > EMA50 > EMA200) — اتجاه الدخول: شراء`
-      : `ترند هابط (EMA20 < EMA50 < EMA200) — اتجاه الدخول: بيع`,
+      ? (localMode ? `ترند صاعد (SMA20) — اتجاه الدخول: شراء`            : `ترند صاعد (EMA20 > EMA50 > EMA200) — اتجاه الدخول: شراء`)
+      : (localMode ? `ترند هابط (SMA20) — اتجاه الدخول: بيع`             : `ترند هابط (EMA20 < EMA50 < EMA200) — اتجاه الدخول: بيع`),
   );
   if (ind.momentumBias === "strong") {
     reasons.push("الزخم قوي (RSI + MACD متوافقان)");
