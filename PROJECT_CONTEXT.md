@@ -3,7 +3,7 @@
 
 > **⚠️ هذا الملف يجب أن يُقرأ قبل أي تنفيذ في هذا المشروع.**  
 > أي وكيل أو مطور يبدأ يجب أن يقرأ هذا الملف أولاً.  
-> آخر تحديث: 2026-05-17 (تحديث ما بعد المراجعة الأمنية - بدء مرحلة Fix-0)
+> آخر تحديث: 2026-05-23 (إتمام MT5_GOLD_MASTER_DEVELOPMENT_PLAN — جميع المراحل المنجزة)
 
 ---
 
@@ -60,6 +60,22 @@ Institutional-grade analytical trading system — informational analysis only.
 | DOCS-1 | Markdown Cleanup Plan | ✅ منجز |
 | DOCS-2 | Reorganize docs + PROJECT_CONTEXT + Skills | ✅ منجز |
 | Convex AI | تثبيت Convex AI Skills | ✅ منجز |
+| Fix-0 | توثيق `.env.local.example` وتحديث السياق | ✅ منجز |
+| Fix-1 | تأمين مسارات Proxy بـ Clerk Auth + عزل userId | ✅ منجز |
+| Fix-2 | Cron Jobs لتنظيف الجداول دورياً | ✅ منجز |
+| Fix-3 | واجهات Frontend الناقصة + إصلاحات بصرية | ✅ منجز |
+| **Gold Plan** | **MT5_GOLD_MASTER_DEVELOPMENT_PLAN** | |
+| 8-A | مكتبة الاستراتيجيات — Schema + Queries + Mutations | ✅ منجز |
+| 8-B | صفحة مكتبة الاستراتيجيات `/strategy-library` | ✅ منجز |
+| 8-C | صفحة تفاصيل الاستراتيجية `/strategy-library/[id]` + Shadow Mode | ✅ منجز |
+| 8-D | حفظ نتائج Strategy Lab في مكتبة الاستراتيجيات | ✅ منجز |
+| 8-E | Shadow Signal Form: lot افتراضي + rule compliance badges | ✅ منجز |
+| 8-F | مقارنة الاستراتيجيات `/strategy-library/compare` | ✅ منجز |
+| 7.3 | StrategyCompliancePanel — لجنة الاستراتيجية في مركز الذهب | ✅ منجز |
+| 4.2 | Expected Value (EV) — عمود EV في جدول المقارنة | ✅ منجز |
+| 4.3 | Consistency Score (σ) — انحراف معياري في إحصاءات التجربة | ✅ منجز |
+| 2.2 | calculatedLot — الـ lot الافتراضي في نموذج الإشارة | ✅ منجز |
+| 8-G/8-H | Controlled Experiment + Pending Orders | 🔒 محظور — Stage 14 |
 
 ---
 
@@ -70,11 +86,11 @@ Institutional-grade analytical trading system — informational analysis only.
 - **الخطورة P1:** الحاجة إلى عزل البيانات في جداول Convex باستخدام `userId` (مثل `mt5MarketTicks`).
 - **المخاطر التشغيلية:** نمو غير محدود للجداول (Unbounded Growth) يتطلب وظائف تنظيف مجدولة (Cron Jobs).
 
-**المراحل الإصلاحية الحالية (يجب تنفيذها بالترتيب وبموافقة مسبقة):**
+**المراحل الإصلاحية (مكتملة جميعها):**
 - [✅] **Fix-0:** إعداد البيئة وتوثيق `.env.local.example` وتحديث السياق.
-- [⏳] **Fix-1:** تأمين مسارات الـ Proxy بـ Clerk Auth وعزل بيانات Convex بـ userId.
-- [⏳] **Fix-2:** تحسين قاعدة البيانات عبر إضافة وظائف تنظيف دورية (Cron Jobs).
-- [⏳] **Fix-3:** استكمال واجهات الـ Frontend الناقصة وتنظيف المشاكل البصرية الطفيفة.
+- [✅] **Fix-1:** تأمين مسارات الـ Proxy بـ Clerk Auth وعزل بيانات Convex بـ userId.
+- [✅] **Fix-2:** تحسين قاعدة البيانات عبر إضافة وظائف تنظيف دورية (Cron Jobs).
+- [✅] **Fix-3:** استكمال واجهات الـ Frontend الناقصة وتنظيف المشاكل البصرية الطفيفة.
 
 ---
 
@@ -90,15 +106,22 @@ Institutional-grade analytical trading system — informational analysis only.
 | `src/app/(dashboard)/settings/page.tsx` | الإعدادات — يستخدم Convex |
 | `src/app/(dashboard)/system-health/page.tsx` | صحة النظام — Placeholder |
 | `src/app/(dashboard)/error-center/page.tsx` | مركز الأخطاء — Placeholder |
+| `src/app/(dashboard)/gold/page.tsx` | مركز الذهب المؤسسي — يشمل StrategyCompliancePanel |
+| `src/app/(dashboard)/gold/strategy-lab/page.tsx` | مختبر الاستراتيجية + حفظ في المكتبة (8-D) |
+| `src/app/(dashboard)/strategy-library/page.tsx` | مكتبة الاستراتيجيات — قائمة كاملة (8-B) |
+| `src/app/(dashboard)/strategy-library/[id]/page.tsx` | تفاصيل الاستراتيجية — Shadow Mode + إحصاءات (8-C) |
+| `src/app/(dashboard)/strategy-library/compare/page.tsx` | مقارنة الاستراتيجيات — EV + Level-2 Plans (8-F) |
 
 ### Convex
 
 | الملف | الوصف |
 |---|---|
-| `convex/schema.ts` | Schema الكامل — 19 جدول |
+| `convex/schema.ts` | Schema الكامل — 19+ جدول (يشمل strategies, strategyFiles, strategyBacktests, strategySignals, strategyExperiments) |
+| `convex/strategies.ts` | Queries + Mutations لمكتبة الاستراتيجيات الكاملة |
 | `convex/decisionJournal.ts` | 6 read-only queries للـ Decision Journal |
 | `convex/coreQueries.ts` | Queries الرئيسية للنظام |
 | `convex/mt5Bridge.ts` | Mutations لجمع بيانات MT5 |
+| `convex/crons.ts` | Cron Jobs لتنظيف الجداول (Fix-2) |
 | `convex/_generated/api.d.ts` | أنواع API المولَّدة |
 | `convex/_generated/ai/guidelines.md` | إرشادات Convex AI |
 
@@ -109,6 +132,8 @@ Institutional-grade analytical trading system — informational analysis only.
 | `src/lib/trading/shared/decision-contract.ts` | عقد بيانات Decision Journal (الأنواع) |
 | `src/lib/constants/navigation.ts` | Navigation للتطبيق |
 | `src/lib/mt5-bridge/index.ts` | MT5 bridge utilities |
+| `src/lib/gold/gold-profile.ts` | GOLD_PROFILE ثوابت رمز XAUUSD |
+| `src/components/lab/StrategyCompliancePanel.tsx` | لجنة الاستراتيجية — Section 7.3 |
 
 ### Python Service
 
@@ -179,7 +204,7 @@ Institutional-grade analytical trading system — informational analysis only.
 # TypeScript check — يجب EXIT:0
 pnpm exec tsc --noEmit
 
-# Build — يجب نجاح 17 صفحة
+# Build — يجب نجاح جميع الصفحات
 pnpm run build
 
 # Git status
