@@ -53,6 +53,7 @@ import {
   buildGoldRecommendation,
   type GoldRecommendation,
 } from "@/lib/gold/gold-recommendation-engine";
+import { GOLD_PROFILE } from "@/lib/gold/gold-profile";
 import { SystemRecommendationCard } from "@/components/lab/SystemRecommendationCard";
 import {
   buildGoldTradePlans,
@@ -5921,7 +5922,12 @@ export function AnalysisControlPanel({
   const [symbol, setSymbol] = useState<string>(lockedSymbol ?? "");
   const [timeframeMode, setTimeframeMode] = useState<"manual" | "auto">("manual");
   const [manualTF, setManualTF] = useState<TF>("M15");
-  const [candidateTFs, setCandidateTFs] = useState<Set<TF>>(new Set(["M15", "H1", "H4"]));
+  // هرم MTF المؤسسي: في وضع الذهب نستخدم M15+H1+H4+D1 (D1 يعمل حتى أثناء إغلاق السوق)
+  const [candidateTFs, setCandidateTFs] = useState<Set<TF>>(
+    () => (mode === "gold" || lockedSymbol === "XAUUSD")
+      ? new Set([...GOLD_PROFILE.preferredTimeframes] as TF[])
+      : new Set(["M15", "H1", "H4"] as TF[]),
+  );
   const [candleCount, setCandleCount] = useState(300);
   const [stopPoints, setStopPoints] = useState(300);
   const [useRR, setUseRR] = useState(true);
@@ -6234,6 +6240,80 @@ export function AnalysisControlPanel({
                 </Select>
               )}
             </div>
+
+            {/* ── إعدادات مسبقة للذهب — Gold Mode Presets ─────────────── */}
+            {(mode === "gold" || lockedSymbol === "XAUUSD") && (
+              <div className="flex flex-col gap-1.5 sm:col-span-2">
+                <label className="text-sm font-medium text-muted-foreground">
+                  إعداد سريع — Gold Presets
+                </label>
+                <div className="flex flex-wrap gap-1.5">
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={() => {
+                      setTimeframeMode("manual");
+                      setManualTF("M15");
+                      setCandleCount(300);
+                      setStopPoints(GOLD_PROFILE.suggestedStopPoints.M15);
+                      setUseRR(true); setRrRatio(1.5);
+                    }}
+                    className="rounded-md border border-sky-500/30 bg-sky-500/8 px-2.5 py-1.5 text-[11px] text-sky-300/80 hover:border-sky-400/50 hover:text-sky-200 transition-colors disabled:opacity-40"
+                  >
+                    ⚡ سكالب M15
+                    <span className="block text-[9px] opacity-60 mt-0.5">SL 200ن · RR 1.5</span>
+                  </button>
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={() => {
+                      setTimeframeMode("manual");
+                      setManualTF("H1");
+                      setCandleCount(300);
+                      setStopPoints(GOLD_PROFILE.suggestedStopPoints.H1);
+                      setUseRR(true); setRrRatio(2);
+                    }}
+                    className="rounded-md border border-amber-500/30 bg-amber-500/8 px-2.5 py-1.5 text-[11px] text-amber-300/80 hover:border-amber-400/50 hover:text-amber-200 transition-colors disabled:opacity-40"
+                  >
+                    📊 إنترا-داي H1
+                    <span className="block text-[9px] opacity-60 mt-0.5">SL 400ن · RR 2</span>
+                  </button>
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={() => {
+                      setTimeframeMode("manual");
+                      setManualTF("H4");
+                      setCandleCount(200);
+                      setStopPoints(GOLD_PROFILE.suggestedStopPoints.H4);
+                      setUseRR(true); setRrRatio(2.5);
+                    }}
+                    className="rounded-md border border-violet-500/30 bg-violet-500/8 px-2.5 py-1.5 text-[11px] text-violet-300/80 hover:border-violet-400/50 hover:text-violet-200 transition-colors disabled:opacity-40"
+                  >
+                    🔄 سوينج H4
+                    <span className="block text-[9px] opacity-60 mt-0.5">SL 800ن · RR 2.5</span>
+                  </button>
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={() => {
+                      setTimeframeMode("auto");
+                      setCandidateTFs(new Set([...GOLD_PROFILE.preferredTimeframes] as TF[]));
+                      setCandleCount(300);
+                      setStopPoints(400);
+                      setUseRR(true); setRrRatio(2);
+                    }}
+                    className="rounded-md border border-emerald-500/30 bg-emerald-500/8 px-2.5 py-1.5 text-[11px] text-emerald-300/80 hover:border-emerald-400/50 hover:text-emerald-200 transition-colors disabled:opacity-40"
+                  >
+                    🔍 MTF تلقائي
+                    <span className="block text-[9px] opacity-60 mt-0.5">M15+H1+H4+D1 · أفضل فريم</span>
+                  </button>
+                </div>
+                <p className="text-[10px] text-muted-foreground/40">
+                  الإعدادات المسبقة استرشادية — تُعدَّل يدوياً بعدها حسب التحليل. ليست توصية تداول.
+                </p>
+              </div>
+            )}
 
             {/* وضع الفريم */}
             <div className="flex flex-col gap-1">

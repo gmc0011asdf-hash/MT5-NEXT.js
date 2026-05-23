@@ -1,9 +1,31 @@
 import type { RegimeClassification } from "./gold-regime-classifier";
 
+/**
+ * GOLD_PROFILE — ثوابت مركز الذهب المؤسسي
+ * preferredTimeframes: هرم MTF المؤسسي للذهب
+ *   M15 → إشارة الدخول   (threshold 30 دقيقة)
+ *   H1  → تأكيد قصير     (threshold 2 ساعة)
+ *   H4  → سياق متوسط     (threshold 8 ساعات)
+ *   D1  → توجه كلي       (threshold 36 ساعة) — يعمل حتى أثناء إغلاق السوق
+ */
 export const GOLD_PROFILE = {
   symbol: "XAUUSD",
   modeName: "Gold Institutional Mode",
-  preferredTimeframes: ["M15", "H1", "H4"] as const,
+  preferredTimeframes: ["M15", "H1", "H4", "D1"] as const,
+  /** حدود الجِدَّة لكل فريم زمني (بالميلي ثانية) */
+  staleThresholdMs: {
+    M15: 30 * 60 * 1000,
+    H1:  2  * 60 * 60 * 1000,
+    H4:  8  * 60 * 60 * 1000,
+    D1:  36 * 60 * 60 * 1000,
+  } as const,
+  /** نقاط وقف الخسارة المقترحة لكل فريم (استرشادية — ليست توصية) */
+  suggestedStopPoints: {
+    M15: 200,
+    H1:  400,
+    H4:  800,
+    D1:  2000,
+  } as const,
   maxSpreadPoints: 30,
   defaultDecision: "WAIT" as const,
 } as const;

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import {
   GOLD_PROFILE,
   runGoldDecisionEngine,
@@ -16,8 +16,21 @@ import {
 import { institutionalCardClass } from "@/lib/ui-institutional";
 import { Button } from "@/components/ui/button";
 
-const LOCAL_SYMBOLS_KEY = "mt5:selectedAnalysisSymbols";
-const CANDLE_COUNT      = 30;
+const LOCAL_SYMBOLS_KEY  = "mt5:selectedAnalysisSymbols";
+const CANDLE_COUNT       = 50;   // زيادة من 30 إلى 50 لتصنيف أدق
+const AUTO_REFRESH_MS    = 60_000; // تحديث تلقائي كل 60 ثانية
+
+// ─── Session helpers ──────────────────────────────────────────────────────────
+type TradingSession = { name: string; label: string; open: boolean };
+
+function getTradingSessions(): TradingSession[] {
+  const h = new Date().getUTCHours();
+  return [
+    { name: "Asian",   label: "آسيا",    open: h >= 0  && h < 9  },
+    { name: "London",  label: "لندن",    open: h >= 7  && h < 16 },
+    { name: "NewYork", label: "نيويورك", open: h >= 12 && h < 21 },
+  ];
+}
 
 // ─── Regime display helpers ───────────────────────────────────────────────────
 
@@ -55,6 +68,8 @@ export function GoldStatusCard() {
   const [regime,     setRegime]     = useState<RegimeClassification | null>(null);
   const [fetchError, setFetchError] = useState<string | null>(null);
   const [fetchedAt,  setFetchedAt]  = useState<Date | null>(null);
+  const [sessions,   setSessions]   = useState<TradingSession[]>(() => getTradingSessions());
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const load = useCallback(async () => {
     setLoadState("loading");
@@ -119,6 +134,14 @@ export function GoldStatusCard() {
 
   useEffect(() => {
     void load();
+    // تحديث تلقائي كل 60 ثانية
+    timerRef.current = setInterval(() => {
+      void load();
+      setSessions(getTradingSessions());
+    }, AUTO_REFRESH_MS);
+    return () => {
+      if (timerRef.current) clearInterval(timerRef.current);
+    };
   }, [load]);
 
   const isBlock = decision?.decision === "BLOCK";
@@ -222,6 +245,27 @@ export function GoldStatusCard() {
             </div>
           )}
 
+          {/* ── جلسات التداول النشطة ─────────────────────────────────── */}
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-[10px] text-muted-foreground/60 shrink-0">الجلسات الآن:</span>
+            {sessions.map((s) => (
+              <span
+                key={s.name}
+                className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium ${
+                  s.open
+                    ? "border border-emerald-500/30 bg-emerald-500/10 text-emerald-300"
+                    : "border border-zinc-700/40 bg-zinc-800/30 text-zinc-500"
+                }`}
+              >
+                <span className={`h-1.5 w-1.5 rounded-full ${s.open ? "bg-emerald-400" : "bg-zinc-600"}`} />
+                {s.label}
+              </span>
+            ))}
+            {sessions.every((s) => !s.open) && (
+              <span className="text-[10px] text-zinc-500">السوق مغلق حالياً</span>
+            )}
+          </div>
+
           {/* Footer */}
           <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border/40 pt-2">
             <div className="flex flex-wrap items-center gap-2 text-[10px] text-muted-foreground">
@@ -231,15 +275,16 @@ export function GoldStatusCard() {
                   آخر تحديث: {fetchedAt.toLocaleTimeString("ar-SA", { hour12: false })}
                 </span>
               )}
+              <span className="text-muted-foreground/40">• يتجدد كل 60ث</span>
             </div>
             <Button
               type="button"
               variant="ghost"
               size="sm"
               className="h-6 px-2 text-[10px] text-muted-foreground hover:text-amber-200"
-              onClick={() => void load()}
+              onClick={() => { setSessions(getTradingSessions()); void load(); }}
             >
-              تحديث
+              تحديث الآن
             </Button>
           </div>
         </>
