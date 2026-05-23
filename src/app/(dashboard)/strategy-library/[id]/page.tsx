@@ -754,6 +754,21 @@ function ShadowModeSection({ strategyId }: { strategyId: Id<"strategies"> }) {
                   </span>
                 );
               })() : null}
+              {signals && signals.length >= 3 ? (() => {
+                const rrVals = signals
+                  .filter((s) => s.actualRR != null && s.outcome !== "PENDING" && s.outcome !== "EXPIRED")
+                  .map((s) => s.actualRR as number);
+                if (rrVals.length < 3) return null;
+                const mean = rrVals.reduce((a, b) => a + b, 0) / rrVals.length;
+                const variance = rrVals.reduce((a, b) => a + (b - mean) ** 2, 0) / rrVals.length;
+                const stdDev = Math.sqrt(variance);
+                const cls = stdDev < 0.5 ? "text-emerald-400" : stdDev < 1 ? "text-amber-300" : "text-rose-400";
+                return (
+                  <span>
+                    تناسق: <span className={`tabular-nums font-medium ${cls}`}>σ{stdDev.toFixed(2)}</span>
+                  </span>
+                );
+              })() : null}
               {activeExp.violations > 0 ? (
                 <span className="text-rose-300">مخالفات: {activeExp.violations}</span>
               ) : null}
