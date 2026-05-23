@@ -3397,7 +3397,7 @@ function TradePreviewPanel({
     bid:            number;
     ask:            number;
     refPrice:       number;
-    refPriceLabel:  "ASK" | "BID";
+    refPriceLabel:  "ASK" | "BID" | "LIMIT_ENTRY";
     stopsLevel:     number;
     minStopDist:    number;
     sl:             number;
@@ -3923,8 +3923,14 @@ function TradePreviewPanel({
     } catch { /* use defaults */ }
 
     // 3. Validate SL/TP against reference price
-    const _refPx    = _pfDir === "BUY" ? _freshAsk : _freshBid;
-    const _refLabel = _pfDir === "BUY" ? "ASK" : "BID";
+    // For LIMIT/STOP orders: MT5 measures SL/TP distance from entry price, not live price
+    const _pfOrderType  = effectivePreview.orderType ?? "";
+    const _pfEntryPrice = (effectivePreview.entry ?? null) as number | null;
+    const _isPending    = _pfOrderType.includes("LIMIT") || _pfOrderType.includes("STOP");
+    const _refPx    = _isPending && _pfEntryPrice != null ? _pfEntryPrice
+                    : (_pfDir === "BUY" ? _freshAsk! : _freshBid!);
+    const _refLabel = _isPending && _pfEntryPrice != null ? "LIMIT_ENTRY"
+                    : (_pfDir === "BUY" ? "ASK" : "BID");
     const _minPts   = _stopsLvlPts > 0 ? _stopsLvlPts : 10; // 10pt safe floor if stops_level unknown
     const _minDist  = parseFloat((_minPts * _pointSz).toFixed(5));
 
