@@ -118,6 +118,30 @@ export const listStrategyDecisions = query({
   },
 });
 
+export const listStrategiesWithBacktests = query({
+  args: {},
+  handler: async (ctx) => {
+    const identity = await ctx.auth.getUserIdentity();
+    if (!identity) throw new Error("Unauthorized");
+    const userId = identity.subject;
+    const strategies = await ctx.db
+      .query("strategies")
+      .withIndex("by_userId_createdAt", (q) => q.eq("userId", userId))
+      .order("desc")
+      .take(30);
+    return Promise.all(
+      strategies.map(async (s) => {
+        const backtests = await ctx.db
+          .query("strategyBacktests")
+          .withIndex("by_strategyId", (q) => q.eq("strategyId", s._id))
+          .order("desc")
+          .take(20);
+        return { ...s, backtests };
+      }),
+    );
+  },
+});
+
 // ─── Mutations ────────────────────────────────────────────────────────────────
 
 export const createStrategy = mutation({

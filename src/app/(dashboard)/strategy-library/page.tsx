@@ -8,7 +8,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { institutionalCardClass } from "@/lib/ui-institutional";
-import { BookMarked, ChevronLeft, Plus, X } from "lucide-react";
+import { BarChart2, BookMarked, ChevronLeft, Plus, X } from "lucide-react";
 
 function FieldLabel({ children, className }: { children: React.ReactNode; className?: string }) {
   return <label className={`block text-muted-foreground ${className ?? "text-xs"}`}>{children}</label>;
@@ -323,15 +323,24 @@ export default function StrategyLibraryPage() {
             توثيق الاستراتيجيات وتتبع حالتها — من المسودة إلى الاعتماد.
           </p>
         </div>
-        {canUseConvex && !showCreate ? (
-          <Button
-            onClick={() => setShowCreate(true)}
-            className="shrink-0 bg-amber-600 hover:bg-amber-700 text-white"
+        <div className="flex shrink-0 items-center gap-2">
+          <Link
+            href="/strategy-library/compare"
+            className="flex items-center gap-1.5 rounded-md border border-amber-500/25 px-3 py-1.5 text-amber-200 text-sm hover:bg-amber-500/10 transition-colors"
           >
-            <Plus className="h-4 w-4 me-1" />
-            استراتيجية جديدة
-          </Button>
-        ) : null}
+            <BarChart2 className="h-4 w-4" />
+            مقارنة
+          </Link>
+          {canUseConvex && !showCreate ? (
+            <Button
+              onClick={() => setShowCreate(true)}
+              className="bg-amber-600 hover:bg-amber-700 text-white"
+            >
+              <Plus className="h-4 w-4 me-1" />
+              استراتيجية جديدة
+            </Button>
+          ) : null}
+        </div>
       </div>
 
       {/* ─── تنبيه أمان ─── */}
