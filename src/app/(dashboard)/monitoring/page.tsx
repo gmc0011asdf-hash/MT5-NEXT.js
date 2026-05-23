@@ -59,7 +59,7 @@ export default function MonitoringPage() {
   );
 
   return (
-    <div className="flex flex-col gap-8">
+    <div dir="rtl" className="flex flex-col gap-8">
       <div className="mx-auto w-full max-w-7xl space-y-6">
         <Card className={institutionalCardClass("p-4")}>
           <CardHeader className="space-y-2 p-0">

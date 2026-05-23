@@ -108,7 +108,7 @@ export function AppSidebar() {
 
                 {/* Collapsible items */}
                 {isOpen && (
-                  <div className="mb-1 flex flex-col gap-0.5 pr-3">
+                  <div className="mb-1 flex flex-col gap-0.5 ps-3">
                     {group.items.map((item) => {
                       const ItemIcon = item.icon;
                       const active =

@@ -13,7 +13,7 @@ const MOCK_STATS = [
 
 export default function ReplayPage() {
   return (
-    <div className="mx-auto flex max-w-7xl flex-col gap-6">
+    <div dir="rtl" className="mx-auto flex max-w-7xl flex-col gap-6">
       <div>
         <h2 className="page-title">اختبار Replay</h2>
         <p className="label-secondary mt-1">لا يوجد اتصال حقيقي في هذه النسخة الأولية.</p>

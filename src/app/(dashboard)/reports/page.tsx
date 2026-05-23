@@ -511,7 +511,7 @@ export default function ReportsPage() {
   }
 
   return (
-    <div className="mx-auto flex max-w-7xl flex-col gap-6">
+    <div dir="rtl" className="mx-auto flex max-w-7xl flex-col gap-6">
       <div>
         <h2 className="page-title">التقارير</h2>
         <p className="label-secondary mt-1">تقارير MT5 الحقيقية — قراءة فقط.</p>
@@ -545,7 +545,7 @@ export default function ReportsPage() {
             <label className="space-y-1 text-xs">
               <span className="text-muted-foreground">الرمز</span>
               <select className="w-full rounded-md border border-amber-500/20 bg-background px-2 py-1.5 text-sm" value={symbolFilter} onChange={(e) => setSymbolFilter(e.target.value)}>
-                <option value="all">All</option>
+                <option value="all">الكل</option>
                 {symbolOptions.map((s) => <option key={s} value={s}>{s}</option>)}
               </select>
             </label>

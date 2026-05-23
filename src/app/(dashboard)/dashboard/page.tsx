@@ -77,7 +77,7 @@ export default function DashboardPage() {
   }
 
   return (
-    <div className="mx-auto flex max-w-7xl flex-col gap-8">
+    <div dir="rtl" className="mx-auto flex max-w-7xl flex-col gap-8">
       <section className="space-y-3">
         <h3 className="page-title">لوحة التحكم</h3>
         <p className="label-secondary">ملخص MT5 المحلي — قراءة فقط.</p>

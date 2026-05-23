@@ -107,12 +107,12 @@ export function AppHeader() {
             ) : null}
             {status?.equity !== null ? (
               <Badge variant="outline" className="border-border text-muted-foreground tabular-nums">
-                Equity: {status.equity}
+                حقوق الملكية: {status.equity}
               </Badge>
             ) : null}
             {status?.free_margin !== null ? (
               <Badge variant="outline" className="border-border text-muted-foreground tabular-nums">
-                Free Margin: {status.free_margin}
+                الهامش الحر: {status.free_margin}
               </Badge>
             ) : null}
           </>
