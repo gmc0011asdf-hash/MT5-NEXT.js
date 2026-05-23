@@ -60,6 +60,15 @@ function rateRR(v: number): MetricRating {
   if (v >= 1.5) return "ok";
   return "poor";
 }
+function rateEV(v: number): MetricRating {
+  if (v >= 0.5) return "good";
+  if (v > 0)    return "ok";
+  return "poor";
+}
+function computeEV(winRate: number, avgRR: number): number {
+  const w = winRate / 100;
+  return Math.round((w * avgRR - (1 - w) * 1) * 100) / 100;
+}
 
 const RATING_CLS: Record<MetricRating, string> = {
   good: "text-emerald-400 font-semibold",
@@ -180,12 +189,15 @@ function StrategyRow({
               }
             </span>
           </td>
+          <td className="py-2.5 px-2 text-center text-xs">
+            <MetricCell value={computeEV(bt.winRate, bt.avgRR)} rate={rateEV} decimals={2} />
+          </td>
           <td className="py-2.5 px-2 text-center text-[11px] text-muted-foreground/70">
             {bt.selectedPlan ?? "—"}
           </td>
         </>
       ) : (
-        <td colSpan={7} className="py-2.5 px-2 text-center text-xs text-muted-foreground/40">
+        <td colSpan={8} className="py-2.5 px-2 text-center text-xs text-muted-foreground/40">
           لا توجد نتائج للفريم {timeframe}
         </td>
       )}
@@ -367,9 +379,8 @@ export default function StrategyComparePage() {
                   <SortTh label="Avg RR"  k="avgRR" />
                   <SortTh label="DD %"    k="maxDrawdown" />
                   <SortTh label="ربح $"   k="netProfit" />
-                  <th className="pb-2 px-2 text-center text-xs font-medium text-muted-foreground">
-                    الخطة
-                  </th>
+                  <th className="pb-2 px-2 text-center text-xs font-medium text-muted-foreground">EV</th>
+                  <th className="pb-2 px-2 text-center text-xs font-medium text-muted-foreground">الخطة</th>
                 </tr>
               </thead>
               <tbody>
@@ -450,6 +461,82 @@ export default function StrategyComparePage() {
                       </tr>
                     );
                   })}
+              </tbody>
+            </table>
+          </CardContent>
+        </Card>
+      ) : null}
+
+      {/* ─── level 2: plan comparison per strategy ─── */}
+      {data && (data as StrategyWithBacktests[]).some((s) =>
+        new Set(s.backtests.filter((b) => b.timeframe === timeframe && b.selectedPlan).map((b) => b.selectedPlan)).size > 1,
+      ) ? (
+        <Card className={institutionalCardClass("p-0")}>
+          <CardHeader className="border-b border-amber-500/10 px-5 py-4">
+            <CardTitle className="card-title-inst">
+              مقارنة الخطط — Conservative / Balanced / Aggressive — فريم {timeframe}
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="overflow-x-auto px-0 pb-4">
+            <table className="w-full">
+              <thead>
+                <tr className="border-b border-amber-500/10 text-muted-foreground text-xs">
+                  <th className="pb-2 px-5 text-start font-medium">الاستراتيجية</th>
+                  {(["Conservative", "Balanced", "Aggressive"] as const).map((p) => (
+                    <th key={p} className="pb-2 px-3 text-center font-medium" colSpan={3}>
+                      {p}
+                    </th>
+                  ))}
+                </tr>
+                <tr className="border-b border-border/20 text-muted-foreground/60 text-[11px]">
+                  <th className="pb-1.5 px-5" />
+                  {(["Conservative", "Balanced", "Aggressive"] as const).flatMap((p) =>
+                    ["Win%", "PF", "EV"].map((m) => (
+                      <th key={`${p}-${m}`} className="pb-1.5 px-2 text-center font-normal">{m}</th>
+                    )),
+                  )}
+                </tr>
+              </thead>
+              <tbody>
+                {(data as StrategyWithBacktests[])
+                  .filter((s) =>
+                    new Set(
+                      s.backtests.filter((b) => b.timeframe === timeframe && b.selectedPlan).map((b) => b.selectedPlan),
+                    ).size > 1,
+                  )
+                  .map((s) => (
+                    <tr key={s._id} className="border-b border-border/30 hover:bg-muted/10 transition-colors">
+                      <td className="py-2.5 px-5 text-sm">
+                        <Link href={`/strategy-library/${s._id}`} className="hover:text-amber-300 transition-colors">
+                          {s.name}
+                        </Link>
+                      </td>
+                      {(["Conservative", "Balanced", "Aggressive"] as const).flatMap((planType) => {
+                        const bt = s.backtests
+                          .filter((b) => b.timeframe === timeframe && b.selectedPlan === planType)
+                          .reduce<Backtest | null>((best, cur) =>
+                            !best || cur.totalTrades > best.totalTrades ? cur : best, null);
+                        if (!bt) {
+                          return [
+                            <td key={`${planType}-wr`} className="py-2.5 px-2 text-center text-[11px] text-muted-foreground/30">—</td>,
+                            <td key={`${planType}-pf`} className="py-2.5 px-2 text-center text-[11px] text-muted-foreground/30">—</td>,
+                            <td key={`${planType}-ev`} className="py-2.5 px-2 text-center text-[11px] text-muted-foreground/30">—</td>,
+                          ];
+                        }
+                        return [
+                          <td key={`${planType}-wr`} className="py-2.5 px-2 text-center text-xs">
+                            <MetricCell value={bt.winRate} rate={rateWinRate} suffix="%" decimals={0} />
+                          </td>,
+                          <td key={`${planType}-pf`} className="py-2.5 px-2 text-center text-xs">
+                            <MetricCell value={bt.profitFactor} rate={ratePF} decimals={2} />
+                          </td>,
+                          <td key={`${planType}-ev`} className="py-2.5 px-2 text-center text-xs">
+                            <MetricCell value={computeEV(bt.winRate, bt.avgRR)} rate={rateEV} decimals={2} />
+                          </td>,
+                        ];
+                      })}
+                    </tr>
+                  ))}
               </tbody>
             </table>
           </CardContent>
