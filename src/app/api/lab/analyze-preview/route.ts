@@ -137,6 +137,7 @@ type AnalysisResult = {
   riskPercentOfEquity?: number;
   estimatedLot?: number;
   lotValidation?: LotValidation;
+  lotSource?: "atr" | "stopPoints";
   dataQuality: { symbolPropsAvailable: boolean; indicatorsAvailable: boolean };
   freshness: { candleAgeMs?: number; stale: boolean };
   indicators?: IndicatorResult;
@@ -806,14 +807,33 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     takeProfit = entry - targetPoints * point;
   }
 
-  // ── lot calculation ───────────────────────────────────────────────────────
+  // ── lot calculation (prefer ATR-based to match plans engine) ────────────
   let estimatedLot: number | undefined;
   let lotValidation: LotValidation | undefined;
+  let lotSource: "atr" | "stopPoints" = "stopPoints";
   if (symbolProps) {
-    const lotResult = computeLot(stopPoints, riskUsd, symbolProps);
+    const atrVal = typeof ind.atr14 === "number" && ind.atr14 > 0 ? ind.atr14 : 0;
+    // Use 1.5×ATR (Balanced plan reference) when available — matches plans engine formula
+    const atrStopPts = atrVal > 0 && symbolProps.point > 0
+      ? Math.round((1.5 * atrVal) / symbolProps.point)
+      : 0;
+    const effectiveStopPoints = atrStopPts > 0 ? atrStopPts : stopPoints;
+    if (atrStopPts > 0) lotSource = "atr";
+
+    const lotResult = computeLot(effectiveStopPoints, riskUsd, symbolProps);
     estimatedLot = lotResult.estimatedLot > 0 ? lotResult.estimatedLot : undefined;
     lotValidation = lotResult.lotValidation;
     warnings.push(...lotResult.warnings);
+
+    // Warn when user stopPoints differs >2× from ATR-based reference
+    if (atrStopPts > 0 && stopPoints > 0) {
+      const ratio = Math.max(atrStopPts, stopPoints) / Math.min(atrStopPts, stopPoints);
+      if (ratio > 2) {
+        warnings.push(
+          `لوت محسوب من ATR (${atrStopPts} نقطة) — الوقف المدخل (${stopPoints} نقطة) يختلف ×${ratio.toFixed(1)} — استخدام ATR`,
+        );
+      }
+    }
   } else {
     warnings.push("خصائص الزوج غير متوفرة — لا يمكن حساب اللوت");
   }
@@ -875,6 +895,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     riskPercentOfEquity,
     estimatedLot,
     lotValidation,
+    lotSource,
     dataQuality: { symbolPropsAvailable, indicatorsAvailable: true },
     freshness: { candleAgeMs, stale: isStale },
     indicators: {
