@@ -12,6 +12,7 @@ const isProtectedRoute = createRouteMatcher([
   "/settings(.*)",
   "/convex-test(.*)",
   "/convex-core(.*)",
+  "/strategy-library(.*)",
   "/api/mt5-readonly(.*)",
   "/api/lab(.*)",
 ]);
