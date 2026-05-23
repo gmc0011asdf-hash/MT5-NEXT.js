@@ -3,11 +3,14 @@
 /**
  * /gold/strategy-lab — Gold Strategy Lab — HTML Report Analyzer v1
  * تحليل تقارير MT5 Strategy Tester لـ XAUUSD — قراءة فقط.
- * التحليل يجري client-side فقط — لا يُرسل HTML إلى أي خادم — لا يُحفظ في Convex.
+ * التحليل يجري client-side فقط — لا يُرسل HTML إلى أي خادم.
  * لا تنفيذ تداول — لا اعتماد نهائي للاستراتيجية — تحليل أولي استرشادي فقط.
  */
 
 import { useState, useRef } from "react";
+import { useConvexAuth, useMutation, useQuery } from "convex/react";
+import { api } from "../../../../../convex/_generated/api";
+import type { Id } from "../../../../../convex/_generated/dataModel";
 import {
   parseStrategyReport,
   evaluateReport,
@@ -17,6 +20,7 @@ import {
 } from "@/lib/gold/strategy-report-parser";
 import { institutionalCardClass } from "@/lib/ui-institutional";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 
 // ─── Display helpers ──────────────────────────────────────────────────────────
 
@@ -54,6 +58,194 @@ function FieldRow({ label, value }: { label: string; value: string }) {
     <div className="flex justify-between gap-2 py-1 border-b border-border/20 last:border-0">
       <span className="text-xs text-muted-foreground shrink-0">{label}</span>
       <span className="text-xs text-foreground/90 text-left tabular-nums font-mono">{value}</span>
+    </div>
+  );
+}
+
+// ─── Save to Library ──────────────────────────────────────────────────────────
+
+function SaveToLibrarySection({
+  parseResult,
+  fileName,
+}: {
+  parseResult: ParsedReport;
+  fileName: string | null;
+}) {
+  const { isAuthenticated } = useConvexAuth();
+  const strategies = useQuery(
+    api.strategies.listStrategiesForSelect,
+    isAuthenticated ? {} : "skip",
+  );
+  const addFile     = useMutation(api.strategies.addStrategyFile);
+  const addBacktest = useMutation(api.strategies.addStrategyBacktest);
+
+  const [strategyId, setStrategyId] = useState<string>("");
+  const [timeframe,  setTimeframe]  = useState<string>(parseResult.timeframe ?? "");
+  const [periodFrom, setPeriodFrom] = useState<string>("");
+  const [periodTo,   setPeriodTo]   = useState<string>("");
+  const [notes,      setNotes]      = useState<string>("");
+  const [saving,     setSaving]     = useState(false);
+  const [saved,      setSaved]      = useState(false);
+  const [error,      setError]      = useState<string>("");
+
+  if (!isAuthenticated) return null;
+
+  async function handleSave() {
+    if (!strategyId) { setError("اختر استراتيجية أولاً"); return; }
+    if (!timeframe.trim()) { setError("أدخل الفريم الزمني"); return; }
+    setSaving(true);
+    setError("");
+    try {
+      const parsedFromMs = periodFrom
+        ? new Date(periodFrom.replace(/\./g, "-")).getTime()
+        : undefined;
+      const parsedToMs = periodTo
+        ? new Date(periodTo.replace(/\./g, "-")).getTime()
+        : undefined;
+
+      const fileId = await addFile({
+        strategyId: strategyId as Id<"strategies">,
+        fileType:   "BACKTEST_HTML",
+        fileName:   fileName ?? "backtest.html",
+        timeframe:  timeframe.trim(),
+        periodFrom: isNaN(parsedFromMs as number) ? undefined : parsedFromMs,
+        periodTo:   isNaN(parsedToMs as number)   ? undefined : parsedToMs,
+        parsedSummary: JSON.stringify({
+          totalTrades:  parseResult.totalTrades,
+          winRate:      parseResult.winRate,
+          netProfit:    parseResult.netProfit,
+          profitFactor: parseResult.profitFactor,
+          drawdownPct:  parseResult.drawdownPct,
+        }),
+        notes: notes.trim() || undefined,
+      });
+
+      const avgWin  = parseResult.averageWin  ?? 0;
+      const avgLoss = Math.abs(parseResult.averageLoss ?? 0);
+      const avgRR   = avgLoss > 0 ? avgWin / avgLoss : 1;
+
+      await addBacktest({
+        strategyId:  strategyId as Id<"strategies">,
+        fileId,
+        timeframe:   timeframe.trim(),
+        periodFrom:  isNaN(parsedFromMs as number) ? undefined : parsedFromMs,
+        periodTo:    isNaN(parsedToMs as number)   ? undefined : parsedToMs,
+        totalTrades: parseResult.totalTrades ?? 0,
+        winRate:     parseResult.winRate     ?? 0,
+        netProfit:   parseResult.netProfit   ?? 0,
+        maxDrawdown: parseResult.drawdownPct ?? 0,
+        profitFactor: parseResult.profitFactor ?? 1,
+        avgRR:       Math.round(avgRR * 100) / 100,
+        notes:       notes.trim() || undefined,
+      });
+
+      setSaved(true);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "حدث خطأ أثناء الحفظ");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  if (saved) {
+    return (
+      <div className={institutionalCardClass("p-4")}>
+        <p className="text-emerald-400 text-sm font-medium">
+          ✓ تم حفظ نتائج الباكتست في مكتبة الاستراتيجيات بنجاح.
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className={institutionalCardClass("p-4 space-y-3")}>
+      <h3 className="font-medium text-amber-100/90 text-sm">حفظ في مكتبة الاستراتيجيات</h3>
+      <p className="text-[11px] text-muted-foreground">
+        احفظ ملخص نتائج هذا الباكتست مرتبطاً باستراتيجية موجودة في المكتبة.
+      </p>
+
+      {error ? (
+        <p className="text-rose-300 text-xs rounded-md border border-rose-500/20 bg-rose-500/10 px-3 py-2">
+          {error}
+        </p>
+      ) : null}
+
+      <div className="space-y-1">
+        <label className="block text-xs text-muted-foreground">الاستراتيجية *</label>
+        <select
+          value={strategyId}
+          onChange={(e) => setStrategyId(e.target.value)}
+          className="w-full rounded-md border border-amber-500/20 bg-muted/20 px-3 py-2 text-foreground text-sm"
+          disabled={!strategies || strategies.length === 0}
+        >
+          <option value="">
+            {!strategies
+              ? "جاري التحميل..."
+              : strategies.length === 0
+              ? "لا توجد استراتيجيات — أنشئ واحدة أولاً"
+              : "اختر استراتيجية..."}
+          </option>
+          {(strategies ?? []).map((s) => (
+            <option key={s._id} value={s._id}>{s.name}</option>
+          ))}
+        </select>
+      </div>
+
+      <div className="grid grid-cols-2 gap-3">
+        <div className="space-y-1">
+          <label className="block text-xs text-muted-foreground">الفريم الزمني *</label>
+          <Input
+            value={timeframe}
+            onChange={(e) => setTimeframe(e.target.value)}
+            placeholder="H1"
+            className="border-amber-500/20 bg-muted/20"
+            dir="ltr"
+          />
+        </div>
+        <div className="space-y-1">
+          <label className="block text-xs text-muted-foreground">ملاحظات (اختياري)</label>
+          <Input
+            value={notes}
+            onChange={(e) => setNotes(e.target.value)}
+            placeholder="مثال: اختبار 2024"
+            className="border-amber-500/20 bg-muted/20"
+          />
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 gap-3">
+        <div className="space-y-1">
+          <label className="block text-xs text-muted-foreground">من (YYYY.MM.DD)</label>
+          <Input
+            value={periodFrom}
+            onChange={(e) => setPeriodFrom(e.target.value)}
+            placeholder="2024.01.01"
+            className="border-amber-500/20 bg-muted/20"
+            dir="ltr"
+          />
+        </div>
+        <div className="space-y-1">
+          <label className="block text-xs text-muted-foreground">إلى (YYYY.MM.DD)</label>
+          <Input
+            value={periodTo}
+            onChange={(e) => setPeriodTo(e.target.value)}
+            placeholder="2025.01.01"
+            className="border-amber-500/20 bg-muted/20"
+            dir="ltr"
+          />
+        </div>
+      </div>
+
+      <div className="flex justify-end pt-1">
+        <Button
+          type="button"
+          disabled={saving || !strategies || strategies.length === 0}
+          onClick={handleSave}
+          className="bg-amber-600 hover:bg-amber-700 text-white text-sm"
+        >
+          {saving ? "جاري الحفظ..." : "حفظ في المكتبة"}
+        </Button>
+      </div>
     </div>
   );
 }
@@ -299,17 +491,16 @@ export default function GoldStrategyLabPage() {
             </div>
           )}
 
-          {/* Save notice */}
-          <div className="rounded-md border border-zinc-500/20 bg-zinc-500/[0.04] px-3 py-2 space-y-1">
-            <p className="text-[10px] text-muted-foreground/70">
-              🔒 لا يتم حفظ التقرير الخام. سيتم لاحقًا حفظ الخلاصة فقط بعد موافقتك.
-            </p>
-            <p className="text-[10px] text-muted-foreground/50">
-              هذا تحليل أولي استرشادي — لا يُعدّ اعتمادًا نهائيًا للاستراتيجية — لا تنفيذ تداول.
-            </p>
-          </div>
+          <p className="text-[10px] text-muted-foreground/50">
+            هذا تحليل أولي استرشادي — لا يُعدّ اعتمادًا نهائيًا للاستراتيجية — لا تنفيذ تداول.
+          </p>
         </div>
       )}
+
+      {/* ── Save to Library ─────────────────────────────────────────────── */}
+      {evaluation && parseResult ? (
+        <SaveToLibrarySection parseResult={parseResult} fileName={fileName} />
+      ) : null}
 
     </div>
   );

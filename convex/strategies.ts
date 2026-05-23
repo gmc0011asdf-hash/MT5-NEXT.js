@@ -18,6 +18,19 @@ export const listStrategies = query({
   },
 });
 
+export const listStrategiesForSelect = query({
+  handler: async (ctx) => {
+    const identity = await ctx.auth.getUserIdentity();
+    if (!identity) return [];
+    return ctx.db
+      .query("strategies")
+      .withIndex("by_userId_createdAt", (q) => q.eq("userId", identity.subject))
+      .order("desc")
+      .take(50)
+      .then((rows) => rows.map((s) => ({ _id: s._id, name: s.name, status: s.status })));
+  },
+});
+
 export const getStrategy = query({
   args: { strategyId: v.id("strategies") },
   handler: async (ctx, args) => {
@@ -483,8 +496,8 @@ export const addStrategyBacktest = mutation({
     strategyId:     v.id("strategies"),
     fileId:         v.optional(v.id("strategyFiles")),
     timeframe:      v.string(),
-    periodFrom:     v.number(),
-    periodTo:       v.number(),
+    periodFrom:     v.optional(v.number()),
+    periodTo:       v.optional(v.number()),
     totalTrades:    v.number(),
     winRate:        v.number(),
     netProfit:      v.number(),
