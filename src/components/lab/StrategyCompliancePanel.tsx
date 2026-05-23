@@ -8,12 +8,13 @@
  */
 
 import { useState } from "react";
+import Link from "next/link";
 import { useConvexAuth, useQuery } from "convex/react";
 import { api } from "../../../convex/_generated/api";
 import type { Id } from "../../../convex/_generated/dataModel";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { institutionalCardClass } from "@/lib/ui-institutional";
-import { AlertCircle, CheckCircle2, ShieldCheck, XCircle } from "lucide-react";
+import { AlertCircle, CheckCircle2, ExternalLink, ShieldCheck, XCircle } from "lucide-react";
 
 // ─── Session detection ────────────────────────────────────────────────────────
 
@@ -283,8 +284,28 @@ export function StrategyCompliancePanel() {
           </p>
         )}
 
-        <p className="text-[10px] text-muted-foreground/50 border-t border-border/15 pt-3">
-          هذه اللجنة تعرض قواعد الاستراتيجية للمراجعة اليدوية ��� لا تمنع التنفيذ تقنياً — القرار للمستخدم.
+        {strategy && (
+          <div className="flex flex-wrap items-center gap-3 border-t border-border/15 pt-3">
+            <Link
+              href={`/strategy-library/${strategy._id}`}
+              className="flex items-center gap-1 text-xs text-amber-300/80 hover:text-amber-200 transition-colors"
+            >
+              <ExternalLink className="h-3 w-3" />
+              فتح صفحة الاستراتيجية
+            </Link>
+            {strategy.status === "SHADOW_MODE" && (
+              <Link
+                href={`/strategy-library/${strategy._id}`}
+                className="flex items-center gap-1 text-xs text-purple-300/80 hover:text-purple-200 transition-colors"
+              >
+                <ExternalLink className="h-3 w-3" />
+                سجّل إشارة Shadow
+              </Link>
+            )}
+          </div>
+        )}
+        <p className="text-[10px] text-muted-foreground/50 pt-1">
+          هذه اللجنة تعرض قواعد الاستراتيجية للمراجعة اليدوية — لا تمنع التنفيذ تقنياً — القرار للمستخدم.
         </p>
       </CardContent>
     </Card>
