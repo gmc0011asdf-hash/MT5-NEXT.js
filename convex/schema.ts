@@ -520,4 +520,167 @@ export default defineSchema({
     .index("by_userId",            ["userId"])
     .index("by_userId_status",     ["userId", "status"])
     .index("by_userId_createdAt",  ["userId", "createdAt"]),
+
+  // ── Strategy Library (8-A) ───────────────────────────────────────────────
+  // Read-only analytical strategy library — no execution without Stage 14.
+  // All status transitions are manual — no automatic promotions.
+
+  strategies: defineTable({
+    userId:             v.string(),
+    name:               v.string(),
+    description:        v.optional(v.string()),
+    status:             v.string(),  // DRAFT | DOCUMENTED | BACKTESTING | SHADOW_MODE | CONTROLLED_EXPERIMENT | CONDITIONALLY_APPROVED | APPROVED | PAUSED | REJECTED
+    statusChangedAt:    v.optional(v.number()),
+    statusChangedBy:    v.optional(v.string()),
+    statusChangeReason: v.optional(v.string()),
+    allowedTimeframes:  v.array(v.string()),  // M15, H1, H4, D1
+    allowedSessions:    v.array(v.string()),  // London, NewYork, Asian
+    marketCondition:    v.string(),           // TRENDING | RANGING | VOLATILE | ANY
+    tags:               v.array(v.string()),
+    notes:              v.optional(v.string()),
+    createdAt:          v.number(),
+    updatedAt:          v.number(),
+  })
+    .index("by_userId",            ["userId"])
+    .index("by_userId_status",     ["userId", "status"])
+    .index("by_userId_createdAt",  ["userId", "createdAt"]),
+
+  strategyRules: defineTable({
+    strategyId:          v.id("strategies"),
+    userId:              v.string(),
+    entryConditions:     v.string(),
+    exitConditions:      v.string(),
+    invalidationRules:   v.string(),
+    blockConditions:     v.optional(v.string()),
+    riskRules:           v.optional(v.string()),
+    entryType:           v.string(),  // MARKET | LIMIT | STOP | MIXED
+    defaultPlan:         v.string(),  // Conservative | Balanced | Aggressive
+    defaultTarget:       v.string(),  // REALISTIC | BALANCED | FAR
+    minRR:               v.number(),
+    maxSpread:           v.number(),
+    requiredCommittees:  v.array(v.string()),
+    updatedAt:           v.number(),
+  })
+    .index("by_strategyId", ["strategyId"])
+    .index("by_userId",     ["userId"]),
+
+  strategyFiles: defineTable({
+    strategyId:    v.id("strategies"),
+    userId:        v.string(),
+    fileType:      v.string(),           // BACKTEST_HTML | BACKTEST_CSV | SPEC_DOC | SCREENSHOT | CUSTOM
+    fileName:      v.string(),
+    timeframe:     v.optional(v.string()),
+    periodFrom:    v.optional(v.number()),
+    periodTo:      v.optional(v.number()),
+    notes:         v.optional(v.string()),
+    parsedSummary: v.optional(v.string()),  // JSON-encoded extracted summary
+    uploadedAt:    v.number(),
+  })
+    .index("by_strategyId",          ["strategyId"])
+    .index("by_userId",              ["userId"])
+    .index("by_strategyId_fileType", ["strategyId", "fileType"]),
+
+  strategyExperiments: defineTable({
+    strategyId:     v.id("strategies"),
+    userId:         v.string(),
+    experimentType: v.string(),           // SHADOW | CONTROLLED
+    startedAt:      v.number(),
+    endedAt:        v.optional(v.number()),
+    endReason:      v.optional(v.string()),
+    totalSignals:   v.number(),
+    winCount:       v.number(),
+    lossCount:      v.number(),
+    winRate:        v.optional(v.number()),
+    avgRR:          v.optional(v.number()),
+    violations:     v.number(),
+    notes:          v.optional(v.string()),
+    createdAt:      v.number(),
+    updatedAt:      v.number(),
+  })
+    .index("by_strategyId",       ["strategyId"])
+    .index("by_userId",           ["userId"])
+    .index("by_userId_createdAt", ["userId", "createdAt"]),
+
+  strategySignals: defineTable({
+    strategyId:      v.id("strategies"),
+    experimentId:    v.optional(v.id("strategyExperiments")),
+    userId:          v.string(),
+    signalTime:      v.number(),
+    timeframe:       v.string(),
+    direction:       v.string(),           // BUY | SELL
+    entryPrice:      v.number(),
+    slPrice:         v.number(),
+    tp1Price:        v.number(),
+    tp2Price:        v.optional(v.number()),
+    calculatedLot:   v.optional(v.number()),
+    committeeResult: v.optional(v.string()),  // JSON-encoded committee verdicts
+    guardResult:     v.optional(v.string()),  // JSON-encoded guard result
+    mode:            v.string(),           // SHADOW | EXPERIMENT | LIVE
+    outcome:         v.string(),           // WIN | LOSS | NEUTRAL | PENDING | EXPIRED
+    outcomeTime:     v.optional(v.number()),
+    outcomePrice:    v.optional(v.number()),
+    actualRR:        v.optional(v.number()),
+    rulesMatched:    v.array(v.string()),
+    rulesMissed:     v.array(v.string()),
+    notes:           v.optional(v.string()),
+    createdAt:       v.number(),
+  })
+    .index("by_strategyId",         ["strategyId"])
+    .index("by_experimentId",       ["experimentId"])
+    .index("by_userId",             ["userId"])
+    .index("by_userId_createdAt",   ["userId", "createdAt"])
+    .index("by_strategyId_outcome", ["strategyId", "outcome"]),
+
+  strategyBacktests: defineTable({
+    strategyId:     v.id("strategies"),
+    fileId:         v.optional(v.id("strategyFiles")),
+    userId:         v.string(),
+    timeframe:      v.string(),
+    periodFrom:     v.number(),
+    periodTo:       v.number(),
+    totalTrades:    v.number(),
+    winRate:        v.number(),
+    netProfit:      v.number(),
+    maxDrawdown:    v.number(),
+    profitFactor:   v.number(),
+    avgRR:          v.number(),
+    selectedPlan:   v.optional(v.string()),
+    selectedTarget: v.optional(v.string()),
+    notes:          v.optional(v.string()),
+    createdAt:      v.number(),
+  })
+    .index("by_strategyId",           ["strategyId"])
+    .index("by_userId",               ["userId"])
+    .index("by_strategyId_timeframe", ["strategyId", "timeframe"]),
+
+  strategyDecisions: defineTable({
+    strategyId:   v.id("strategies"),
+    userId:       v.string(),
+    fromStatus:   v.string(),
+    toStatus:     v.string(),
+    reason:       v.string(),
+    decidedBy:    v.string(),
+    decidedAt:    v.number(),
+    attachedData: v.optional(v.string()),  // JSON-encoded supplementary data
+    createdAt:    v.number(),
+  })
+    .index("by_strategyId",       ["strategyId"])
+    .index("by_userId",           ["userId"])
+    .index("by_userId_decidedAt", ["userId", "decidedAt"]),
+
+  strategyPerformanceSnapshots: defineTable({
+    strategyId:    v.id("strategies"),
+    userId:        v.string(),
+    snapshotTime:  v.number(),
+    totalSignals:  v.number(),
+    winRate:       v.number(),
+    avgRR:         v.number(),
+    profitFactor:  v.optional(v.number()),
+    currentStatus: v.string(),
+    notes:         v.optional(v.string()),
+    createdAt:     v.number(),
+  })
+    .index("by_strategyId",              ["strategyId"])
+    .index("by_userId",                  ["userId"])
+    .index("by_strategyId_snapshotTime", ["strategyId", "snapshotTime"]),
 });

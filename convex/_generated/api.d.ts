@@ -10,6 +10,7 @@
 
 import type * as coreQueries from "../coreQueries.js";
 import type * as coreSeed from "../coreSeed.js";
+import type * as crons from "../crons.js";
 import type * as decisionJournal from "../decisionJournal.js";
 import type * as demoExecutionJournal from "../demoExecutionJournal.js";
 import type * as goldJournal from "../goldJournal.js";
@@ -19,6 +20,7 @@ import type * as mt5CandlesQuery from "../mt5CandlesQuery.js";
 import type * as newsIngestion from "../newsIngestion.js";
 import type * as newsReviews from "../newsReviews.js";
 import type * as newsTranslation from "../newsTranslation.js";
+import type * as strategies from "../strategies.js";
 import type * as technicalIndicators from "../technicalIndicators.js";
 import type * as testEvents from "../testEvents.js";
 
@@ -31,6 +33,7 @@ import type {
 declare const fullApi: ApiFromModules<{
   coreQueries: typeof coreQueries;
   coreSeed: typeof coreSeed;
+  crons: typeof crons;
   decisionJournal: typeof decisionJournal;
   demoExecutionJournal: typeof demoExecutionJournal;
   goldJournal: typeof goldJournal;
@@ -40,6 +43,7 @@ declare const fullApi: ApiFromModules<{
   newsIngestion: typeof newsIngestion;
   newsReviews: typeof newsReviews;
   newsTranslation: typeof newsTranslation;
+  strategies: typeof strategies;
   technicalIndicators: typeof technicalIndicators;
   testEvents: typeof testEvents;
 }>;
