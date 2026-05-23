@@ -9,6 +9,7 @@
 
 import { GoldStatusCard } from "@/components/lab/GoldStatusCard";
 import { AnalysisControlPanel } from "@/components/lab/AnalysisControlPanel";
+import { StrategyCompliancePanel } from "@/components/lab/StrategyCompliancePanel";
 import { GOLD_PROFILE } from "@/lib/gold/gold-profile";
 
 export default function GoldCommandCenterPage() {
@@ -47,6 +48,9 @@ export default function GoldCommandCenterPage() {
 
       {/* ── Gold Analysis Panel — locked to XAUUSD ──────────────────────── */}
       <AnalysisControlPanel lockedSymbol={GOLD_PROFILE.symbol} mode="gold" />
+
+      {/* ── Strategy Compliance Committee ─────────────────────────────────── */}
+      <StrategyCompliancePanel />
 
       {/* ── Footer notice ────────────────────────────────────────────────── */}
       <p className="text-center text-xs text-muted-foreground/55">
