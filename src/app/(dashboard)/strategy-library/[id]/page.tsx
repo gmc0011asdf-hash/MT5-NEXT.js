@@ -16,6 +16,7 @@ import {
   ArrowRight,
   ChevronDown,
   ClipboardCheck,
+  Eye,
   History,
   TrendingUp,
   Upload,
@@ -361,6 +362,459 @@ function RulesSection({ strategyId }: { strategyId: Id<"strategies"> }) {
         </Button>
       </div>
     </form>
+  );
+}
+
+// ─── Shadow Mode ─────────────────────────────────────────────────────────────
+
+const OUTCOME_LABELS: Record<string, { label: string; cls: string }> = {
+  PENDING: { label: "معلق",    cls: "bg-zinc-500/20 text-zinc-300" },
+  WIN:     { label: "ربح",     cls: "bg-emerald-500/20 text-emerald-300" },
+  LOSS:    { label: "خسارة",   cls: "bg-rose-500/20 text-rose-300" },
+  NEUTRAL: { label: "محايد",   cls: "bg-blue-500/20 text-blue-300" },
+  EXPIRED: { label: "منتهية",  cls: "bg-zinc-400/20 text-zinc-400" },
+};
+
+function SignalOutcomeButton({
+  signal,
+}: {
+  signal: { _id: string; outcome: string; slPrice: number; tp1Price: number };
+}) {
+  const recordOutcome = useMutation(api.strategies.recordSignalOutcome);
+  const [open, setOpen] = useState(false);
+  const [outcome, setOutcome]           = useState("");
+  const [outcomePrice, setOutcomePrice] = useState("");
+  const [actualRR, setActualRR]         = useState("");
+  const [saving, setSaving]             = useState(false);
+
+  if (signal.outcome !== "PENDING") {
+    const o = OUTCOME_LABELS[signal.outcome] ?? OUTCOME_LABELS.PENDING;
+    return (
+      <span className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${o.cls}`}>
+        {o.label}
+      </span>
+    );
+  }
+
+  if (!open) {
+    return (
+      <button
+        onClick={() => setOpen(true)}
+        className="rounded-full px-2 py-0.5 text-[11px] font-medium bg-zinc-500/20 text-zinc-300 hover:bg-zinc-500/30 transition-colors"
+      >
+        معلق ↓
+      </button>
+    );
+  }
+
+  async function handleSave() {
+    if (!outcome) return;
+    setSaving(true);
+    try {
+      await recordOutcome({
+        signalId:     signal._id as Id<"strategySignals">,
+        outcome,
+        outcomeTime:  Date.now(),
+        outcomePrice: outcomePrice ? parseFloat(outcomePrice) : undefined,
+        actualRR:     actualRR    ? parseFloat(actualRR)     : undefined,
+      });
+      setOpen(false);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="flex flex-wrap items-center gap-1.5">
+      <select
+        value={outcome}
+        onChange={(e) => setOutcome(e.target.value)}
+        className="rounded border border-amber-500/20 bg-muted/20 px-1.5 py-0.5 text-foreground text-[11px]"
+      >
+        <option value="">النتيجة</option>
+        <option value="WIN">ربح</option>
+        <option value="LOSS">خسارة</option>
+        <option value="NEUTRAL">محايد</option>
+        <option value="EXPIRED">منتهية</option>
+      </select>
+      <Input
+        type="number"
+        placeholder="سعر الخروج"
+        value={outcomePrice}
+        onChange={(e) => setOutcomePrice(e.target.value)}
+        className="h-6 w-24 border-amber-500/20 bg-muted/20 text-[11px] px-1.5"
+        dir="ltr"
+      />
+      <Input
+        type="number"
+        step="0.01"
+        placeholder="RR"
+        value={actualRR}
+        onChange={(e) => setActualRR(e.target.value)}
+        className="h-6 w-14 border-amber-500/20 bg-muted/20 text-[11px] px-1.5"
+        dir="ltr"
+      />
+      <button
+        onClick={() => void handleSave()}
+        disabled={!outcome || saving}
+        className="rounded bg-amber-600 px-2 py-0.5 text-white text-[11px] disabled:opacity-50"
+      >
+        {saving ? "..." : "حفظ"}
+      </button>
+      <button
+        onClick={() => setOpen(false)}
+        className="text-muted-foreground/60 text-[11px] hover:text-muted-foreground"
+      >
+        ×
+      </button>
+    </div>
+  );
+}
+
+function SignalLogForm({
+  strategyId,
+  experimentId,
+  onSaved,
+}: {
+  strategyId: Id<"strategies">;
+  experimentId: Id<"strategyExperiments">;
+  onSaved: () => void;
+}) {
+  const addSignal = useMutation(api.strategies.addStrategySignal);
+  const [direction, setDirection] = useState<"BUY" | "SELL">("BUY");
+  const [entry, setEntry]         = useState("");
+  const [sl, setSl]               = useState("");
+  const [tp1, setTp1]             = useState("");
+  const [tp2, setTp2]             = useState("");
+  const [timeframe, setTimeframe] = useState("H1");
+  const [notes, setNotes]         = useState("");
+  const [saving, setSaving]       = useState(false);
+  const [error, setError]         = useState("");
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    const entryN = parseFloat(entry);
+    const slN    = parseFloat(sl);
+    const tp1N   = parseFloat(tp1);
+    if (!entryN || !slN || !tp1N) { setError("سعر الدخول والـ SL والـ TP1 مطلوبة"); return; }
+    setSaving(true);
+    setError("");
+    try {
+      await addSignal({
+        strategyId,
+        experimentId,
+        signalTime:   Date.now(),
+        timeframe,
+        direction,
+        entryPrice:   entryN,
+        slPrice:      slN,
+        tp1Price:     tp1N,
+        tp2Price:     tp2 ? parseFloat(tp2) : undefined,
+        mode:         "SHADOW",
+        rulesMatched: [],
+        rulesMissed:  [],
+        notes:        notes || undefined,
+      });
+      setEntry(""); setSl(""); setTp1(""); setTp2(""); setNotes("");
+      onSaved();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "حدث خطأ");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <form onSubmit={handleSubmit} className="space-y-3 rounded-xl border border-purple-500/15 bg-purple-500/5 p-4">
+      <p className="text-purple-200 text-xs font-medium">تسجيل إشارة جديدة</p>
+      {error ? <p className="text-rose-300 text-xs">{error}</p> : null}
+
+      <div className="flex items-center gap-2">
+        {(["BUY", "SELL"] as const).map((d) => (
+          <button
+            key={d}
+            type="button"
+            onClick={() => setDirection(d)}
+            className={`rounded-md px-4 py-1.5 text-sm font-medium transition-colors ${
+              direction === d
+                ? d === "BUY"
+                  ? "bg-emerald-500/30 text-emerald-200 border border-emerald-500/50"
+                  : "bg-rose-500/30 text-rose-200 border border-rose-500/50"
+                : "bg-muted/20 text-muted-foreground border border-border/30 hover:bg-muted/30"
+            }`}
+          >
+            {d === "BUY" ? "شراء ↑" : "بيع ↓"}
+          </button>
+        ))}
+        <select
+          value={timeframe}
+          onChange={(e) => setTimeframe(e.target.value)}
+          className="ms-auto rounded-md border border-amber-500/20 bg-muted/20 px-2 py-1.5 text-foreground text-xs"
+        >
+          {["M15", "H1", "H4", "D1"].map((v) => <option key={v} value={v}>{v}</option>)}
+        </select>
+      </div>
+
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+        {(
+          [
+            { label: "سعر الدخول", value: entry, set: setEntry },
+            { label: "Stop Loss",  value: sl,    set: setSl    },
+            { label: "TP1",        value: tp1,   set: setTp1   },
+            { label: "TP2",        value: tp2,   set: setTp2   },
+          ] as const
+        ).map(({ label, value, set }) => (
+          <div key={label} className="space-y-0.5">
+            <FieldLabel className="text-[11px]">{label}</FieldLabel>
+            <Input
+              type="number"
+              step="0.01"
+              value={value}
+              onChange={(e) => (set as (v: string) => void)(e.target.value)}
+              className="h-7 border-amber-500/20 bg-muted/20 text-xs"
+              dir="ltr"
+            />
+          </div>
+        ))}
+      </div>
+
+      <div className="space-y-0.5">
+        <FieldLabel className="text-[11px]">ملاحظات</FieldLabel>
+        <Input
+          value={notes}
+          onChange={(e) => setNotes(e.target.value)}
+          className="border-amber-500/20 bg-muted/20 text-xs"
+        />
+      </div>
+
+      <Button type="submit" size="sm" disabled={saving}
+        className="bg-purple-600 hover:bg-purple-700 text-white">
+        {saving ? "جاري الحفظ..." : "تسجيل الإشارة"}
+      </Button>
+    </form>
+  );
+}
+
+function ShadowModeSection({ strategyId }: { strategyId: Id<"strategies"> }) {
+  const createExp   = useMutation(api.strategies.createStrategyExperiment);
+  const updateExp   = useMutation(api.strategies.updateStrategyExperiment);
+  const activeExp   = useQuery(api.strategies.getActiveExperiment, { strategyId });
+  const signals     = useQuery(
+    api.strategies.listExperimentSignals,
+    activeExp ? { experimentId: activeExp._id } : "skip",
+  );
+  const allExps     = useQuery(api.strategies.listStrategyExperiments, { strategyId });
+
+  const [showForm, setShowForm]         = useState(false);
+  const [endReason, setEndReason]       = useState("");
+  const [showEndForm, setShowEndForm]   = useState(false);
+  const [creatingExp, setCreatingExp]   = useState(false);
+  const [endingSaving, setEndingSaving] = useState(false);
+
+  async function handleCreateExp() {
+    setCreatingExp(true);
+    try {
+      await createExp({ strategyId, experimentType: "SHADOW" });
+    } finally {
+      setCreatingExp(false);
+    }
+  }
+
+  async function handleEndExp() {
+    if (!activeExp || !endReason.trim()) return;
+    setEndingSaving(true);
+    try {
+      await updateExp({
+        experimentId: activeExp._id,
+        endedAt:   Date.now(),
+        endReason: endReason.trim(),
+      });
+      setShowEndForm(false);
+      setEndReason("");
+    } finally {
+      setEndingSaving(false);
+    }
+  }
+
+  if (activeExp === undefined) {
+    return <p className="text-muted-foreground text-sm animate-pulse">جاري التحميل...</p>;
+  }
+
+  return (
+    <div className="space-y-4">
+      {/* ─── إحصاءات التجارب السابقة المغلقة ─── */}
+      {allExps && allExps.filter((e) => e.endedAt).length > 0 ? (
+        <div className="space-y-2">
+          <p className="text-muted-foreground/70 text-xs">التجارب المنتهية:</p>
+          {allExps.filter((e) => e.endedAt).map((exp) => (
+            <div
+              key={exp._id}
+              className="flex flex-wrap items-center gap-x-4 gap-y-1 rounded-lg border border-border/30 bg-muted/10 px-3 py-2 text-xs"
+            >
+              <span className="text-muted-foreground/60">
+                {new Date(exp.startedAt).toLocaleDateString("ar-SA")} →{" "}
+                {exp.endedAt ? new Date(exp.endedAt).toLocaleDateString("ar-SA") : "—"}
+              </span>
+              <span>إشارات: <span className="tabular-nums text-amber-100/80">{exp.totalSignals}</span></span>
+              <span>Win: <span className="tabular-nums text-emerald-400">{exp.winRate?.toFixed(1) ?? 0}%</span></span>
+              <span>Avg RR: <span className="tabular-nums text-amber-100/80">{exp.avgRR?.toFixed(2) ?? "—"}</span></span>
+              {exp.violations > 0 ? (
+                <span className="text-rose-300">مخالفات: {exp.violations}</span>
+              ) : null}
+              {exp.endReason ? (
+                <span className="text-muted-foreground/60 w-full mt-0.5">سبب الإنهاء: {exp.endReason}</span>
+              ) : null}
+            </div>
+          ))}
+        </div>
+      ) : null}
+
+      {/* ─── لا تجربة نشطة ─── */}
+      {!activeExp ? (
+        <div className="space-y-2">
+          <p className="text-muted-foreground text-sm">لا توجد تجربة Shadow Mode نشطة.</p>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => void handleCreateExp()}
+            disabled={creatingExp}
+            className="border-purple-500/30 text-purple-200 hover:bg-purple-500/10"
+          >
+            {creatingExp ? "..." : "بدء تجربة Shadow Mode"}
+          </Button>
+        </div>
+      ) : (
+        <div className="space-y-4">
+          {/* إحصاءات التجربة النشطة */}
+          <div className="rounded-xl border border-purple-500/20 bg-purple-500/5 p-4">
+            <div className="flex items-center justify-between gap-3">
+              <p className="text-purple-200 text-sm font-medium">تجربة نشطة</p>
+              <span className="text-[11px] text-muted-foreground/60">
+                منذ {new Date(activeExp.startedAt).toLocaleDateString("ar-SA")}
+              </span>
+            </div>
+            <div className="mt-3 grid grid-cols-2 gap-x-4 gap-y-2 text-xs sm:grid-cols-4">
+              <span>
+                إشارات: <span className="tabular-nums text-amber-100/80 font-medium">{activeExp.totalSignals}</span>
+              </span>
+              <span>
+                ربح: <span className="tabular-nums text-emerald-400 font-medium">{activeExp.winCount}</span>
+              </span>
+              <span>
+                خسارة: <span className="tabular-nums text-rose-400 font-medium">{activeExp.lossCount}</span>
+              </span>
+              <span>
+                Win%: <span className="tabular-nums text-amber-100/80 font-medium">
+                  {activeExp.winRate != null ? `${activeExp.winRate.toFixed(1)}%` : "—"}
+                </span>
+              </span>
+              {activeExp.avgRR != null && activeExp.avgRR > 0 ? (
+                <span>
+                  Avg RR: <span className="tabular-nums text-amber-100/80 font-medium">{activeExp.avgRR.toFixed(2)}</span>
+                </span>
+              ) : null}
+              {activeExp.violations > 0 ? (
+                <span className="text-rose-300">مخالفات: {activeExp.violations}</span>
+              ) : null}
+            </div>
+
+            {/* إنهاء التجربة */}
+            <div className="mt-4 border-t border-purple-500/15 pt-3">
+              {!showEndForm ? (
+                <button
+                  onClick={() => setShowEndForm(true)}
+                  className="text-muted-foreground/60 text-xs hover:text-rose-300 transition-colors"
+                >
+                  إنهاء التجربة ×
+                </button>
+              ) : (
+                <div className="flex items-center gap-2">
+                  <Input
+                    value={endReason}
+                    onChange={(e) => setEndReason(e.target.value)}
+                    placeholder="سبب الإنهاء"
+                    className="h-7 border-rose-500/20 bg-muted/20 text-xs flex-1"
+                  />
+                  <Button
+                    type="button"
+                    size="sm"
+                    onClick={() => void handleEndExp()}
+                    disabled={!endReason.trim() || endingSaving}
+                    className="bg-rose-600 hover:bg-rose-700 text-white text-xs h-7"
+                  >
+                    {endingSaving ? "..." : "إنهاء"}
+                  </Button>
+                  <button
+                    onClick={() => setShowEndForm(false)}
+                    className="text-muted-foreground/60 text-xs"
+                  >
+                    ×
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* تسجيل إشارة */}
+          {!showForm ? (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setShowForm(true)}
+              className="border-purple-500/30 text-purple-200 hover:bg-purple-500/10"
+            >
+              + تسجيل إشارة جديدة
+            </Button>
+          ) : (
+            <SignalLogForm
+              strategyId={strategyId}
+              experimentId={activeExp._id}
+              onSaved={() => setShowForm(false)}
+            />
+          )}
+
+          {/* قائمة الإشارات */}
+          {signals === undefined ? (
+            <p className="text-muted-foreground text-xs animate-pulse">جاري تحميل الإشارات...</p>
+          ) : signals.length === 0 ? (
+            <p className="text-muted-foreground text-xs">لا توجد إشارات بعد — سجّل أول إشارة أعلاه.</p>
+          ) : (
+            <div className="space-y-2">
+              <p className="text-muted-foreground/70 text-xs">آخر {signals.length} إشارة:</p>
+              {signals.map((sig) => (
+                <div
+                  key={sig._id}
+                  className="rounded-lg border border-border/30 bg-muted/10 px-3 py-2.5"
+                >
+                  <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                    <span className={`text-xs font-medium ${
+                      sig.direction === "BUY" ? "text-emerald-400" : "text-rose-400"
+                    }`}>
+                      {sig.direction === "BUY" ? "شراء ↑" : "بيع ↓"}
+                    </span>
+                    <span className="text-xs text-muted-foreground">{sig.timeframe}</span>
+                    <span className="text-xs tabular-nums">
+                      دخول <span className="text-amber-100/80">{sig.entryPrice}</span>
+                    </span>
+                    <span className="text-xs tabular-nums text-rose-300/80">SL {sig.slPrice}</span>
+                    <span className="text-xs tabular-nums text-emerald-300/80">TP {sig.tp1Price}</span>
+                    <span className="text-muted-foreground/50 text-[11px] ms-auto">
+                      {new Date(sig.signalTime).toLocaleString("ar-SA", { hour12: false, month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}
+                    </span>
+                  </div>
+                  {sig.notes ? (
+                    <p className="mt-1 text-muted-foreground/60 text-[11px]">{sig.notes}</p>
+                  ) : null}
+                  <div className="mt-2">
+                    <SignalOutcomeButton signal={sig} />
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -805,6 +1259,19 @@ export default function StrategyDetailPage() {
         <CardContent className="space-y-5 px-5 py-4">
           <BacktestUploadSection strategyId={strategyId} />
           <BacktestsSection strategyId={strategyId} />
+        </CardContent>
+      </Card>
+
+      {/* ─── Shadow Mode ─── */}
+      <Card className={institutionalCardClass("p-0")}>
+        <CardHeader className="border-b border-amber-500/10 px-5 py-4">
+          <CardTitle className="card-title-inst flex items-center gap-2">
+            <Eye className="h-4 w-4 text-purple-400" />
+            وضع المراقبة (Shadow Mode)
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="px-5 py-4">
+          <ShadowModeSection strategyId={strategyId} />
         </CardContent>
       </Card>
 

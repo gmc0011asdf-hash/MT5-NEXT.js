@@ -118,6 +118,38 @@ export const listStrategyDecisions = query({
   },
 });
 
+export const listExperimentSignals = query({
+  args: { experimentId: v.id("strategyExperiments"), limit: v.optional(v.number()) },
+  handler: async (ctx, args) => {
+    const identity = await ctx.auth.getUserIdentity();
+    if (!identity) throw new Error("Unauthorized");
+    const exp = await ctx.db.get(args.experimentId);
+    if (!exp || exp.userId !== identity.subject) return [];
+    return ctx.db
+      .query("strategySignals")
+      .withIndex("by_experimentId", (q) => q.eq("experimentId", args.experimentId))
+      .order("desc")
+      .take(args.limit ?? 30);
+  },
+});
+
+export const getActiveExperiment = query({
+  args: { strategyId: v.id("strategies") },
+  handler: async (ctx, args) => {
+    const identity = await ctx.auth.getUserIdentity();
+    if (!identity) throw new Error("Unauthorized");
+    const strategy = await ctx.db.get(args.strategyId);
+    if (!strategy || strategy.userId !== identity.subject) return null;
+    // Return most recent experiment with no endedAt
+    const experiments = await ctx.db
+      .query("strategyExperiments")
+      .withIndex("by_strategyId", (q) => q.eq("strategyId", args.strategyId))
+      .order("desc")
+      .take(10);
+    return experiments.find((e) => !e.endedAt) ?? null;
+  },
+});
+
 export const listStrategiesWithBacktests = query({
   args: {},
   handler: async (ctx) => {
@@ -393,6 +425,56 @@ export const updateSignalOutcome = mutation({
     if (!doc || doc.userId !== identity.subject) throw new Error("Not found");
     const { signalId, ...patch } = args;
     await ctx.db.patch(signalId, patch);
+  },
+});
+
+// Compound: record outcome + recompute experiment stats in one transaction.
+export const recordSignalOutcome = mutation({
+  args: {
+    signalId:     v.id("strategySignals"),
+    outcome:      v.string(),
+    outcomeTime:  v.optional(v.number()),
+    outcomePrice: v.optional(v.number()),
+    actualRR:     v.optional(v.number()),
+    notes:        v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    const identity = await ctx.auth.getUserIdentity();
+    if (!identity) throw new Error("Unauthorized");
+    const signal = await ctx.db.get(args.signalId);
+    if (!signal || signal.userId !== identity.subject) throw new Error("Not found");
+
+    const { signalId, ...patch } = args;
+    await ctx.db.patch(signalId, { ...patch, outcomeTime: args.outcomeTime ?? Date.now() });
+
+    // Recompute experiment stats if signal belongs to one
+    if (signal.experimentId) {
+      const allSignals = await ctx.db
+        .query("strategySignals")
+        .withIndex("by_experimentId", (q) => q.eq("experimentId", signal.experimentId!))
+        .collect();
+
+      // Use the updated outcome for this signal in the count
+      const updated = allSignals.map((s) =>
+        s._id === signalId ? { ...s, outcome: args.outcome } : s,
+      );
+
+      const resolved = updated.filter((s) => s.outcome !== "PENDING" && s.outcome !== "EXPIRED");
+      const wins     = resolved.filter((s) => s.outcome === "WIN");
+      const losses   = resolved.filter((s) => s.outcome === "LOSS");
+      const winRate  = resolved.length > 0 ? (wins.length / resolved.length) * 100 : 0;
+      const rrValues = resolved.filter((s) => s.actualRR != null).map((s) => s.actualRR as number);
+      const avgRR    = rrValues.length > 0 ? rrValues.reduce((a, b) => a + b, 0) / rrValues.length : 0;
+
+      await ctx.db.patch(signal.experimentId, {
+        totalSignals: updated.length,
+        winCount:     wins.length,
+        lossCount:    losses.length,
+        winRate:      Math.round(winRate * 10) / 10,
+        avgRR:        Math.round(avgRR * 100) / 100,
+        updatedAt:    Date.now(),
+      });
+    }
   },
 });
 
