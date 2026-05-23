@@ -99,7 +99,9 @@ export function GoldStatusCard() {
       // ── Market Regime ───────────────────────────────────────────────────────
       const rawCandles  = Array.isArray(candleData.candles) ? candleData.candles : [];
       const ohlcCandles = parseOhlcCandles(rawCandles as unknown[]);
-      const classified  = classifyMarketRegime(ohlcCandles);
+      // Exclude the open (latest) candle — regime classification uses only closed candles
+      const closedOhlc  = ohlcCandles.length > 1 ? ohlcCandles.slice(0, -1) : ohlcCandles;
+      const classified  = classifyMarketRegime(closedOhlc);
 
       // ── Decision engine ─────────────────────────────────────────────────────
       const result = runGoldDecisionEngine(state, classified);
