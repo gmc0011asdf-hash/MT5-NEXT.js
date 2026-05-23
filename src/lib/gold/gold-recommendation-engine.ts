@@ -125,17 +125,21 @@ function resolveStatus(input: GoldRecommendationInput): RecommendationStatus {
     return "NO_TRADE";
   }
 
-  // ── Priority 4: جودة منخفضة ──────────────────────────────────────────────────
-  if (input.grade === "C" || input.grade === "D" || input.probability < 45) {
+  // ── Priority 4: جودة منخفضة — عتبة 50% تضمن إشارة ذات معنى إحصائي ──────────
+  // شروط WATCH: درجة ضعيفة (C/D) أو احتمال أقل من 50%
+  if (input.grade === "C" || input.grade === "D" || input.probability < 50) {
     return "WATCH";
   }
 
-  // ── Priority 5: CANDIDATE — إشارة معقولة مع مشاكل ───────────────────────────
-  if (input.anyBlock || input.grade === "B") {
+  // ── Priority 5: CANDIDATE — إشارة معقولة مع عوائق ───────────────────────────
+  // شروط CANDIDATE: وجود أي block أو درجة B أو RR أقل من 1.5
+  const rrBelowMin = typeof input.rrRatio === "number" && input.rrRatio < 1.5;
+  if (input.anyBlock || input.grade === "B" || rrBelowMin) {
     return "CANDIDATE";
   }
 
-  // ── Priority 6: درجة A/A+ بلا blocks ─────────────────────────────────────────
+  // ── Priority 6: APPROVED — درجة A/A+ بلا blocks وRR ≥ 1.5 ────────────────────
+  // جميع الشروط مكتملة: بوابة التنفيذ + احتمال ≥ 50 + درجة A + RR ≥ 1.5
   if (input.executionGateOpen || input.canOpenGoldExperimental) {
     return "APPROVED";
   }
@@ -221,10 +225,19 @@ function resolveSummary(
       };
       return stMap[input.analysisStatus] ?? "لا توجد إشارة حالياً.";
     }
-    case "WATCH":
-      return `الإشارة ضعيفة — درجة ${input.grade} | احتمال ${input.probability}% — تحتاج لتحسّن الشروط قبل الدراسة الجدية.`;
-    case "CANDIDATE":
-      return `إشارة ${direction === "BUY" ? "شراء" : direction === "SELL" ? "بيع" : "محايدة"} — درجة ${input.grade} | احتمال ${input.probability}% — توجد ${input.committees.filter(c => c.verdict === "BLOCK" || c.verdict === "WARN").length} لجان تحتاج مراجعة قبل التنفيذ.`;
+    case "WATCH": {
+      const watchReasons: string[] = [];
+      if (input.grade === "C" || input.grade === "D") watchReasons.push(`درجة ${input.grade}`);
+      if (input.probability < 50) watchReasons.push(`احتمال ${input.probability}% (الحد الأدنى 50%)`);
+      return `إشارة ضعيفة — ${watchReasons.join(" | ")} — راقب السوق وانتظر تحسّن جودة الإشارة قبل الدراسة الجدية.`;
+    }
+    case "CANDIDATE": {
+      const blockingIssues: string[] = [];
+      if (input.anyBlock) blockingIssues.push(`${input.committees.filter(c => c.verdict === "BLOCK").length} لجنة بـ BLOCK`);
+      if (input.grade === "B") blockingIssues.push("درجة B (تحتاج A للاعتماد)");
+      if (typeof input.rrRatio === "number" && input.rrRatio < 1.5) blockingIssues.push(`R/R ${input.rrRatio.toFixed(2)} (الحد 1.5)`);
+      return `إشارة ${direction === "BUY" ? "شراء" : direction === "SELL" ? "بيع" : "محايدة"} — احتمال ${input.probability}% | ${blockingIssues.join(" | ") || "مراجعة مطلوبة"} — أصلح المشاكل للترقي لـ APPROVED.`;
+    }
     case "EXPERIMENTAL": {
       const isSoftBlocked = (input.softBlockCount ?? 0) > 0 ||
         (input.guardStatus === "BLOCK" && input.criticalBlockCount === 0);
