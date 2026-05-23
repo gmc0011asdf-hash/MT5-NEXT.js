@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useConvexAuth, useMutation, useQuery } from "convex/react";
@@ -10,12 +10,15 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { institutionalCardClass } from "@/lib/ui-institutional";
+import { parseHtmlBacktest, parseCsvBacktest } from "@/lib/strategy/backtest-parser";
+import type { BacktestSummary } from "@/lib/strategy/backtest-parser";
 import {
   ArrowRight,
   ChevronDown,
   ClipboardCheck,
   History,
   TrendingUp,
+  Upload,
 } from "lucide-react";
 
 function FieldLabel({ children, className }: { children: React.ReactNode; className?: string }) {
@@ -399,7 +402,233 @@ function DecisionsSection({ strategyId }: { strategyId: Id<"strategies"> }) {
   );
 }
 
-// ─── ملخص الباكتست ────────────────────────────────────────────────────────────
+// ─── رفع تقرير الباكتست ──────────────────────────────────────────────────────
+
+const TIMEFRAME_OPTS = ["M1", "M5", "M15", "M30", "H1", "H4", "D1", "W1"];
+const PLAN_OPTS      = ["Conservative", "Balanced", "Aggressive"];
+const TARGET_OPTS    = ["REALISTIC", "BALANCED", "FAR"];
+
+function BacktestUploadSection({ strategyId }: { strategyId: Id<"strategies"> }) {
+  const addFile     = useMutation(api.strategies.addStrategyFile);
+  const addBacktest = useMutation(api.strategies.addStrategyBacktest);
+
+  const fileRef = useRef<HTMLInputElement>(null);
+  const [open, setOpen]               = useState(false);
+  const [fileName, setFileName]       = useState("");
+  const [parsed, setParsed]           = useState<BacktestSummary | null>(null);
+  const [parseError, setParseError]   = useState("");
+  const [timeframe, setTimeframe]     = useState("H1");
+  const [periodFrom, setPeriodFrom]   = useState("");
+  const [periodTo, setPeriodTo]       = useState("");
+  const [selectedPlan, setSelectedPlan]     = useState("Balanced");
+  const [selectedTarget, setSelectedTarget] = useState("BALANCED");
+  const [notes, setNotes]             = useState("");
+  const [totalTrades, setTotalTrades] = useState("0");
+  const [winRate, setWinRate]         = useState("0");
+  const [netProfit, setNetProfit]     = useState("0");
+  const [maxDrawdown, setMaxDrawdown] = useState("0");
+  const [profitFactor, setProfitFactor] = useState("1");
+  const [avgRR, setAvgRR]             = useState("1");
+  const [saving, setSaving]           = useState(false);
+  const [saveError, setSaveError]     = useState("");
+
+  function fillForm(s: BacktestSummary) {
+    setTotalTrades(String(s.totalTrades));
+    setWinRate(s.winRate.toFixed(1));
+    setNetProfit(s.netProfit.toFixed(2));
+    setMaxDrawdown(s.maxDrawdown.toFixed(2));
+    setProfitFactor(s.profitFactor.toFixed(2));
+    setAvgRR(s.avgRR.toFixed(2));
+  }
+
+  async function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setFileName(file.name);
+    setParseError("");
+    setParsed(null);
+    try {
+      const text = await file.text();
+      const lower = file.name.toLowerCase();
+      const isHtml = lower.endsWith(".htm") || lower.endsWith(".html");
+      const isCsv  = lower.endsWith(".csv");
+      if (!isHtml && !isCsv) {
+        setParseError("يُقبل فقط HTML أو CSV. للملفات الأخرى أدخل البيانات يدوياً.");
+        if (fileRef.current) fileRef.current.value = "";
+        return;
+      }
+      const result = isHtml ? parseHtmlBacktest(text) : parseCsvBacktest(text);
+      setParsed(result);
+      fillForm(result);
+    } catch {
+      setParseError("تعذّر قراءة الملف. أدخل البيانات يدوياً.");
+    }
+    if (fileRef.current) fileRef.current.value = "";
+  }
+
+  async function handleSave(e: React.FormEvent) {
+    e.preventDefault();
+    setSaveError("");
+    const trades = parseInt(totalTrades, 10);
+    if (!trades || trades < 1) { setSaveError("عدد الصفقات يجب أن يكون > 0"); return; }
+    setSaving(true);
+    try {
+      const from = periodFrom ? new Date(periodFrom).getTime() : Date.now() - 365 * 24 * 3600 * 1000;
+      const to   = periodTo   ? new Date(periodTo).getTime()   : Date.now();
+      const fileId = await addFile({
+        strategyId,
+        fileType:      "BACKTEST_HTML",
+        fileName:      fileName || "manual-entry",
+        timeframe,
+        periodFrom:    from,
+        periodTo:      to,
+        notes:         notes || undefined,
+        parsedSummary: parsed ? JSON.stringify(parsed.raw) : undefined,
+      });
+      await addBacktest({
+        strategyId,
+        fileId,
+        timeframe,
+        periodFrom:   from,
+        periodTo:     to,
+        totalTrades:  trades,
+        winRate:      parseFloat(winRate)      || 0,
+        netProfit:    parseFloat(netProfit)    || 0,
+        maxDrawdown:  parseFloat(maxDrawdown)  || 0,
+        profitFactor: parseFloat(profitFactor) || 1,
+        avgRR:        parseFloat(avgRR)        || 1,
+        selectedPlan,
+        selectedTarget,
+        notes: notes || undefined,
+      });
+      setOpen(false);
+      setParsed(null);
+      setFileName("");
+    } catch (err) {
+      setSaveError(err instanceof Error ? err.message : "حدث خطأ");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  if (!open) {
+    return (
+      <Button
+        variant="outline"
+        size="sm"
+        onClick={() => setOpen(true)}
+        className="border-amber-500/30 text-amber-200 hover:bg-amber-500/10"
+      >
+        <Upload className="h-3.5 w-3.5 me-1.5" />
+        رفع تقرير باكتست
+      </Button>
+    );
+  }
+
+  return (
+    <form onSubmit={handleSave} className="space-y-4">
+      <div className="space-y-1.5">
+        <FieldLabel>ملف التقرير (HTML أو CSV من MT5 Strategy Tester)</FieldLabel>
+        <input
+          ref={fileRef}
+          type="file"
+          accept=".html,.htm,.csv"
+          onChange={handleFileChange}
+          className="block w-full rounded-md border border-amber-500/20 bg-muted/20 px-3 py-1.5 text-foreground text-xs file:me-2 file:rounded file:border-0 file:bg-amber-500/20 file:px-2 file:py-1 file:text-amber-200 file:text-xs"
+        />
+        {fileName ? (
+          <p className="text-muted-foreground/70 text-[11px]">الملف: {fileName}</p>
+        ) : null}
+        {parseError ? (
+          <p className="text-amber-300 text-xs">{parseError}</p>
+        ) : parsed ? (
+          <p className="text-emerald-400 text-xs">تم استخراج البيانات — راجعها قبل الحفظ.</p>
+        ) : null}
+      </div>
+
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+        {(
+          [
+            { label: "عدد الصفقات",   value: totalTrades,   set: setTotalTrades,   step: "1" },
+            { label: "Win Rate %",     value: winRate,        set: setWinRate,        step: "0.1" },
+            { label: "صافي الربح",     value: netProfit,      set: setNetProfit,      step: "0.01" },
+            { label: "Max Drawdown %", value: maxDrawdown,    set: setMaxDrawdown,    step: "0.01" },
+            { label: "Profit Factor",  value: profitFactor,   set: setProfitFactor,   step: "0.01" },
+            { label: "Avg RR",         value: avgRR,          set: setAvgRR,          step: "0.01" },
+          ] as const
+        ).map(({ label, value, set, step }) => (
+          <div key={label} className="space-y-1">
+            <FieldLabel>{label}</FieldLabel>
+            <Input
+              type="number"
+              step={step}
+              value={value}
+              onChange={(e) => (set as (v: string) => void)(e.target.value)}
+              className="border-amber-500/20 bg-muted/20 text-xs"
+              dir="ltr"
+            />
+          </div>
+        ))}
+      </div>
+
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+        <div className="space-y-1">
+          <FieldLabel>الفريم</FieldLabel>
+          <select value={timeframe} onChange={(e) => setTimeframe(e.target.value)}
+            className="w-full rounded-md border border-amber-500/20 bg-muted/20 px-2 py-1.5 text-foreground text-xs">
+            {TIMEFRAME_OPTS.map((v) => <option key={v} value={v}>{v}</option>)}
+          </select>
+        </div>
+        <div className="space-y-1">
+          <FieldLabel>الخطة</FieldLabel>
+          <select value={selectedPlan} onChange={(e) => setSelectedPlan(e.target.value)}
+            className="w-full rounded-md border border-amber-500/20 bg-muted/20 px-2 py-1.5 text-foreground text-xs">
+            {PLAN_OPTS.map((v) => <option key={v} value={v}>{v}</option>)}
+          </select>
+        </div>
+        <div className="space-y-1">
+          <FieldLabel>الهدف</FieldLabel>
+          <select value={selectedTarget} onChange={(e) => setSelectedTarget(e.target.value)}
+            className="w-full rounded-md border border-amber-500/20 bg-muted/20 px-2 py-1.5 text-foreground text-xs">
+            {TARGET_OPTS.map((v) => <option key={v} value={v}>{v}</option>)}
+          </select>
+        </div>
+        <div className="space-y-1 col-span-2 sm:col-span-1">
+          <FieldLabel>ملاحظات</FieldLabel>
+          <Input value={notes} onChange={(e) => setNotes(e.target.value)}
+            className="border-amber-500/20 bg-muted/20 text-xs" />
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 gap-3">
+        <div className="space-y-1">
+          <FieldLabel>بداية الفترة</FieldLabel>
+          <Input type="date" value={periodFrom} onChange={(e) => setPeriodFrom(e.target.value)}
+            className="border-amber-500/20 bg-muted/20 text-xs" dir="ltr" />
+        </div>
+        <div className="space-y-1">
+          <FieldLabel>نهاية الفترة</FieldLabel>
+          <Input type="date" value={periodTo} onChange={(e) => setPeriodTo(e.target.value)}
+            className="border-amber-500/20 bg-muted/20 text-xs" dir="ltr" />
+        </div>
+      </div>
+
+      {saveError ? <p className="text-rose-300 text-xs">{saveError}</p> : null}
+
+      <div className="flex gap-2">
+        <Button type="button" variant="ghost" size="sm" onClick={() => setOpen(false)} disabled={saving}>
+          إلغاء
+        </Button>
+        <Button type="submit" size="sm" disabled={saving}
+          className="bg-amber-600 hover:bg-amber-700 text-white">
+          {saving ? "جاري الحفظ..." : "حفظ نتائج الباكتست"}
+        </Button>
+      </div>
+    </form>
+  );
+}
+
+// ─── ملخص الباكتست ───────────────────────────────────────────���────────────────
 
 function BacktestsSection({ strategyId }: { strategyId: Id<"strategies"> }) {
   const backtests = useQuery(api.strategies.listStrategyBacktests, { strategyId });
@@ -563,15 +792,18 @@ export default function StrategyDetailPage() {
         </CardContent>
       </Card>
 
-      {/* ─── نتائج الباكتست ─── */}
+      {/* ─── نتائج الباكتست + رفع ─── */}
       <Card className={institutionalCardClass("p-0")}>
         <CardHeader className="border-b border-amber-500/10 px-5 py-4">
-          <CardTitle className="card-title-inst flex items-center gap-2">
-            <TrendingUp className="h-4 w-4 text-amber-400" />
-            نتائج الاختبار التاريخي
-          </CardTitle>
+          <div className="flex items-center justify-between gap-3">
+            <CardTitle className="card-title-inst flex items-center gap-2">
+              <TrendingUp className="h-4 w-4 text-amber-400" />
+              نتائج الاختبار التاريخي
+            </CardTitle>
+          </div>
         </CardHeader>
-        <CardContent className="px-5 py-4">
+        <CardContent className="space-y-5 px-5 py-4">
+          <BacktestUploadSection strategyId={strategyId} />
           <BacktestsSection strategyId={strategyId} />
         </CardContent>
       </Card>
