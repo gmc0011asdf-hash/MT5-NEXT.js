@@ -3,7 +3,7 @@
 
 > **⚠️ هذا الملف يجب أن يُقرأ قبل أي تنفيذ في هذا المشروع.**  
 > أي وكيل أو مطور يبدأ يجب أن يقرأ هذا الملف أولاً.  
-> آخر تحديث: 2026-05-23 (إتمام MT5_GOLD_MASTER_DEVELOPMENT_PLAN — جميع المراحل المنجزة)
+> آخر تحديث: 2026-05-25 (إتمام Gold Pro Lab — مختبر تحليل الذهب المؤسسي)
 
 ---
 
@@ -76,6 +76,7 @@ Institutional-grade analytical trading system — informational analysis only.
 | 4.3 | Consistency Score (σ) — انحراف معياري في إحصاءات التجربة | ✅ منجز |
 | 2.2 | calculatedLot — الـ lot الافتراضي في نموذج الإشارة | ✅ منجز |
 | 8-G/8-H | Controlled Experiment + Pending Orders | 🔒 محظور — Stage 14 |
+| **Gold Pro Lab** | مختبر تحليل الذهب المؤسسي `/lab/gold-pro` | ✅ منجز |
 
 ---
 
@@ -107,6 +108,7 @@ Institutional-grade analytical trading system — informational analysis only.
 | `src/app/(dashboard)/system-health/page.tsx` | صحة النظام — Placeholder |
 | `src/app/(dashboard)/error-center/page.tsx` | مركز الأخطاء — Placeholder |
 | `src/app/(dashboard)/gold/page.tsx` | مركز الذهب المؤسسي — يشمل StrategyCompliancePanel |
+| `src/app/(dashboard)/lab/gold-pro/page.tsx` | Gold Pro Lab — مختبر تحليل الذهب المؤسسي |
 | `src/app/(dashboard)/gold/strategy-lab/page.tsx` | مختبر الاستراتيجية + حفظ في المكتبة (8-D) |
 | `src/app/(dashboard)/strategy-library/page.tsx` | مكتبة الاستراتيجيات — قائمة كاملة (8-B) |
 | `src/app/(dashboard)/strategy-library/[id]/page.tsx` | تفاصيل الاستراتيجية — Shadow Mode + إحصاءات (8-C) |
