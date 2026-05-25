@@ -11,6 +11,7 @@ import { GoldStatusCard } from "@/components/lab/GoldStatusCard";
 import { AnalysisControlPanel } from "@/components/lab/AnalysisControlPanel";
 import { StrategyCompliancePanel } from "@/components/lab/StrategyCompliancePanel";
 import { GOLD_PROFILE } from "@/lib/gold/gold-profile";
+import { ConvexSafeWrapper } from "@/components/gold-pro/ConvexSafeWrapper";
 
 export default function GoldCommandCenterPage() {
   return (
@@ -47,10 +48,14 @@ export default function GoldCommandCenterPage() {
       </div>
 
       {/* ── Gold Analysis Panel — locked to XAUUSD ──────────────────────── */}
-      <AnalysisControlPanel lockedSymbol={GOLD_PROFILE.symbol} mode="gold" />
+      <ConvexSafeWrapper>
+        <AnalysisControlPanel lockedSymbol={GOLD_PROFILE.symbol} mode="gold" />
+      </ConvexSafeWrapper>
 
       {/* ── Strategy Compliance Committee ─────────────────────────────────── */}
-      <StrategyCompliancePanel />
+      <ConvexSafeWrapper>
+        <StrategyCompliancePanel />
+      </ConvexSafeWrapper>
 
       {/* ── Footer notice ────────────────────────────────────────────────── */}
       <p className="text-center text-xs text-muted-foreground/55">
