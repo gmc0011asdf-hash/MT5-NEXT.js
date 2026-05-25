@@ -22,6 +22,7 @@ import { PivotPointsPanel } from "./PivotPointsPanel";
 import { TradeSetupsPanel } from "./TradeSetupsPanel";
 import { HistorySection } from "./HistorySection";
 import { ConvexSafeWrapper } from "./ConvexSafeWrapper";
+import { ManualTradeAlert } from "./ManualTradeAlert";
 
 export function GoldProLab() {
   const [analysis, setAnalysis] = useState<GoldProAnalysis | null>(null);
@@ -216,7 +217,10 @@ export function GoldProLab() {
 
       {analysis && (
         <>
-          {/* Row 0: Multi-Trade Setups — الصفقات المقترحة */}
+          {/* Row 0-A: Manual Trade Alert — يظهر فقط عند Score ≥ 70 */}
+          <ManualTradeAlert analysis={analysis} />
+
+          {/* Row 0-B: Multi-Trade Setups — الصفقات المقترحة */}
           <TradeSetupsPanel
             setups={analysis.tradeSetups}
             candleCount={analysis.candleCount}
