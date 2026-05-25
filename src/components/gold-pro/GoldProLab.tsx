@@ -2,8 +2,6 @@
 "use client";
 
 import { useState, useCallback } from "react";
-import { useQuery } from "convex/react";
-import { api } from "../../../convex/_generated/api";
 import type { GoldProAnalysis, RawCandle } from "@/lib/gold-pro/types";
 import {
   lastEMA, lastRSI, calculateATR, calculateMACD,
@@ -21,17 +19,15 @@ import { MTFPanel } from "./MTFPanel";
 import { IndicatorsPanel } from "./IndicatorsPanel";
 import { SupportResistancePanel } from "./SupportResistancePanel";
 import { PivotPointsPanel } from "./PivotPointsPanel";
-import { AnalysisHistory } from "./AnalysisHistory";
 import { TradeSetupsPanel } from "./TradeSetupsPanel";
+import { HistorySection } from "./HistorySection";
+import { ConvexSafeWrapper } from "./ConvexSafeWrapper";
 
 export function GoldProLab() {
   const [analysis, setAnalysis] = useState<GoldProAnalysis | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
-
-  const history = useQuery(api.goldProAnalysis.getMyAnalyses);
-  const stats = useQuery(api.goldProAnalysis.getAccuracyStats);
 
   const runAnalysis = useCallback(async () => {
     setLoading(true);
@@ -246,8 +242,10 @@ export function GoldProLab() {
             <PivotPointsPanel pivots={analysis.indicators.pivotPoints} currentPrice={analysis.price} />
           </div>
 
-          {/* Row 4: History */}
-          <AnalysisHistory history={history ?? []} stats={stats ?? { total: 0, wins: 0, losses: 0, pending: 0, accuracy: 0 }} />
+          {/* Row 4: History — معزول بـ Error Boundary حماية من أخطاء Convex */}
+          <ConvexSafeWrapper>
+            <HistorySection />
+          </ConvexSafeWrapper>
         </>
       )}
 
