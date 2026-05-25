@@ -24,6 +24,7 @@ import type * as newsTranslation from "../newsTranslation.js";
 import type * as strategies from "../strategies.js";
 import type * as technicalIndicators from "../technicalIndicators.js";
 import type * as testEvents from "../testEvents.js";
+import type * as tradeExecutions from "../tradeExecutions.js";
 
 import type {
   ApiFromModules,
@@ -48,6 +49,7 @@ declare const fullApi: ApiFromModules<{
   strategies: typeof strategies;
   technicalIndicators: typeof technicalIndicators;
   testEvents: typeof testEvents;
+  tradeExecutions: typeof tradeExecutions;
 }>;
 
 /**

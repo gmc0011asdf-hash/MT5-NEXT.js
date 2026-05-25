@@ -713,4 +713,30 @@ export default defineSchema({
   })
     .index("by_user", ["userId"])
     .index("by_user_timestamp", ["userId", "timestamp"]),
+
+  // Stage 14 — سجل تنفيذ الصفقات
+  tradeExecutions: defineTable({
+    userId: v.string(),
+    timestamp: v.number(),
+    symbol: v.string(),
+    orderType: v.union(v.literal("BUY"), v.literal("SELL")),
+    lot: v.number(),
+    entryPrice: v.number(),
+    sl: v.number(),
+    tp: v.number(),
+    ticket: v.number(),
+    confluenceScore: v.number(),
+    setupLabel: v.string(),
+    // نتيجة الصفقة — تُملأ عند الإغلاق
+    closePrice: v.optional(v.number()),
+    profit: v.optional(v.number()),
+    closedAt: v.optional(v.number()),
+    status: v.union(
+      v.literal("open"),
+      v.literal("closed"),
+      v.literal("failed"),
+    ),
+  })
+    .index("by_user", ["userId"])
+    .index("by_user_status", ["userId", "status"]),
 });
