@@ -200,6 +200,7 @@ export function calculateStochRSI(candles: RawCandle[], rsiPeriod = 14, stochPer
 // ─── Pivot Points (Floor Method — Daily) ────────────────────────────────────
 
 export function calculatePivotPoints(candles: RawCandle[]): PivotPoints {
+  if (candles.length === 0) return { r2: 0, r1: 0, pp: 0, s1: 0, s2: 0 };
   // استخدم آخر شمعة D1 مغلقة
   const prev = candles.length >= 2 ? candles[candles.length - 2] : candles[candles.length - 1];
   const pp = (prev.high + prev.low + prev.close) / 3;
@@ -215,6 +216,7 @@ export function calculatePivotPoints(candles: RawCandle[]): PivotPoints {
 // ─── Fibonacci (Swing H/L من آخر 20 شمعة H4) ────────────────────────────────
 
 export function calculateFibonacci(candlesH4: RawCandle[]): FibonacciLevels {
+  if (candlesH4.length === 0) return { swingHigh: 0, swingLow: 0, level236: 0, level382: 0, level500: 0, level618: 0, level786: 0 };
   const slice = candlesH4.slice(-20);
   const swingHigh = Math.max(...slice.map(c => c.high));
   const swingLow = Math.min(...slice.map(c => c.low));

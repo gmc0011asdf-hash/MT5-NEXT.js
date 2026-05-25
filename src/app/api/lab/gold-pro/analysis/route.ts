@@ -19,14 +19,11 @@ export async function GET() {
     // ── جلب البيانات بالتوازي ─────────────────────────────────────────────
     const [snapshotRes, h1Res, h4Res, d1Res, m15Res] = await Promise.all([
       fetch(`${BRIDGE}/readonly/snapshot?symbol=XAUUSD`, { cache: "no-store" }),
-      // H1: 500 شمعة — ضرورية لـ EMA200 (200 candles warm-up + buffer)
-      fetch(`${BRIDGE}/readonly/candles?symbol=XAUUSD&timeframe=H1&count=500`, { cache: "no-store" }),
-      // H4: 200 شمعة — ضرورية لـ EMA200 على H4 + Fibonacci
-      fetch(`${BRIDGE}/readonly/candles?symbol=XAUUSD&timeframe=H4&count=200`, { cache: "no-store" }),
-      // D1: 60 شمعة — كافية لـ Pivot Points + EMA50
-      fetch(`${BRIDGE}/readonly/candles?symbol=XAUUSD&timeframe=D1&count=60`, { cache: "no-store" }),
-      // M15: 200 شمعة — كافية لـ EMA200 (~50 ساعة)
-      fetch(`${BRIDGE}/readonly/candles?symbol=XAUUSD&timeframe=M15&count=200`, { cache: "no-store" }),
+      // الحدود الآمنة لـ MT5 Bridge — لا تتجاوز هذه القيم
+      fetch(`${BRIDGE}/readonly/candles?symbol=XAUUSD&timeframe=H1&count=100`, { cache: "no-store" }),
+      fetch(`${BRIDGE}/readonly/candles?symbol=XAUUSD&timeframe=H4&count=50`,  { cache: "no-store" }),
+      fetch(`${BRIDGE}/readonly/candles?symbol=XAUUSD&timeframe=D1&count=30`,  { cache: "no-store" }),
+      fetch(`${BRIDGE}/readonly/candles?symbol=XAUUSD&timeframe=M15&count=60`, { cache: "no-store" }),
     ]);
 
     if (!snapshotRes.ok || !h1Res.ok) {
