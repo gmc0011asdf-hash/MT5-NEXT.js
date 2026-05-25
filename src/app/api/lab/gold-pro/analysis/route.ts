@@ -19,10 +19,14 @@ export async function GET() {
     // ── جلب البيانات بالتوازي ─────────────────────────────────────────────
     const [snapshotRes, h1Res, h4Res, d1Res, m15Res] = await Promise.all([
       fetch(`${BRIDGE}/readonly/snapshot?symbol=XAUUSD`, { cache: "no-store" }),
-      fetch(`${BRIDGE}/readonly/candles?symbol=XAUUSD&timeframe=H1&count=100`, { cache: "no-store" }),
-      fetch(`${BRIDGE}/readonly/candles?symbol=XAUUSD&timeframe=H4&count=50`, { cache: "no-store" }),
-      fetch(`${BRIDGE}/readonly/candles?symbol=XAUUSD&timeframe=D1&count=30`, { cache: "no-store" }),
-      fetch(`${BRIDGE}/readonly/candles?symbol=XAUUSD&timeframe=M15&count=60`, { cache: "no-store" }),
+      // H1: 500 شمعة — ضرورية لـ EMA200 (200 candles warm-up + buffer)
+      fetch(`${BRIDGE}/readonly/candles?symbol=XAUUSD&timeframe=H1&count=500`, { cache: "no-store" }),
+      // H4: 200 شمعة — ضرورية لـ EMA200 على H4 + Fibonacci
+      fetch(`${BRIDGE}/readonly/candles?symbol=XAUUSD&timeframe=H4&count=200`, { cache: "no-store" }),
+      // D1: 60 شمعة — كافية لـ Pivot Points + EMA50
+      fetch(`${BRIDGE}/readonly/candles?symbol=XAUUSD&timeframe=D1&count=60`, { cache: "no-store" }),
+      // M15: 200 شمعة — كافية لـ EMA200 (~50 ساعة)
+      fetch(`${BRIDGE}/readonly/candles?symbol=XAUUSD&timeframe=M15&count=200`, { cache: "no-store" }),
     ]);
 
     if (!snapshotRes.ok || !h1Res.ok) {
@@ -42,15 +46,22 @@ export async function GET() {
     const filterXAU = (candles: Array<{ symbol: string; timeframe: string }>) =>
       candles.filter(c => c.symbol === "XAUUSD");
 
+    const cH1  = filterXAU(h1Data.candles  ?? []);
+    const cH4  = filterXAU(h4Data.candles  ?? []);
+    const cD1  = filterXAU(d1Data.candles  ?? []);
+    const cM15 = filterXAU(m15Data.candles ?? []);
+
     return NextResponse.json({
       connected: snapshot.connected ?? false,
       tick: xauTick ?? null,
       account: snapshot.account ?? null,
-      candlesH1: filterXAU(h1Data.candles ?? []),
-      candlesH4: filterXAU(h4Data.candles ?? []),
-      candlesD1: filterXAU(d1Data.candles ?? []),
-      candlesM15: filterXAU(m15Data.candles ?? []),
+      candlesH1: cH1,
+      candlesH4: cH4,
+      candlesD1: cD1,
+      candlesM15: cM15,
       fetchedAt: Date.now(),
+      // عدد الشموع المستلمة — للتشخيص
+      candleCount: { H1: cH1.length, H4: cH4.length, D1: cD1.length, M15: cM15.length },
     });
   } catch (err) {
     console.error("[gold-pro/analysis]", err);

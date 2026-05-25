@@ -12,6 +12,7 @@ import {
 } from "@/lib/gold-pro/indicators";
 import { calculateConfluence, detectSession } from "@/lib/gold-pro/confluence-engine";
 import { calculateSLTP, calculatePositionSize } from "@/lib/gold-pro/position-sizing";
+import { generateTradeSetups } from "@/lib/gold-pro/trade-setups";
 import { PriceHeader } from "./PriceHeader";
 import { ConfluenceScoreCard } from "./ConfluenceScore";
 import { SignalCard } from "./SignalCard";
@@ -21,6 +22,7 @@ import { IndicatorsPanel } from "./IndicatorsPanel";
 import { SupportResistancePanel } from "./SupportResistancePanel";
 import { PivotPointsPanel } from "./PivotPointsPanel";
 import { AnalysisHistory } from "./AnalysisHistory";
+import { TradeSetupsPanel } from "./TradeSetupsPanel";
 
 export function GoldProLab() {
   const [analysis, setAnalysis] = useState<GoldProAnalysis | null>(null);
@@ -49,7 +51,10 @@ export function GoldProLab() {
       const ema50 = lastEMA(candlesH1 as RawCandle[], 50);
       const ema200 = lastEMA(candlesH1 as RawCandle[], 200);
       const rsi = lastRSI(candlesH1 as RawCandle[], 14);
-      const atr = calculateATR(candlesH1 as RawCandle[], 14);
+      // ATR fallback: إذا لم تكن بيانات H1 كافية، نستخدم H4 ATR / 2.5 أو الافتراضي
+      const atrH1Raw = calculateATR(candlesH1 as RawCandle[], 14);
+      const atrH4Raw = calculateATR(candlesH4 as RawCandle[], 14);
+      const atr = atrH1Raw > 0 ? atrH1Raw : atrH4Raw > 0 ? Math.round(atrH4Raw / 2.5 * 100) / 100 : 8.0;
       const macd = calculateMACD(candlesH1 as RawCandle[]);
       const bb = calculateBollingerBands(candlesH1 as RawCandle[], 20);
       const adx = calculateADX(candlesH1 as RawCandle[], 14);
@@ -92,6 +97,24 @@ export function GoldProLab() {
       const sltp = calculateSLTP(currentPrice, atr, confluence.signal);
       const positioning = calculatePositionSize(balance, sltp.slDistance);
 
+      // ─── الصفقات المتعددة (H4 Swing + H1 Intraday + M15 Scalp) ──────────
+      const tradeSetups = generateTradeSetups(
+        currentPrice,
+        balance,
+        candlesM15 as RawCandle[],
+        candlesH1  as RawCandle[],
+        candlesH4  as RawCandle[],
+        session.ok,
+      );
+
+      // عدد الشموع المستلمة من API
+      const candleCount = data.candleCount ?? {
+        H1: (candlesH1 as RawCandle[]).length,
+        H4: (candlesH4 as RawCandle[]).length,
+        D1: (candlesD1 as RawCandle[]).length,
+        M15: (candlesM15 as RawCandle[]).length,
+      };
+
       setAnalysis({
         timestamp: Date.now(),
         symbol: "XAUUSD",
@@ -107,6 +130,8 @@ export function GoldProLab() {
         sltp,
         positioning,
         dataQuality: (candlesH1 as RawCandle[]).length >= 50 ? "good" : "partial",
+        tradeSetups,
+        candleCount,
       });
     } catch (e) {
       setError(e instanceof Error ? e.message : "خطأ غير معروف");
@@ -195,6 +220,12 @@ export function GoldProLab() {
 
       {analysis && (
         <>
+          {/* Row 0: Multi-Trade Setups — الصفقات المقترحة */}
+          <TradeSetupsPanel
+            setups={analysis.tradeSetups}
+            candleCount={analysis.candleCount}
+          />
+
           {/* Row 1: Price + Confluence + Signal */}
           <div className="grid grid-cols-3 gap-4">
             <PriceHeader analysis={analysis} />

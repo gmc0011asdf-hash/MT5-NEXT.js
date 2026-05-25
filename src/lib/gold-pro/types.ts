@@ -190,6 +190,35 @@ export interface GoldProAnalysis {
   sltp: SLTPResult;
   positioning: PositionSizingResult;
   dataQuality: "good" | "partial" | "stale";
+  tradeSetups: TradeSetup[];   // صفقات متعددة من إطارات مختلفة
+  candleCount: { H1: number; H4: number; D1: number; M15: number };
+}
+
+// ─── Multi-Timeframe Trade Setup ─────────────────────────────────────────────
+
+export type TradeSetupId = "H4_SWING" | "H1_INTRADAY" | "M15_SCALP";
+
+export interface TradeSetup {
+  id: TradeSetupId;
+  label: string;        // "Swing H4" | "Intraday H1" | "Scalp M15"
+  emoji: string;        // 🌊 | 📈 | ⚡
+  signal: "BUY" | "SELL";
+  confidence: number;   // 0-100
+  entryPrice: number;
+  stopLoss: number;
+  takeProfit1: number;
+  takeProfit2: number;
+  slDistance: number;
+  tp1Distance: number;
+  tp2Distance: number;
+  rrRatio1: number;
+  rrRatio2: number;
+  lotSize: number;
+  riskUsd: number;
+  potentialProfitUsd: number;
+  atr: number;
+  reasons: string[];
+  sessionWarning?: string;
 }
 
 // ─── Convex Snapshot ─────────────────────────────────────────────────────────
