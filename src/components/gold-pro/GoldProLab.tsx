@@ -23,6 +23,7 @@ import { TradeSetupsPanel } from "./TradeSetupsPanel";
 import { HistorySection } from "./HistorySection";
 import { ConvexSafeWrapper } from "./ConvexSafeWrapper";
 import { ManualTradeAlert } from "./ManualTradeAlert";
+import { OpenPositionsPanel } from "./OpenPositionsPanel";
 
 export function GoldProLab() {
   const [analysis, setAnalysis] = useState<GoldProAnalysis | null>(null);
@@ -246,7 +247,10 @@ export function GoldProLab() {
             <PivotPointsPanel pivots={analysis.indicators.pivotPoints} currentPrice={analysis.price} />
           </div>
 
-          {/* Row 4: History — معزول بـ Error Boundary حماية من أخطاء Convex */}
+          {/* Row 5: Open Positions — Live polling كل 5 ثوانٍ */}
+          <OpenPositionsPanel />
+
+          {/* Row 6: History — معزول بـ Error Boundary حماية من أخطاء Convex */}
           <ConvexSafeWrapper>
             <HistorySection />
           </ConvexSafeWrapper>
