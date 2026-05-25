@@ -221,6 +221,44 @@ export interface TradeSetup {
   sessionWarning?: string;
 }
 
+// ─── Stage 14 — Execution Types ──────────────────────────────────────────────
+
+export interface ExecutionRequest {
+  symbol: string;
+  order_type: "BUY" | "SELL";
+  lot: number;
+  sl: number;
+  tp: number;
+  comment?: string;
+  confluenceScore?: number;
+  setupLabel?: string;
+}
+
+export interface ExecutionResult {
+  ticket: number;
+  retcode: number;
+  volume: number;
+  price: number;
+  symbol: string;
+  order_type: "BUY" | "SELL";
+  sl: number;
+  tp: number;
+  comment: string;
+}
+
+export interface OpenPosition {
+  ticket: number;
+  symbol: string;
+  type: "BUY" | "SELL";
+  volume: number;
+  price_open: number;
+  sl: number;
+  tp: number;
+  price_current: number;
+  profit: number;
+  time: number;
+}
+
 // ─── Convex Snapshot ─────────────────────────────────────────────────────────
 
 export interface GoldProSnapshot {
