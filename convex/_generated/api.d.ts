@@ -14,6 +14,7 @@ import type * as crons from "../crons.js";
 import type * as decisionJournal from "../decisionJournal.js";
 import type * as demoExecutionJournal from "../demoExecutionJournal.js";
 import type * as goldJournal from "../goldJournal.js";
+import type * as goldProAnalysis from "../goldProAnalysis.js";
 import type * as health from "../health.js";
 import type * as mt5Bridge from "../mt5Bridge.js";
 import type * as mt5CandlesQuery from "../mt5CandlesQuery.js";
@@ -37,6 +38,7 @@ declare const fullApi: ApiFromModules<{
   decisionJournal: typeof decisionJournal;
   demoExecutionJournal: typeof demoExecutionJournal;
   goldJournal: typeof goldJournal;
+  goldProAnalysis: typeof goldProAnalysis;
   health: typeof health;
   mt5Bridge: typeof mt5Bridge;
   mt5CandlesQuery: typeof mt5CandlesQuery;

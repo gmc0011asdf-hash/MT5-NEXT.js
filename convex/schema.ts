@@ -683,4 +683,34 @@ export default defineSchema({
     .index("by_strategyId",              ["strategyId"])
     .index("by_userId",                  ["userId"])
     .index("by_strategyId_snapshotTime", ["strategyId", "snapshotTime"]),
+
+  goldProAnalysis: defineTable({
+    userId: v.string(),
+    timestamp: v.number(),
+    symbol: v.string(),
+    price: v.number(),
+    signal: v.union(v.literal("BUY"), v.literal("SELL"), v.literal("WAIT")),
+    confluenceScore: v.number(),
+    entryPrice: v.number(),
+    stopLoss: v.number(),
+    takeProfit1: v.number(),
+    takeProfit2: v.number(),
+    rrRatio: v.number(),
+    lotSize: v.number(),
+    atr: v.number(),
+    mtfAlignment: v.number(),
+    indicators: v.object({
+      ema21: v.number(),
+      ema50: v.number(),
+      ema200: v.number(),
+      rsi: v.number(),
+      macd: v.number(),
+      adx: v.number(),
+      bbPosition: v.string(),
+    }),
+    outcome: v.optional(v.union(v.literal("win"), v.literal("loss"), v.literal("pending"))),
+    outcomePrice: v.optional(v.number()),
+  })
+    .index("by_user", ["userId"])
+    .index("by_user_timestamp", ["userId", "timestamp"]),
 });
