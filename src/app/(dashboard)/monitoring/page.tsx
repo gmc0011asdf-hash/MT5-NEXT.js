@@ -1,5 +1,6 @@
 "use client";
 
+import { ConvexSafeWrapper } from "@/components/gold-pro/ConvexSafeWrapper";
 import { MonitoringDashboard } from "@/components/monitoring/MonitoringDashboard";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
@@ -39,7 +40,7 @@ function convexEmptyOrLoading(
   return null;
 }
 
-export default function MonitoringPage() {
+function MonitoringPageContent() {
   const { isLoading: isConvexAuthLoading, isAuthenticated } = useConvexAuth();
   const canUseConvex = !isConvexAuthLoading && isAuthenticated;
 
@@ -237,5 +238,13 @@ export default function MonitoringPage() {
 
       <MonitoringDashboard />
     </div>
+  );
+}
+
+export default function MonitoringPage() {
+  return (
+    <ConvexSafeWrapper>
+      <MonitoringPageContent />
+    </ConvexSafeWrapper>
   );
 }

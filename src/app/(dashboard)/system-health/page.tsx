@@ -5,6 +5,7 @@ import { useAction, useMutation, useQuery } from "convex/react";
 import { useConvexAuth } from "convex/react";
 import { api } from "../../../../convex/_generated/api";
 import { Id } from "../../../../convex/_generated/dataModel";
+import { ConvexSafeWrapper } from "@/components/gold-pro/ConvexSafeWrapper";
 import {
   AlertCircle, CheckCircle2, Circle, XCircle,
   RefreshCw, Newspaper, ChevronDown, ChevronUp, Save,
@@ -754,7 +755,7 @@ function RuntimeDiagnosticsPanel() {
 
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
-export default function SystemHealthPage() {
+function SystemHealthPageContent() {
   return (
     <div dir="rtl" className="flex-1 space-y-6 p-6">
       <div>
@@ -791,5 +792,13 @@ export default function SystemHealthPage() {
 
       <RuntimeDiagnosticsPanel />
     </div>
+  );
+}
+
+export default function SystemHealthPage() {
+  return (
+    <ConvexSafeWrapper>
+      <SystemHealthPageContent />
+    </ConvexSafeWrapper>
   );
 }

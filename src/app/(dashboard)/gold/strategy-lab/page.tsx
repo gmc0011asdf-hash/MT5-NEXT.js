@@ -21,6 +21,7 @@ import {
 import { institutionalCardClass } from "@/lib/ui-institutional";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { ConvexSafeWrapper } from "@/components/gold-pro/ConvexSafeWrapper";
 
 // ─── Display helpers ──────────────────────────────────────────────────────────
 
@@ -252,7 +253,7 @@ function SaveToLibrarySection({
 
 // ─── Component ────────────────────────────────────────────────────────────────
 
-export default function GoldStrategyLabPage() {
+function GoldStrategyLabPageContent() {
   const [htmlInput,   setHtmlInput]   = useState("");
   const [fileName,    setFileName]    = useState<string | null>(null);
   const [parseResult, setParseResult] = useState<ParsedReport | null>(null);
@@ -503,5 +504,13 @@ export default function GoldStrategyLabPage() {
       ) : null}
 
     </div>
+  );
+}
+
+export default function GoldStrategyLabPage() {
+  return (
+    <ConvexSafeWrapper>
+      <GoldStrategyLabPageContent />
+    </ConvexSafeWrapper>
   );
 }

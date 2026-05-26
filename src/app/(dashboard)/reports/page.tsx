@@ -1,5 +1,6 @@
 "use client";
 
+import { ConvexSafeWrapper } from "@/components/gold-pro/ConvexSafeWrapper";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -132,7 +133,7 @@ function groupDealsIntoTrades(deals: RawMT5Deal[]): GroupedMT5Trade[] {
     .sort((a, b) => (b.closeTime ?? b.openTime ?? 0) - (a.closeTime ?? a.openTime ?? 0));
 }
 
-export default function ReportsPage() {
+function ReportsPageContent() {
   const { isLoading: isConvexAuthLoading, isAuthenticated } = useConvexAuth();
   const canUseConvex = !isConvexAuthLoading && isAuthenticated;
 
@@ -1116,5 +1117,13 @@ export default function ReportsPage() {
       )}
 
     </div>
+  );
+}
+
+export default function ReportsPage() {
+  return (
+    <ConvexSafeWrapper>
+      <ReportsPageContent />
+    </ConvexSafeWrapper>
   );
 }

@@ -1,5 +1,6 @@
 "use client";
 
+import { ConvexSafeWrapper } from "@/components/gold-pro/ConvexSafeWrapper";
 import { useEffect, useState } from "react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -21,7 +22,7 @@ type LiveMt5Account = {
 const NO_REAL_MT5_DATA_AR =
   "لا توجد بيانات MT5 حقيقية بعد — شغّل خدمة MT5 المحلية واضغط مزامنة MT5 المحلي للقراءة فقط.";
 
-export default function DashboardPage() {
+function DashboardPageContent() {
   const { isLoading: isConvexAuthLoading, isAuthenticated } = useConvexAuth();
   const canUseConvex = !isConvexAuthLoading && isAuthenticated;
 
@@ -265,5 +266,13 @@ export default function DashboardPage() {
         </AlertDescription>
       </Alert>
     </div>
+  );
+}
+
+export default function DashboardPage() {
+  return (
+    <ConvexSafeWrapper>
+      <DashboardPageContent />
+    </ConvexSafeWrapper>
   );
 }

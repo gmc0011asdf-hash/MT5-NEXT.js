@@ -7,8 +7,9 @@ import { Button } from "@/components/ui/button";
 import { api } from "../../../../convex/_generated/api";
 import { assertMt5BridgeReadOnlyMode } from "@/lib/mt5-bridge";
 import { institutionalCardClass } from "@/lib/ui-institutional";
+import { ConvexSafeWrapper } from "@/components/gold-pro/ConvexSafeWrapper";
 
-export default function ConvexCorePage() {
+function ConvexCorePageContent() {
   useEffect(() => {
     assertMt5BridgeReadOnlyMode();
   }, []);
@@ -363,5 +364,13 @@ export default function ConvexCorePage() {
         </div>
       )}
     </div>
+  );
+}
+
+export default function ConvexCorePage() {
+  return (
+    <ConvexSafeWrapper>
+      <ConvexCorePageContent />
+    </ConvexSafeWrapper>
   );
 }

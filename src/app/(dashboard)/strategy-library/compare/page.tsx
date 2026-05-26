@@ -7,6 +7,7 @@ import { api } from "../../../../../convex/_generated/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { institutionalCardClass } from "@/lib/ui-institutional";
 import { ArrowRight, BarChart2 } from "lucide-react";
+import { ConvexSafeWrapper } from "@/components/gold-pro/ConvexSafeWrapper";
 
 // ─── ثوابت ────────────────────────────────────────────────────────────────────
 
@@ -232,7 +233,7 @@ function sortStrategies(
 
 // ─── الصفحة ───────────────────────────────────────────────────────────────────
 
-export default function StrategyComparePage() {
+function StrategyComparePageContent() {
   const { isLoading: authLoading, isAuthenticated } = useConvexAuth();
   const canUseConvex = !authLoading && isAuthenticated;
 
@@ -547,5 +548,13 @@ export default function StrategyComparePage() {
         البيانات المعروضة من نتائج الاختبار التاريخي فقط — ليست ضماناً للأداء المستقبلي.
       </p>
     </div>
+  );
+}
+
+export default function StrategyComparePage() {
+  return (
+    <ConvexSafeWrapper>
+      <StrategyComparePageContent />
+    </ConvexSafeWrapper>
   );
 }

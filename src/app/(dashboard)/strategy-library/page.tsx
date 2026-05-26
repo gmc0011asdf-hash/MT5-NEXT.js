@@ -1,5 +1,6 @@
 "use client";
 
+import { ConvexSafeWrapper } from "@/components/gold-pro/ConvexSafeWrapper";
 import { useState } from "react";
 import Link from "next/link";
 import { useConvexAuth, useMutation, usePaginatedQuery } from "convex/react";
@@ -299,7 +300,7 @@ function StrategyCard({ s }: { s: Strategy }) {
 
 // ─── الصفحة الرئيسية ─────────────────────────────────────────────────────────
 
-export default function StrategyLibraryPage() {
+function StrategyLibraryPageContent() {
   const { isLoading: authLoading, isAuthenticated } = useConvexAuth();
   const canUseConvex = !authLoading && isAuthenticated;
   const [showCreate, setShowCreate] = useState(false);
@@ -383,5 +384,13 @@ export default function StrategyLibraryPage() {
         </>
       )}
     </div>
+  );
+}
+
+export default function StrategyLibraryPage() {
+  return (
+    <ConvexSafeWrapper>
+      <StrategyLibraryPageContent />
+    </ConvexSafeWrapper>
   );
 }

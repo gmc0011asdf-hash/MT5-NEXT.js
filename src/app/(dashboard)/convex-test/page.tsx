@@ -7,8 +7,9 @@ import { useConvexAuth, useMutation, useQuery } from "convex/react";
 import { Button } from "@/components/ui/button";
 import { api } from "../../../../convex/_generated/api";
 import { institutionalCardClass } from "@/lib/ui-institutional";
+import { ConvexSafeWrapper } from "@/components/gold-pro/ConvexSafeWrapper";
 
-export default function ConvexTestPage() {
+function ConvexTestPageContent() {
   const { isLoaded, isSignedIn } = useAuth();
   const { user } = useUser();
   const { isLoading: isConvexAuthLoading, isAuthenticated } = useConvexAuth();
@@ -139,5 +140,13 @@ export default function ConvexTestPage() {
         </div>
       )}
     </div>
+  );
+}
+
+export default function ConvexTestPage() {
+  return (
+    <ConvexSafeWrapper>
+      <ConvexTestPageContent />
+    </ConvexSafeWrapper>
   );
 }

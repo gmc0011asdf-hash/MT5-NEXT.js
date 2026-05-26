@@ -1,5 +1,6 @@
 "use client";
 
+import { ConvexSafeWrapper } from "@/components/gold-pro/ConvexSafeWrapper";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -94,7 +95,7 @@ function dedupeSymbolsByName(raw: unknown[]): Record<string, unknown>[] {
   return [...map.values()];
 }
 
-export default function SettingsPage() {
+function SettingsPageContent() {
   const { isLoading: isConvexAuthLoading, isAuthenticated } = useConvexAuth();
   const canUseConvex = !isConvexAuthLoading && isAuthenticated;
 
@@ -1071,6 +1072,14 @@ export default function SettingsPage() {
         </div>
       </Section>
     </div>
+  );
+}
+
+export default function SettingsPage() {
+  return (
+    <ConvexSafeWrapper>
+      <SettingsPageContent />
+    </ConvexSafeWrapper>
   );
 }
 

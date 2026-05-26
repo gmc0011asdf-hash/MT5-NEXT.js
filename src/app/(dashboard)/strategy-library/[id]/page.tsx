@@ -21,6 +21,7 @@ import {
   TrendingUp,
   Upload,
 } from "lucide-react";
+import { ConvexSafeWrapper } from "@/components/gold-pro/ConvexSafeWrapper";
 
 function FieldLabel({ children, className }: { children: React.ReactNode; className?: string }) {
   return <label className={`block text-muted-foreground ${className ?? "text-xs"}`}>{children}</label>;
@@ -1197,7 +1198,7 @@ function BacktestsSection({ strategyId }: { strategyId: Id<"strategies"> }) {
 
 // ─── الصفحة الرئيسية ─────────────────────────────────────────────────────────
 
-export default function StrategyDetailPage() {
+function StrategyDetailPageContent() {
   const params = useParams();
   const strategyId = params.id as Id<"strategies">;
   const { isLoading: authLoading, isAuthenticated } = useConvexAuth();
@@ -1364,5 +1365,13 @@ export default function StrategyDetailPage() {
         مكتبة الاستراتيجيات أداة توثيق فقط — لا تنفيذ تداول قبل المرحلة 14.
       </p>
     </div>
+  );
+}
+
+export default function StrategyDetailPage() {
+  return (
+    <ConvexSafeWrapper>
+      <StrategyDetailPageContent />
+    </ConvexSafeWrapper>
   );
 }

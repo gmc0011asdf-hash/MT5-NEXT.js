@@ -1,4 +1,6 @@
 "use client";
+
+import { ConvexSafeWrapper } from "@/components/gold-pro/ConvexSafeWrapper";
 /**
  * decision-journal/page.tsx — A21
  * ─────────────────────────────────────────────────────────────────────────────
@@ -425,7 +427,7 @@ function CommitteeBreakdownPanel({
 
 // ─── الصفحة ───────────────────────────────────────────────────────────────────
 
-export default function DecisionJournalPage() {
+function DecisionJournalPageContent() {
   // ── Auth ──────────────────────────────────────────────────────────────────
   const { isAuthenticated, isLoading: isAuthLoading } = useConvexAuth();
 
@@ -764,5 +766,13 @@ export default function DecisionJournalPage() {
       )}
 
     </div>
+  );
+}
+
+export default function DecisionJournalPage() {
+  return (
+    <ConvexSafeWrapper>
+      <DecisionJournalPageContent />
+    </ConvexSafeWrapper>
   );
 }
