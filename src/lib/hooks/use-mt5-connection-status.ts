@@ -27,6 +27,7 @@ export function useMt5ConnectionStatus() {
     let alive = true;
 
     async function loadStatus() {
+      if (document.visibilityState === "hidden") return;
       try {
         const res = await fetch("/api/mt5-readonly/connection-status", { cache: "no-store" });
         const payload = (await res.json()) as Mt5ConnectionStatus;
@@ -58,9 +59,15 @@ export function useMt5ConnectionStatus() {
       void loadStatus();
     }, POLL_MS);
 
+    function onVisibilityChange() {
+      if (document.visibilityState === "visible") void loadStatus();
+    }
+    document.addEventListener("visibilitychange", onVisibilityChange);
+
     return () => {
       alive = false;
       clearInterval(id);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
     };
   }, []);
 

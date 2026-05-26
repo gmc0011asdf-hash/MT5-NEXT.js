@@ -1,7 +1,7 @@
 "use client";
 
 import { ConvexSafeWrapper } from "@/components/gold-pro/ConvexSafeWrapper";
-import { useEffect, useState } from "react";
+import { useMt5ConnectionStatus } from "@/lib/hooks/use-mt5-connection-status";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { MarketSessionsPanel } from "@/components/dashboard/MarketSessionsPanel";
@@ -36,38 +36,19 @@ function DashboardPageContent() {
   const protection = useQuery(api.coreQueries.getMyProtectionEvents, canUseConvex ? {} : "skip");
   const mt5Summary = useQuery(api.coreQueries.getMyMt5ReadOnlySummary, canUseConvex ? {} : "skip");
 
-  // ── Live MT5 account — يُجلَب مباشرة من connection-status (لا Convex) ──────
-  const [liveMt5, setLiveMt5] = useState<LiveMt5Account | null>(null);
-  const [liveMt5Loading, setLiveMt5Loading] = useState(true);
-
-  useEffect(() => {
-    let cancelled = false;
-    async function fetchLive() {
-      try {
-        const res = await fetch("/api/mt5-readonly/connection-status", { cache: "no-store" });
-        const data = (await res.json()) as Record<string, unknown>;
-        if (!cancelled) {
-          setLiveMt5({
-            connected:  Boolean(data.connected),
-            balance:    typeof data.balance    === "number" ? data.balance    : null,
-            equity:     typeof data.equity     === "number" ? data.equity     : null,
-            freeMargin: typeof data.free_margin === "number" ? data.free_margin : null,
-            currency:   typeof data.currency   === "string" ? data.currency   : null,
-            readOnly:   data.read_only !== false,
-          });
-          setLiveMt5Loading(false);
-        }
-      } catch {
-        if (!cancelled) {
-          setLiveMt5({ connected: false, balance: null, equity: null, freeMargin: null, currency: null, readOnly: true });
-          setLiveMt5Loading(false);
-        }
+  // ── Live MT5 account — shared hook (AppHeader already polls every 12s) ──────
+  const { status: mt5Status } = useMt5ConnectionStatus();
+  const liveMt5Loading = mt5Status === null;
+  const liveMt5: LiveMt5Account | null = mt5Status
+    ? {
+        connected:  mt5Status.connected,
+        balance:    mt5Status.balance,
+        equity:     mt5Status.equity,
+        freeMargin: mt5Status.free_margin,
+        currency:   mt5Status.currency,
+        readOnly:   mt5Status.read_only,
       }
-    }
-    void fetchLive();
-    const id = window.setInterval(() => void fetchLive(), 30_000);
-    return () => { cancelled = true; window.clearInterval(id); };
-  }, []);
+    : null;
 
   function convexFallbackLine() {
     return <p className="text-muted-foreground text-sm">{NO_REAL_MT5_DATA_AR}</p>;
