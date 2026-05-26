@@ -26,10 +26,10 @@ export function OpenPositionsPanel() {
     }
   }, []);
 
-  // الاستعلام الأولي + polling كل 5 ثوانٍ
+  // الاستعلام الأولي + polling كل 15 ثانية (كانت 5 — خُفِّضت لتخفيف الحمل)
   useEffect(() => {
     fetchPositions();
-    const id = setInterval(fetchPositions, 5000);
+    const id = setInterval(fetchPositions, 15_000);
     return () => clearInterval(id);
   }, [fetchPositions]);
 
