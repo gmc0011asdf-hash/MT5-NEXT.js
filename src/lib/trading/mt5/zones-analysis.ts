@@ -6,7 +6,7 @@
 
 import type { OHLCCandle, MarketStructureAnalysis } from "./market-structure";
 
-// ─── Types ────────────────────────────────────────────────────────────────────
+// --- Types --------------------------------------------------------------------
 
 export type PriceZoneType =
   | "SUPPLY"
@@ -50,7 +50,7 @@ export type ZonesAnalysis = {
   warnings:          string[];
 };
 
-// ─── ATR ──────────────────────────────────────────────────────────────────────
+// --- ATR ----------------------------------------------------------------------
 
 function atr14(candles: OHLCCandle[]): number {
   if (candles.length < 2) return 0;
@@ -68,7 +68,7 @@ function atr14(candles: OHLCCandle[]): number {
   return sum / period;
 }
 
-// ─── Impulse measurement ──────────────────────────────────────────────────────
+// --- Impulse measurement ------------------------------------------------------
 
 function impulseMove(candles: OHLCCandle[], startIdx: number, lookAhead: number): number {
   const end = Math.min(startIdx + lookAhead, candles.length - 1);
@@ -76,7 +76,7 @@ function impulseMove(candles: OHLCCandle[], startIdx: number, lookAhead: number)
   return candles[end]!.close - candles[startIdx]!.close;
 }
 
-// ─── Supply / Demand zone detection ──────────────────────────────────────────
+// --- Supply / Demand zone detection ------------------------------------------
 
 function detectSupplyDemandZones(
   candles: OHLCCandle[],
@@ -97,7 +97,7 @@ function detectSupplyDemandZones(
     const zoneL = zoneC.low;
     if (zoneH - zoneL > MAX_ZONE_SIZE) continue;
 
-    // ── Bullish impulse → Demand zone ───────────────────────────────────────
+    // -- Bullish impulse → Demand zone ---------------------------------------
     if (move >= IMPULSE_MIN) {
       const impulseRatio = move / atr;
       const strength = Math.min(88, 50 + Math.round(impulseRatio * 8));
@@ -118,7 +118,7 @@ function detectSupplyDemandZones(
       });
     }
 
-    // ── Bearish impulse → Supply zone ────────────────────────────────────────
+    // -- Bearish impulse → Supply zone ----------------------------------------
     if (move <= -IMPULSE_MIN) {
       const impulseRatio = Math.abs(move) / atr;
       const strength = Math.min(88, 50 + Math.round(impulseRatio * 8));
@@ -143,7 +143,7 @@ function detectSupplyDemandZones(
   return zones;
 }
 
-// ─── Order Block detection ────────────────────────────────────────────────────
+// --- Order Block detection ----------------------------------------------------
 
 function detectOrderBlocks(
   candles: OHLCCandle[],
@@ -163,7 +163,7 @@ function detectOrderBlocks(
     const move = impulseMove(candles, i, LOOK_AHEAD);
     const isBullishC = c.close >= c.open;
 
-    // ── Bullish OB: last bearish candle before bullish move ──────────────────
+    // -- Bullish OB: last bearish candle before bullish move ------------------
     if (!isBullishC && move >= OB_MOVE_MIN) {
       let strength = Math.min(85, 55 + Math.round((move / atr) * 8));
       if (bosCHoCHUp) strength = Math.min(92, strength + 10);
@@ -184,7 +184,7 @@ function detectOrderBlocks(
       });
     }
 
-    // ── Bearish OB: last bullish candle before bearish move ──────────────────
+    // -- Bearish OB: last bullish candle before bearish move ------------------
     if (isBullishC && move <= -OB_MOVE_MIN) {
       let strength = Math.min(85, 55 + Math.round((Math.abs(move) / atr) * 8));
       if (bosCHoCHDown) strength = Math.min(92, strength + 10);
@@ -209,7 +209,7 @@ function detectOrderBlocks(
   return zones;
 }
 
-// ─── FVG / Imbalance detection ────────────────────────────────────────────────
+// --- FVG / Imbalance detection ------------------------------------------------
 
 function detectFVGs(candles: OHLCCandle[], atr: number): PriceZone[] {
   const zones: PriceZone[] = [];
@@ -222,7 +222,7 @@ function detectFVGs(candles: OHLCCandle[], atr: number): PriceZone[] {
     const curr = candles[i]!;
     const next = candles[i + 1]!;
 
-    // ── Bullish FVG: gap between prev.high and next.low ──────────────────────
+    // -- Bullish FVG: gap between prev.high and next.low ----------------------
     const bullGap = next.low - prev.high;
     if (bullGap >= MIN_GAP) {
       const midBody = Math.abs(curr.close - curr.open);
@@ -244,7 +244,7 @@ function detectFVGs(candles: OHLCCandle[], atr: number): PriceZone[] {
       });
     }
 
-    // ── Bearish FVG: gap between next.high and prev.low ──────────────────────
+    // -- Bearish FVG: gap between next.high and prev.low ----------------------
     const bearGap = prev.low - next.high;
     if (bearGap >= MIN_GAP) {
       const midBody = Math.abs(curr.close - curr.open);
@@ -270,7 +270,7 @@ function detectFVGs(candles: OHLCCandle[], atr: number): PriceZone[] {
   return zones;
 }
 
-// ─── Support / Resistance from swing points ───────────────────────────────────
+// --- Support / Resistance from swing points -----------------------------------
 
 function addSupportResistance(ms: MarketStructureAnalysis): PriceZone[] {
   const zones: PriceZone[] = [];
@@ -317,7 +317,7 @@ function addSupportResistance(ms: MarketStructureAnalysis): PriceZone[] {
   return zones;
 }
 
-// ─── Touch & Mitigation ───────────────────────────────────────────────────────
+// --- Touch & Mitigation -------------------------------------------------------
 
 function markTouchedAndMitigated(zones: PriceZone[], candles: OHLCCandle[]): void {
   for (const zone of zones) {
@@ -364,7 +364,7 @@ function markTouchedAndMitigated(zones: PriceZone[], candles: OHLCCandle[]): voi
   }
 }
 
-// ─── Distance from current price ─────────────────────────────────────────────
+// --- Distance from current price ---------------------------------------------
 
 function computeDistances(zones: PriceZone[], currentPrice: number): void {
   for (const z of zones) {
@@ -374,7 +374,7 @@ function computeDistances(zones: PriceZone[], currentPrice: number): void {
   }
 }
 
-// ─── Premium / Discount ───────────────────────────────────────────────────────
+// --- Premium / Discount -------------------------------------------------------
 
 function classifyPremiumDiscount(
   currentPrice: number,
@@ -407,7 +407,7 @@ function classifyPremiumDiscount(
   return "MID";
 }
 
-// ─── Deduplicate similar zones ────────────────────────────────────────────────
+// --- Deduplicate similar zones ------------------------------------------------
 
 function deduplicateZones(zones: PriceZone[], atr: number): PriceZone[] {
   const MIN_SEPARATION = atr * 0.3;
@@ -424,7 +424,7 @@ function deduplicateZones(zones: PriceZone[], atr: number): PriceZone[] {
   return result;
 }
 
-// ─── Confluence score ─────────────────────────────────────────────────────────
+// --- Confluence score ---------------------------------------------------------
 
 function computeConfluenceScore(
   direction: "bullish" | "bearish" | undefined,
@@ -465,7 +465,7 @@ function computeConfluenceScore(
   return Math.max(5, Math.min(95, score));
 }
 
-// ─── Main entry point ─────────────────────────────────────────────────────────
+// --- Main entry point ---------------------------------------------------------
 
 export function analyzeZones(
   candles:   OHLCCandle[],
@@ -490,7 +490,7 @@ export function analyzeZones(
   const atr          = atr14(candles);
   const currentPrice = candles.at(-1)!.close;
 
-  // ── 1. Detect all zones ────────────────────────────────────────────────────
+  // -- 1. Detect all zones ----------------------------------------------------
   const sdZones  = detectSupplyDemandZones(candles, atr);
   const obZones  = detectOrderBlocks(candles, atr, ms);
   const fvgRaw   = detectFVGs(candles, atr);
@@ -498,16 +498,16 @@ export function analyzeZones(
 
   let allZones = [...sdZones, ...obZones, ...fvgRaw, ...srZones];
 
-  // ── 2. Dedup ───────────────────────────────────────────────────────────────
+  // -- 2. Dedup ---------------------------------------------------------------
   allZones = deduplicateZones(allZones, atr);
 
-  // ── 3. Touch & mitigation ─────────────────────────────────────────────────
+  // -- 3. Touch & mitigation -------------------------------------------------
   markTouchedAndMitigated(allZones, candles);
 
-  // ── 4. Distance ───────────────────────────────────────────────────────────
+  // -- 4. Distance -----------------------------------------------------------
   computeDistances(allZones, currentPrice);
 
-  // ── 5. Filter active (non-mitigated) + sort by proximity ──────────────────
+  // -- 5. Filter active (non-mitigated) + sort by proximity ------------------
   const activeZones = allZones
     .filter((z) => !z.mitigated)
     .sort((a, b) => a.distanceFromCurrent - b.distanceFromCurrent)
@@ -516,15 +516,15 @@ export function analyzeZones(
   const fvgZones   = activeZones.filter((z) => z.type === "BULLISH_FVG" || z.type === "BEARISH_FVG");
   const orderBlocks = activeZones.filter((z) => z.type === "BULLISH_ORDER_BLOCK" || z.type === "BEARISH_ORDER_BLOCK");
 
-  // ── 6. Nearest zones ──────────────────────────────────────────────────────
+  // -- 6. Nearest zones ------------------------------------------------------
   const nearestZone   = activeZones[0] ?? null;
   const nearestDemand = activeZones.find((z) => z.direction === "BUY")  ?? null;
   const nearestSupply = activeZones.find((z) => z.direction === "SELL") ?? null;
 
-  // ── 7. Premium / Discount ─────────────────────────────────────────────────
+  // -- 7. Premium / Discount -------------------------------------------------
   const inPremiumDiscount = classifyPremiumDiscount(currentPrice, ms, candles);
 
-  // ── 8. Bias ───────────────────────────────────────────────────────────────
+  // -- 8. Bias ---------------------------------------------------------------
   const NEAR_PCT = 0.5; // 0.5% from current price is "near"
   const nearBuy  = activeZones.filter((z) => z.direction === "BUY"  && z.distanceFromCurrent <= NEAR_PCT).length;
   const nearSell = activeZones.filter((z) => z.direction === "SELL" && z.distanceFromCurrent <= NEAR_PCT).length;
@@ -535,10 +535,10 @@ export function analyzeZones(
   if (inPremiumDiscount === "DISCOUNT" && nearBuy > 0 && bias !== "SELL") bias = "BUY";
   if (inPremiumDiscount === "PREMIUM"  && nearSell > 0 && bias !== "BUY") bias = "SELL";
 
-  // ── 9. Confluence score ───────────────────────────────────────────────────
+  // -- 9. Confluence score ---------------------------------------------------
   const confluenceScore = computeConfluenceScore(direction, activeZones, inPremiumDiscount, atr);
 
-  // ── 10. Reasons ───────────────────────────────────────────────────────────
+  // -- 10. Reasons -----------------------------------------------------------
   if (nearestDemand) {
     reasons.push(`أقرب منطقة طلب: ${nearestDemand.midpoint.toFixed(5)} (${nearestDemand.distanceFromCurrent.toFixed(2)}%)`);
   }
@@ -559,7 +559,7 @@ export function analyzeZones(
     reasons.push(`${orderBlocks.length} Order Block نشط`);
   }
 
-  // ── 11. Warnings ──────────────────────────────────────────────────────────
+  // -- 11. Warnings ----------------------------------------------------------
   if (inPremiumDiscount === "MID") {
     warnings.push("الدخول من منتصف النطاق ضعيف — لا أفضلية واضحة للشراء أو البيع");
   }
@@ -585,7 +585,7 @@ export function analyzeZones(
     warnings.push(`⚠ السعر داخل منطقة ${insideOpposing.type} معاكسة (strength: ${insideOpposing.strength})`);
   }
 
-  // ── 12. Confidence ────────────────────────────────────────────────────────
+  // -- 12. Confidence --------------------------------------------------------
   const confidence = Math.min(90, Math.max(15,
     30 +
     (activeZones.length > 0 ? 20 : 0) +

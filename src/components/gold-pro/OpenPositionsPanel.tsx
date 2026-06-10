@@ -66,7 +66,7 @@ export function OpenPositionsPanel() {
       className="rounded-xl border border-slate-700 bg-slate-900 p-4"
       dir="rtl"
     >
-      {/* ─── Header ─────────────────────────────────────────────── */}
+      {/* --- Header ----------------------------------------------- */}
       <div className="mb-3 flex items-center justify-between border-b border-slate-700 pb-2">
         <p className="text-xs uppercase tracking-widest text-slate-500">
           📋 المراكز المفتوحة
@@ -97,7 +97,7 @@ export function OpenPositionsPanel() {
         </div>
       </div>
 
-      {/* ─── Positions List ──────────────────────────────────────── */}
+      {/* --- Positions List ---------------------------------------- */}
       {positions.length === 0 ? (
         <p className="py-6 text-center text-sm text-slate-600">
           لا توجد مراكز مفتوحة حالياً
@@ -201,7 +201,7 @@ export function OpenPositionsPanel() {
         </div>
       )}
 
-      {/* ─── Close Error ─────────────────────────────────────────── */}
+      {/* --- Close Error ------------------------------------------- */}
       {closeError && (
         <p className="mt-3 rounded border border-red-800 bg-red-950 p-2 text-xs text-red-400">
           ⚠️ {closeError}

@@ -2,7 +2,7 @@
 
 /**
  * CandleSyncPanel — Candle Close Auto Re-Analysis v1
- * ─────────────────────────────────────────────────────────────────────────────
+ * -----------------------------------------------------------------------------
  * لوحة "مزامنة التحليل مع إغلاق الشمعة":
  *   - عرض وقت إغلاق الشمعة القادمة + عداد تنازلي
  *   - خيار OFF افتراضي لإعادة التحليل تلقائياً
@@ -11,7 +11,7 @@
  *
  * ⚠️ CountdownTimer مكوّن مستقل — لا يُعيد تصيير AnalysisControlPanel.
  * ⚠️ لا order_send — لا Convex — لا polling متكرر.
- * ─────────────────────────────────────────────────────────────────────────────
+ * -----------------------------------------------------------------------------
  */
 
 import { useState, useEffect, useRef, useCallback } from "react";
@@ -31,7 +31,7 @@ import {
   clearTimelineStorage,
 } from "@/lib/gold/candle-close-timing";
 
-// ─── CountdownTimer — isolated sub-component ─────────────────────────────────
+// --- CountdownTimer — isolated sub-component ---------------------------------
 // Only THIS component re-renders every second, protecting the parent.
 
 function CountdownTimer({ targetMs }: { targetMs: number }) {
@@ -54,7 +54,7 @@ function CountdownTimer({ targetMs }: { targetMs: number }) {
   );
 }
 
-// ─── Props ────────────────────────────────────────────────────────────────────
+// --- Props --------------------------------------------------------------------
 
 export type CandleSyncPanelProps = {
   selectedTimeframe:    string | null;
@@ -67,7 +67,7 @@ export type CandleSyncPanelProps = {
   onClearTimeline:      () => void;
 };
 
-// ─── Candle verification (one-time fetch, no polling) ────────────────────────
+// --- Candle verification (one-time fetch, no polling) ------------------------
 
 async function verifyNewCandle(
   symbol:       string,
@@ -95,7 +95,7 @@ async function verifyNewCandle(
   }
 }
 
-// ─── Sync status badge ────────────────────────────────────────────────────────
+// --- Sync status badge --------------------------------------------------------
 
 const STATUS_CLASS: Record<SyncStatus, string> = {
   MANUAL_ONLY:          "text-zinc-400 border-zinc-500/30 bg-zinc-500/10",
@@ -107,7 +107,7 @@ const STATUS_CLASS: Record<SyncStatus, string> = {
   ERROR:                "text-red-300 border-red-500/30 bg-red-500/10",
 };
 
-// ─── Main component ───────────────────────────────────────────────────────────
+// --- Main component -----------------------------------------------------------
 
 export function CandleSyncPanel({
   selectedTimeframe,
@@ -141,7 +141,7 @@ export function CandleSyncPanel({
   useEffect(() => { syncRef.current = syncStatus; },       [syncStatus]);
   useEffect(() => { triggerRef.current = onTriggerAnalysis; }, [onTriggerAnalysis]);
 
-  // ── Detect analysis completion (busy: true → false while ANALYZING) ────────
+  // -- Detect analysis completion (busy: true → false while ANALYZING) --------
   useEffect(() => {
     const wasAnalyzing = prevBusyRef.current && !busy && syncRef.current === "ANALYZING";
     prevBusyRef.current = busy;
@@ -155,7 +155,7 @@ export function CandleSyncPanel({
     }
   }, [busy, autoEnabled, selectedTimeframe]);
 
-  // ── Main scheduling effect ─────────────────────────────────────────────────
+  // -- Main scheduling effect -------------------------------------------------
   const lastClosedRef = useRef(lastClosedCandleTime);
   useEffect(() => { lastClosedRef.current = lastClosedCandleTime; }, [lastClosedCandleTime]);
 
@@ -229,7 +229,7 @@ export function CandleSyncPanel({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [autoEnabled, selectedTimeframe, rescheduleCount]); // rescheduleCount triggers re-schedule
 
-  // ── Handle auto toggle ─────────────────────────────────────────────────────
+  // -- Handle auto toggle -----------------------------------------------------
   const handleToggleAuto = useCallback(() => {
     setAutoEnabled((prev) => {
       if (!prev) {
@@ -246,7 +246,7 @@ export function CandleSyncPanel({
     });
   }, []);
 
-  // ── Display values ─────────────────────────────────────────────────────────
+  // -- Display values ---------------------------------------------------------
   const tfLabel          = selectedTimeframe ?? "—";
   const isKnownTF        = selectedTimeframe ? tfPeriodMs(selectedTimeframe) !== null : false;
   const msLeft           = selectedTimeframe ? (msUntilNextClose(selectedTimeframe) ?? 0) : 0;
@@ -258,7 +258,7 @@ export function CandleSyncPanel({
   return (
     <div className="rounded-xl border border-amber-500/15 bg-amber-500/5 p-4 space-y-4" dir="rtl">
 
-      {/* ── Header ─────────────────────────────────────────────────────────── */}
+      {/* -- Header ----------------------------------------------------------- */}
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
           <p className="text-xs font-bold text-amber-200/90">مزامنة التحليل مع إغلاق الشمعة</p>
@@ -275,7 +275,7 @@ export function CandleSyncPanel({
         </span>
       </div>
 
-      {/* ── Countdown ──────────────────────────────────────────────────────── */}
+      {/* -- Countdown -------------------------------------------------------- */}
       {isKnownTF && nextCloseAt && autoEnabled ? (
         <div className="rounded-lg border border-sky-500/20 bg-sky-500/5 px-4 py-3 space-y-2">
           {/* Label + countdown */}
@@ -339,7 +339,7 @@ export function CandleSyncPanel({
         </div>
       )}
 
-      {/* ── Auto Re-Analysis Toggle ─────────────────────────────────────────── */}
+      {/* -- Auto Re-Analysis Toggle ------------------------------------------- */}
       <div className="flex items-center justify-between gap-3">
         <div>
           <p className="text-xs font-medium text-foreground/80">إعادة التحليل تلقائيًا عند إغلاق الشمعة</p>
@@ -367,7 +367,7 @@ export function CandleSyncPanel({
         </button>
       </div>
 
-      {/* ── Last analysis info ─────────────────────────────────────────────── */}
+      {/* -- Last analysis info ----------------------------------------------- */}
       {analysisMetadata && (
         <div className="rounded-md border border-border/20 bg-background/20 px-3 py-2 space-y-1">
           <p className="text-[9px] uppercase tracking-wider text-muted-foreground mb-1.5">آخر تحليل</p>
@@ -396,12 +396,12 @@ export function CandleSyncPanel({
         </div>
       )}
 
-      {/* ── Open candle warning ──────────────────────────────────────────────── */}
+      {/* -- Open candle warning ------------------------------------------------ */}
       <div className="text-[10px] text-amber-200/60 leading-relaxed">
         الشمعة الحالية للمراقبة فقط — التحليل يعتمد دائماً على آخر شمعة مغلقة
       </div>
 
-      {/* ── Timeline (collapsible) ──────────────────────────────────────────── */}
+      {/* -- Timeline (collapsible) -------------------------------------------- */}
       <div className="border-t border-border/20 pt-3 space-y-2">
         <div className="flex items-center justify-between">
           <button

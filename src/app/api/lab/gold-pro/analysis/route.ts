@@ -9,14 +9,14 @@ import { auth } from "@clerk/nextjs/server";
 const BRIDGE = process.env.MT5_SERVICE_URL ?? "http://127.0.0.1:8010";
 
 export async function GET() {
-  // ── Auth ──────────────────────────────────────────────────────────────────
+  // -- Auth ------------------------------------------------------------------
   const { userId } = await auth();
   if (!userId) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
   try {
-    // ── جلب البيانات بالتوازي ─────────────────────────────────────────────
+    // -- جلب البيانات بالتوازي ---------------------------------------------
     const [snapshotRes, h1Res, h4Res, d1Res, m15Res] = await Promise.all([
       fetch(`${BRIDGE}/readonly/snapshot?symbol=XAUUSD`, { cache: "no-store" }),
       // الحدود الآمنة لـ MT5 Bridge — لا تتجاوز هذه القيم
@@ -38,7 +38,7 @@ export async function GET() {
       m15Res.json(),
     ]);
 
-    // ── استخراج XAUUSD فقط من البيانات ──────────────────────────────────
+    // -- استخراج XAUUSD فقط من البيانات ----------------------------------
     const xauTick = snapshot.ticks?.find((t: { symbol: string }) => t.symbol === "XAUUSD");
     const filterXAU = (candles: Array<{ symbol: string; timeframe: string }>) =>
       candles.filter(c => c.symbol === "XAUUSD");

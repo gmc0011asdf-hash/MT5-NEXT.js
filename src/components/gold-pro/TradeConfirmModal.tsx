@@ -73,7 +73,7 @@ export function TradeConfirmModal({ data, onConfirm, onClose }: Props) {
         dir="rtl"
       >
 
-        {/* ── Step 1: Review ──────────────────────────────────────── */}
+        {/* -- Step 1: Review ---------------------------------------- */}
         {step === "review" && (
           <>
             <h2 className="mb-1 text-lg font-bold text-white">
@@ -117,7 +117,7 @@ export function TradeConfirmModal({ data, onConfirm, onClose }: Props) {
           </>
         )}
 
-        {/* ── Step 2: Final Confirm ───────────────────────────────── */}
+        {/* -- Step 2: Final Confirm --------------------------------- */}
         {step === "confirm" && (
           <>
             <h2 className="mb-2 text-lg font-bold text-white">⚡ تأكيد نهائي</h2>
@@ -151,7 +151,7 @@ export function TradeConfirmModal({ data, onConfirm, onClose }: Props) {
           </>
         )}
 
-        {/* ── Step 3: Executing ───────────────────────────────────── */}
+        {/* -- Step 3: Executing ------------------------------------- */}
         {step === "executing" && (
           <div className="py-10 text-center">
             <div className="mb-4 text-5xl">⏳</div>
@@ -160,7 +160,7 @@ export function TradeConfirmModal({ data, onConfirm, onClose }: Props) {
           </div>
         )}
 
-        {/* ── Step 4: Done ────────────────────────────────────────── */}
+        {/* -- Step 4: Done ------------------------------------------ */}
         {step === "done" && result && (
           <>
             <div className="mb-3 text-center text-5xl">✅</div>
@@ -194,7 +194,7 @@ export function TradeConfirmModal({ data, onConfirm, onClose }: Props) {
           </>
         )}
 
-        {/* ── Step 5: Error ───────────────────────────────────────── */}
+        {/* -- Step 5: Error ----------------------------------------- */}
         {step === "error" && (
           <>
             <div className="mb-3 text-center text-5xl">❌</div>

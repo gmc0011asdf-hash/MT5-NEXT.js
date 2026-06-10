@@ -1,778 +1,472 @@
 "use client";
 
-import { ConvexSafeWrapper } from "@/components/gold-pro/ConvexSafeWrapper";
-/**
- * decision-journal/page.tsx — A21
- * ─────────────────────────────────────────────────────────────────────────────
- * ⚠️ قراءة فقط — لا تنفيذ تداول — لا useMutation — لا userId من الواجهة.
- * الفلترة والترتيب client-side فقط على البيانات المجلوبة من Convex.
- * userId يُستخرج من Clerk server-side داخل query.
- * ─────────────────────────────────────────────────────────────────────────────
- */
-import { useState } from "react";
-import { useConvexAuth, useQuery } from "convex/react";
-import { api } from "../../../../convex/_generated/api";
+import { useState, useMemo } from "react";
+import { useQuery } from "@tanstack/react-query";
 import {
-  AlertCircle, ArrowUpDown, BarChart2, BookOpen,
-  ClipboardList, Download, Search, SlidersHorizontal, X,
+  BookOpen,
+  CheckCircle2,
+  XCircle,
+  Clock,
+  RefreshCw,
+  ChevronDown,
+  ChevronUp,
+  AlertTriangle,
+  Users,
 } from "lucide-react";
 
-// ─── خيارات الفلاتر ───────────────────────────────────────────────────────────
+const FASTAPI_BASE = "http://127.0.0.1:8010";
 
-const STATUS_OPTIONS = [
-  { value: "",                  label: "كل الحالات"       },
-  { value: "WATCHING",          label: "مراقبة"           },
-  { value: "SETUP_FORMING",     label: "تهيؤ"             },
-  { value: "WAIT_CONFIRMATION", label: "انتظار تأكيد"     },
-  { value: "READY_FOR_REVIEW",  label: "جاهز للمراجعة"   },
-  { value: "BLOCKED",           label: "محظور"            },
-  { value: "EXPIRED",           label: "منتهي"            },
-  { value: "HOLD",              label: "تعليق"            },
-];
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
 
-const DECISION_OPTIONS = [
-  { value: "",      label: "كل القرارات" },
-  { value: "BUY",   label: "شراء ↑"     },
-  { value: "SELL",  label: "بيع ↓"      },
-  { value: "HOLD",  label: "انتظار"      },
-  { value: "BLOCK", label: "حظر"         },
-];
-
-const TIMEFRAME_OPTIONS = [
-  { value: "",    label: "كل الفريمات" },
-  ...["M1", "M5", "M15", "M30", "H1", "H4", "D1"].map((tf) => ({
-    value: tf, label: tf,
-  })),
-];
-
-const PLATFORM_OPTIONS = [
-  { value: "",     label: "كل المنصات" },
-  { value: "MT5",  label: "MT5"        },
-  { value: "OKX",  label: "OKX"        },
-];
-
-// ─── مساعدات العرض — القرارات ────────────────────────────────────────────────
-
-function statusLabel(s: string): string {
-  const map: Record<string, string> = {
-    WATCHING:          "مراقبة",
-    SETUP_FORMING:     "تهيؤ",
-    WAIT_CONFIRMATION: "انتظار تأكيد",
-    READY_FOR_REVIEW:  "جاهز للمراجعة",
-    BLOCKED:           "محظور",
-    EXPIRED:           "منتهي",
-    HOLD:              "تعليق",
-  };
-  return map[s] ?? s;
+interface AgentVote {
+  approved:   boolean;
+  confidence: number;
+  reason:     string;
+  direction:  string | null;
 }
 
-function statusColor(s: string): string {
-  if (s === "READY_FOR_REVIEW") return "text-emerald-300 bg-emerald-500/10 border-emerald-500/30";
-  if (s === "BLOCKED")          return "text-red-300 bg-red-500/10 border-red-500/30";
-  if (s === "EXPIRED")          return "text-zinc-400 bg-zinc-500/10 border-zinc-500/30";
-  if (s === "WATCHING")         return "text-sky-300 bg-sky-500/10 border-sky-500/30";
-  return "text-amber-300 bg-amber-500/10 border-amber-500/30";
+interface JournalContext {
+  symbol?:          string;
+  direction?:       string | null;
+  signal_strength?: number;
+  sl?:              number | null;
+  tp?:              number | null;
+  atr?:             number | null;
 }
 
-function decisionLabel(d: string): string {
-  const map: Record<string, string> = {
-    BUY:   "شراء ↑",
-    SELL:  "بيع ↓",
-    HOLD:  "انتظار",
-    BLOCK: "حظر",
-  };
-  return map[d] ?? d;
+interface JournalEntry {
+  id:           number;
+  trade_id:     string | null;
+  context:      JournalContext;
+  agents_votes: Record<string, AgentVote>;
+  result:       "APPROVED" | "REJECTED";
+  timestamp:    string;
 }
 
-function decisionColor(d: string): string {
-  if (d === "BUY")   return "text-emerald-300";
-  if (d === "SELL")  return "text-red-300";
-  if (d === "BLOCK") return "text-red-400";
-  return "text-muted-foreground";
+interface JournalResponse {
+  ok:      boolean;
+  count:   number;
+  entries: JournalEntry[];
 }
 
-function gradeColor(g: string): string {
-  if (g === "A+" || g === "A") return "text-emerald-300";
-  if (g === "B")               return "text-amber-300";
-  return "text-red-300";
+// ---------------------------------------------------------------------------
+// Data fetching
+// ---------------------------------------------------------------------------
+
+async function fetchJournal(
+  result?: string,
+  symbol?: string,
+): Promise<JournalResponse> {
+  const params = new URLSearchParams({ limit: "200" });
+  if (result) params.set("result", result);
+  if (symbol) params.set("symbol", symbol);
+  const res = await fetch(`${FASTAPI_BASE}/api/journal?${params.toString()}`, {
+    cache: "no-store",
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json() as Promise<JournalResponse>;
 }
 
-function formatTs(ts: number): string {
+// ---------------------------------------------------------------------------
+// Agent names (Arabic display)
+// ---------------------------------------------------------------------------
+
+const AGENT_LABELS: Record<string, string> = {
+  TrendAgent:      "وكيل الاتجاه",
+  MomentumAgent:   "وكيل الزخم",
+  VolatilityAgent: "وكيل التقلب",
+  RiskAgent:       "وكيل المخاطرة",
+};
+
+const agentLabel = (key: string) => AGENT_LABELS[key] ?? key;
+
+// ---------------------------------------------------------------------------
+// Small helpers
+// ---------------------------------------------------------------------------
+
+function formatTs(ts: string): string {
   try {
-    return new Date(ts).toLocaleString("ar-IQ", {
-      month:  "short",
-      day:    "numeric",
+    return new Date(ts).toLocaleString("ar-SA", {
+      year:   "numeric",
+      month:  "2-digit",
+      day:    "2-digit",
       hour:   "2-digit",
       minute: "2-digit",
+      hour12: false,
     });
   } catch {
-    return String(ts);
+    return ts;
   }
 }
 
-// ─── مساعدات العرض — أحداث التدقيق ──────────────────────────────────────────
-
-function eventTypeLabel(et: string): string {
-  const map: Record<string, string> = {
-    CREATED:        "تم الإنشاء",
-    STATUS_CHANGED: "تغيير الحالة",
-    REVIEWED:       "مراجعة",
-    EXPIRED:        "انتهاء الصلاحية",
-    BLOCKED:        "حظر",
-    HELD:           "تعليق",
-    NOTE_ADDED:     "ملاحظة",
-    SYSTEM_REVIEW:  "مراجعة نظام",
-    RISK_RECHECK:   "إعادة فحص المخاطرة",
-    DATA_REFRESHED: "تحديث البيانات",
-  };
-  return map[et] ?? et;
+function DirectionBadge({ dir }: { dir?: string | null }) {
+  if (!dir) return <span className="text-muted-foreground text-xs">محايد</span>;
+  if (dir === "BUY")
+    return (
+      <span className="rounded px-1.5 py-0.5 text-xs font-bold bg-emerald-500/15 text-emerald-300">
+        شراء
+      </span>
+    );
+  return (
+    <span className="rounded px-1.5 py-0.5 text-xs font-bold bg-rose-500/15 text-rose-300">
+      بيع
+    </span>
+  );
 }
 
-function eventTypeColor(et: string): string {
-  if (et === "CREATED")        return "text-emerald-300 bg-emerald-500/10 border-emerald-500/30";
-  if (et === "BLOCKED")        return "text-red-300    bg-red-500/10    border-red-500/30";
-  if (et === "EXPIRED")        return "text-zinc-400   bg-zinc-500/10   border-zinc-500/30";
-  if (et === "STATUS_CHANGED") return "text-sky-300    bg-sky-500/10    border-sky-500/30";
-  if (et === "NOTE_ADDED")     return "text-violet-300 bg-violet-500/10 border-violet-500/30";
-  if (et === "REVIEWED")       return "text-blue-300   bg-blue-500/10   border-blue-500/30";
-  return "text-amber-300 bg-amber-500/10 border-amber-500/30";
+function ResultBadge({ result }: { result: "APPROVED" | "REJECTED" }) {
+  if (result === "APPROVED")
+    return (
+      <span className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-semibold bg-emerald-500/15 text-emerald-300 border border-emerald-500/20">
+        <CheckCircle2 className="h-3 w-3" />
+        مقبول
+      </span>
+    );
+  return (
+    <span className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-semibold bg-rose-500/10 text-rose-300 border border-rose-500/20">
+      <XCircle className="h-3 w-3" />
+      مرفوض
+    </span>
+  );
 }
 
-function triggeredByLabel(tb: string): string {
-  if (tb === "system")       return "النظام";
-  if (tb === "agent")        return "وكيل";
-  if (tb === "lab-analysis") return "محرك التحليل";
-  return tb;
+// ---------------------------------------------------------------------------
+// Agent Votes Expansion Panel
+// ---------------------------------------------------------------------------
+
+function AgentVotesPanel({ votes }: { votes: Record<string, AgentVote> }) {
+  const keys = Object.keys(votes);
+  if (keys.length === 0)
+    return (
+      <p className="text-xs text-muted-foreground py-2">لا توجد بيانات تصويت</p>
+    );
+
+  return (
+    <div className="grid gap-2 pt-2">
+      {keys.map((key) => {
+        const v = votes[key]!;
+        return (
+          <div
+            key={key}
+            className={`rounded-lg border p-3 text-sm ${
+              v.approved
+                ? "border-emerald-500/20 bg-emerald-500/5"
+                : "border-rose-500/15 bg-rose-500/5"
+            }`}
+          >
+            <div className="flex items-center justify-between gap-2 mb-1">
+              <span className="font-medium text-foreground">{agentLabel(key)}</span>
+              <div className="flex items-center gap-2">
+                <span className="tabular-nums text-xs text-muted-foreground">
+                  {Math.round(v.confidence * 100)}%
+                </span>
+                {v.approved ? (
+                  <CheckCircle2 className="h-3.5 w-3.5 text-emerald-400" />
+                ) : (
+                  <XCircle className="h-3.5 w-3.5 text-rose-400" />
+                )}
+              </div>
+            </div>
+            <p className="text-xs text-muted-foreground leading-relaxed">
+              {v.reason || "لا يوجد سبب"}
+            </p>
+          </div>
+        );
+      })}
+    </div>
+  );
 }
 
-// ─── مساعدات عرض اللجان ───────────────────────────────────────────────────────
+// ---------------------------------------------------------------------------
+// Single Journal Row
+// ---------------------------------------------------------------------------
 
-function verdictColor(v: string): string {
-  if (v === "PASS")  return "text-emerald-300 bg-emerald-500/10 border-emerald-500/30";
-  if (v === "WARN")  return "text-amber-300  bg-amber-500/10  border-amber-500/30";
-  if (v === "BLOCK") return "text-red-300    bg-red-500/10    border-red-500/30";
-  return "text-muted-foreground bg-muted/10 border-border";
+function JournalRow({ entry }: { entry: JournalEntry }) {
+  const [open, setOpen] = useState(false);
+  const ctx   = entry.context;
+  const votes = entry.agents_votes;
+
+  const approvedCount = Object.values(votes).filter((v) => v.approved).length;
+  const totalVotes    = Object.keys(votes).length;
+  const strengthPct   =
+    ctx.signal_strength != null ? Math.round(ctx.signal_strength * 100) : null;
+
+  return (
+    <div
+      className={`rounded-xl border transition-colors ${
+        entry.result === "APPROVED"
+          ? "border-emerald-500/15 bg-emerald-500/5"
+          : "border-border bg-card/50"
+      }`}
+    >
+      {/* Header row */}
+      <button
+        type="button"
+        onClick={() => setOpen((p) => !p)}
+        className="w-full text-right px-4 py-3 flex flex-wrap items-center gap-x-4 gap-y-2"
+      >
+        <span className="shrink-0">
+          <ResultBadge result={entry.result} />
+        </span>
+
+        <span className="font-mono text-sm font-semibold text-foreground min-w-[70px]">
+          {ctx.symbol ?? "—"}
+        </span>
+
+        <DirectionBadge dir={ctx.direction} />
+
+        {strengthPct != null && (
+          <span className="tabular-nums text-xs text-muted-foreground">
+            قوة: {strengthPct}%
+          </span>
+        )}
+
+        {ctx.sl != null && (
+          <span className="tabular-nums text-xs text-muted-foreground">
+            SL: {ctx.sl.toFixed(2)}
+          </span>
+        )}
+
+        {ctx.tp != null && (
+          <span className="tabular-nums text-xs text-muted-foreground">
+            TP: {ctx.tp.toFixed(2)}
+          </span>
+        )}
+
+        <span className="text-xs text-muted-foreground mr-auto">
+          {formatTs(entry.timestamp)}
+        </span>
+
+        <span className="shrink-0 text-muted-foreground">
+          {open ? (
+            <ChevronUp className="h-4 w-4" />
+          ) : (
+            <ChevronDown className="h-4 w-4" />
+          )}
+        </span>
+      </button>
+
+      {/* Expanded votes panel */}
+      {open && (
+        <div className="border-t border-border/50 px-4 pb-4">
+          <div className="flex items-center gap-1.5 pt-3 pb-1 text-xs font-medium text-muted-foreground">
+            <Users className="h-3.5 w-3.5" />
+            <span>
+              تصويتات الوكلاء ({approvedCount}/{totalVotes} موافقة)
+            </span>
+          </div>
+          <AgentVotesPanel votes={votes} />
+        </div>
+      )}
+    </div>
+  );
 }
 
-function verdictLabel(v: string): string {
-  if (v === "PASS")  return "ناجح ✓";
-  if (v === "WARN")  return "تحذير ⚠";
-  if (v === "BLOCK") return "محظور ✗";
-  return v;
-}
+// ---------------------------------------------------------------------------
+// Stats Bar
+// ---------------------------------------------------------------------------
 
-function verdictBarColor(v: string): string {
-  if (v === "PASS")  return "bg-emerald-500/70";
-  if (v === "WARN")  return "bg-amber-500/70";
-  if (v === "BLOCK") return "bg-red-500/70";
-  return "bg-muted";
-}
-
-// ─── FilterSelect — select مُصمَّم بالنمط الداكن الذهبي ──────────────────────
-
-function FilterSelect({
-  value,
-  onChange,
-  options,
+function StatsBar({
+  total,
+  approved,
+  rejected,
 }: {
-  value:    string;
-  onChange: (v: string) => void;
-  options:  { value: string; label: string }[];
+  total:    number;
+  approved: number;
+  rejected: number;
 }) {
   return (
-    <select
-      value={value}
-      onChange={(e) => onChange(e.target.value)}
-      className="rounded-md border border-border bg-background px-2 py-1.5 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-amber-500/50 cursor-pointer min-w-[100px]"
-    >
-      {options.map((o) => (
-        <option key={o.value} value={o.value}>
-          {o.label}
-        </option>
+    <div className="grid grid-cols-3 gap-3">
+      {[
+        {
+          label: "إجمالي التحليلات",
+          value: total,
+          icon:  Clock,
+          color: "text-amber-400",
+          bg:    "bg-amber-500/10 border-amber-500/20",
+        },
+        {
+          label: "إشارات مقبولة",
+          value: approved,
+          icon:  CheckCircle2,
+          color: "text-emerald-400",
+          bg:    "bg-emerald-500/10 border-emerald-500/20",
+        },
+        {
+          label: "تحليلات مرفوضة",
+          value: rejected,
+          icon:  XCircle,
+          color: "text-rose-400",
+          bg:    "bg-rose-500/10 border-rose-500/20",
+        },
+      ].map(({ label, value, icon: Icon, color, bg }) => (
+        <div
+          key={label}
+          className={`rounded-xl border p-4 flex items-center gap-3 ${bg}`}
+        >
+          <Icon className={`h-5 w-5 shrink-0 ${color}`} />
+          <div>
+            <p className="tabular-nums text-xl font-bold text-foreground">{value}</p>
+            <p className="text-xs text-muted-foreground">{label}</p>
+          </div>
+        </div>
       ))}
-    </select>
-  );
-}
-
-// ─── AuditEventsPanel ─────────────────────────────────────────────────────────
-// قراءة فقط — لا useMutation — لا createDecisionAuditEvent — لا تنفيذ تداول
-
-interface AuditEventsPanelProps {
-  decisionId:      string;
-  symbol:          string;
-  isAuthenticated: boolean;
-  onClose:         () => void;
-}
-
-function AuditEventsPanel({
-  decisionId,
-  symbol,
-  isAuthenticated,
-  onClose,
-}: AuditEventsPanelProps) {
-  const events = useQuery(
-    api.decisionJournal.listAuditEventsByDecision,
-    isAuthenticated ? { decisionId, limit: 50 } : "skip",
-  );
-  const isLoading = events === undefined;
-
-  return (
-    <div className="rounded-xl border border-amber-500/20 bg-card shadow flex flex-col">
-      {/* Header */}
-      <div className="flex items-center justify-between px-5 py-3.5 border-b border-border shrink-0">
-        <div className="flex items-center gap-2 flex-wrap">
-          <ClipboardList className="h-4 w-4 text-amber-500 shrink-0" />
-          <h2 className="text-sm font-semibold text-foreground">
-            سجل التدقيق —{" "}
-            <span className="font-mono text-amber-400">{symbol}</span>
-          </h2>
-          <span className="text-xs text-muted-foreground border border-border rounded px-1.5 py-0.5">
-            قراءة فقط
-          </span>
-        </div>
-        <button
-          onClick={onClose}
-          aria-label="إغلاق سجل التدقيق"
-          className="rounded-md p-1.5 text-muted-foreground hover:text-foreground hover:bg-muted/30 transition-colors"
-        >
-          <X className="h-4 w-4" />
-        </button>
-      </div>
-
-      <div className="p-5 overflow-y-auto max-h-[420px]">
-        {isLoading && (
-          <div className="flex items-center justify-center py-8 text-muted-foreground text-sm">
-            <span className="animate-pulse">جارٍ تحميل سجل التدقيق...</span>
-          </div>
-        )}
-
-        {!isLoading && events.length === 0 && (
-          <div className="flex flex-col items-center justify-center py-8 text-center text-muted-foreground">
-            <ClipboardList className="h-8 w-8 text-muted-foreground/25 mb-3" />
-            <p className="text-sm">لا توجد أحداث تدقيق لهذا القرار بعد.</p>
-          </div>
-        )}
-
-        {!isLoading && events.length > 0 && (
-          <div className="space-y-2.5">
-            {events.map((ev) => (
-              <div
-                key={ev._id}
-                className="rounded-lg border border-border bg-muted/5 p-3.5 space-y-1.5"
-              >
-                <div className="flex items-center justify-between gap-2 flex-wrap">
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${eventTypeColor(ev.eventType)}`}>
-                      {eventTypeLabel(ev.eventType)}
-                    </span>
-                    <span className="text-xs text-muted-foreground">
-                      {triggeredByLabel(ev.triggeredBy)}
-                    </span>
-                  </div>
-                  <span className="text-xs text-muted-foreground whitespace-nowrap">
-                    {formatTs(ev.createdAt)}
-                  </span>
-                </div>
-
-                {(ev.fromStatus ?? ev.toStatus) && (
-                  <div className="flex items-center gap-1.5 text-xs text-muted-foreground flex-wrap">
-                    {ev.fromStatus && (
-                      <>
-                        <span className="opacity-60">من:</span>
-                        <span className="rounded border border-border px-1.5 py-0.5 bg-muted/20 font-mono">
-                          {ev.fromStatus}
-                        </span>
-                      </>
-                    )}
-                    {ev.fromStatus && ev.toStatus && <span className="opacity-50">←</span>}
-                    {ev.toStatus && (
-                      <>
-                        <span className="opacity-60">إلى:</span>
-                        <span className="rounded border border-border px-1.5 py-0.5 bg-muted/20 font-mono">
-                          {ev.toStatus}
-                        </span>
-                      </>
-                    )}
-                  </div>
-                )}
-
-                {ev.message && (
-                  <p className="text-sm text-muted-foreground/90 leading-relaxed">
-                    {ev.message}
-                  </p>
-                )}
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
     </div>
   );
 }
 
-// ─── CommitteeBreakdownPanel ──────────────────────────────────────────────────
-// قراءة فقط — لا useMutation — لا تنفيذ تداول
-// userId يُستخرَج من ctx.auth server-side داخل listCommitteesByDecision
+// ---------------------------------------------------------------------------
+// Main Page
+// ---------------------------------------------------------------------------
 
-interface CommitteeBreakdownPanelProps {
-  decisionId:      string;
-  symbol:          string;
-  isAuthenticated: boolean;
-  onClose:         () => void;
-}
+export default function DecisionJournalPage() {
+  const [filterResult, setFilterResult] = useState<"" | "APPROVED" | "REJECTED">("");
+  const [filterSymbol, setFilterSymbol] = useState<string>("");
 
-function CommitteeBreakdownPanel({
-  decisionId,
-  symbol,
-  isAuthenticated,
-  onClose,
-}: CommitteeBreakdownPanelProps) {
-  const committees = useQuery(
-    api.decisionJournal.listCommitteesByDecision,
-    isAuthenticated ? { decisionId } : "skip",
-  );
-  const isLoading = committees === undefined;
+  const { data, isLoading, isError, refetch, isFetching } =
+    useQuery<JournalResponse>({
+      queryKey: ["decision-journal", filterResult, filterSymbol],
+      queryFn:  () =>
+        fetchJournal(filterResult || undefined, filterSymbol || undefined),
+      refetchInterval: 60_000,
+      retry:           false,
+      staleTime:       30_000,
+    });
 
-  return (
-    <div className="rounded-xl border border-border bg-card shadow flex flex-col">
-      {/* Header */}
-      <div className="flex items-center justify-between px-5 py-3.5 border-b border-border shrink-0">
-        <div className="flex items-center gap-2 flex-wrap">
-          <BarChart2 className="h-4 w-4 text-amber-500 shrink-0" />
-          <h2 className="text-sm font-semibold text-foreground">
-            تقرير اللجان —{" "}
-            <span className="font-mono text-amber-400">{symbol}</span>
-          </h2>
-          <span className="text-xs text-muted-foreground border border-border rounded px-1.5 py-0.5">
-            قراءة فقط
-          </span>
-        </div>
-        <button
-          onClick={onClose}
-          aria-label="إغلاق تقرير اللجان"
-          className="rounded-md p-1.5 text-muted-foreground hover:text-foreground hover:bg-muted/30 transition-colors"
-        >
-          <X className="h-4 w-4" />
-        </button>
-      </div>
+  const entries = data?.entries ?? [];
 
-      <div className="p-5 overflow-y-auto max-h-[420px]">
-        {isLoading && (
-          <div className="flex items-center justify-center py-8 text-muted-foreground text-sm">
-            <span className="animate-pulse">جارٍ تحميل نتائج اللجان...</span>
-          </div>
-        )}
-
-        {!isLoading && committees.length === 0 && (
-          <div className="flex flex-col items-center justify-center py-8 text-center text-muted-foreground">
-            <BarChart2 className="h-8 w-8 text-muted-foreground/25 mb-3" />
-            <p className="text-sm">لا توجد نتائج لجان لهذا القرار بعد.</p>
-          </div>
-        )}
-
-        {!isLoading && committees.length > 0 && (
-          <div className="grid gap-3 sm:grid-cols-2">
-            {committees.map((c) => (
-              <div
-                key={c._id}
-                className="rounded-lg border border-border bg-muted/5 p-3.5 space-y-2.5"
-              >
-                {/* Name + verdict badge */}
-                <div className="flex items-start justify-between gap-2">
-                  <p className="text-sm font-semibold text-foreground leading-tight">
-                    {c.committeeName}
-                  </p>
-                  <span className={`inline-flex shrink-0 items-center rounded-full border px-2 py-0.5 text-xs font-medium ${verdictColor(c.verdict)}`}>
-                    {verdictLabel(c.verdict)}
-                  </span>
-                </div>
-
-                {/* Score bar */}
-                <div className="space-y-1">
-                  <div className="flex items-center justify-between text-xs text-muted-foreground">
-                    <span>النتيجة</span>
-                    <span className="font-mono font-bold tabular-nums">{c.score}</span>
-                  </div>
-                  <div className="h-1.5 overflow-hidden rounded-full bg-muted/40">
-                    <div
-                      className={`h-full rounded-full transition-[width] duration-500 ${verdictBarColor(c.verdict)}`}
-                      style={{ width: `${Math.min(100, Math.max(0, c.score))}%` }}
-                    />
-                  </div>
-                </div>
-
-                {/* Summary */}
-                <p className="text-xs text-muted-foreground/80 leading-relaxed">
-                  {c.summary}
-                </p>
-
-                {/* Reasons */}
-                {c.reasons.length > 0 && (
-                  <ul className="space-y-0.5">
-                    {c.reasons.slice(0, 4).map((reason, i) => (
-                      <li key={i} className="text-xs text-muted-foreground/60 leading-snug">
-                        • {reason}
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-// ─── الصفحة ───────────────────────────────────────────────────────────────────
-
-function DecisionJournalPageContent() {
-  // ── Auth ──────────────────────────────────────────────────────────────────
-  const { isAuthenticated, isLoading: isAuthLoading } = useConvexAuth();
-
-  // ── Convex read-only query — لا userId في args ────────────────────────────
-  const rawEntries = useQuery(
-    api.decisionJournal.listMyDecisions,
-    isAuthenticated ? { limit: 50 } : "skip",
-  );
-
-  // ── القرار المختار ────────────────────────────────────────────────────────
-  const [selected, setSelected] = useState<{
-    decisionId: string;
-    symbol:     string;
-  } | null>(null);
-
-  // ── حالة الفلاتر — client-side فقط ───────────────────────────────────────
-  const [searchText,      setSearchText]      = useState("");
-  const [filterStatus,    setFilterStatus]    = useState("");
-  const [filterDecision,  setFilterDecision]  = useState("");
-  const [filterTimeframe, setFilterTimeframe] = useState("");
-  const [filterPlatform,  setFilterPlatform]  = useState("");
-  const [sortAsc,         setSortAsc]         = useState(false); // false = الأحدث أولاً
-
-  const isLoading = isAuthLoading || rawEntries === undefined;
-  const entries   = rawEntries ?? [];
-
-  // ── فلترة وترتيب client-side ──────────────────────────────────────────────
-  const q = searchText.trim().toLowerCase();
-  const filteredEntries = entries
-    .filter((e) => {
-      if (q && !e.symbol.toLowerCase().includes(q) && !e.reason.toLowerCase().includes(q)) return false;
-      if (filterStatus    && e.status        !== filterStatus)    return false;
-      if (filterDecision  && e.finalDecision !== filterDecision)  return false;
-      if (filterTimeframe && e.timeframe     !== filterTimeframe) return false;
-      if (filterPlatform  && e.platform      !== filterPlatform)  return false;
-      return true;
-    })
-    .sort((a, b) => sortAsc ? a.createdAt - b.createdAt : b.createdAt - a.createdAt);
-
-  const hasActiveFilters = !!(q || filterStatus || filterDecision || filterTimeframe || filterPlatform);
-
-  function clearFilters() {
-    setSearchText("");
-    setFilterStatus("");
-    setFilterDecision("");
-    setFilterTimeframe("");
-    setFilterPlatform("");
-  }
-
-  const countByStatus = (s: string) => entries.filter((e) => e.status === s).length;
+  const stats = useMemo(() => {
+    const approved = entries.filter((e) => e.result === "APPROVED").length;
+    return { total: entries.length, approved, rejected: entries.length - approved };
+  }, [entries]);
 
   return (
-    <div className="flex-1 space-y-6 p-6">
+    <div className="min-h-screen bg-background" dir="rtl">
+      <div className="mx-auto max-w-4xl px-4 py-6 space-y-6">
 
-      {/* ── Header ───────────────────────────────────────────────────────── */}
-      <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
-        <div>
-          <h1 className="text-2xl font-bold tracking-tight text-amber-500">
-            سجل قرارات التحليل
-          </h1>
-          <p className="text-muted-foreground text-sm">
-            جميع قرارات اللجان والتحليل — قراءة مباشرة من Convex
-          </p>
-        </div>
-        <button
-          disabled
-          className="inline-flex items-center justify-center gap-2 rounded-md bg-amber-500/10 px-4 py-2 text-sm font-medium text-amber-500 opacity-50 cursor-not-allowed border border-amber-500/20"
-        >
-          <Download className="h-4 w-4" />
-          تصدير التقرير — قريباً
-        </button>
-      </div>
-
-      {/* ── Read-only banner ─────────────────────────────────────────────── */}
-      <div className="rounded-xl border border-amber-500/20 bg-amber-500/5 p-4 text-amber-200/90 text-sm flex items-start gap-3">
-        <AlertCircle className="h-5 w-5 text-amber-500 shrink-0 mt-0.5" />
-        <div>
-          <p className="font-semibold mb-1">Read-only / لا يوجد تنفيذ تداول</p>
-          <p className="opacity-80">
-            هذه الصفحة للقراءة فقط ولا تنفذ أي تداول.
-            البيانات تأتي من Convex إن وجدت، ولا توجد أوامر تنفيذ هنا.
-          </p>
-        </div>
-      </div>
-
-      {/* ── Stats row — مجموع كامل بدون تأثير الفلاتر ──────────────────── */}
-      <div className="grid gap-4 sm:grid-cols-4">
-        {[
-          { label: "إجمالي القرارات", value: isLoading ? "—" : entries.length,                    color: "text-foreground"  },
-          { label: "جاهز للمراجعة",  value: isLoading ? "—" : countByStatus("READY_FOR_REVIEW"), color: "text-emerald-400" },
-          { label: "محظور",           value: isLoading ? "—" : countByStatus("BLOCKED"),          color: "text-red-400"     },
-          { label: "منتهي الصلاحية", value: isLoading ? "—" : countByStatus("EXPIRED"),          color: "text-zinc-400"    },
-        ].map((stat) => (
-          <div key={stat.label} className="rounded-xl border border-border bg-card p-4 shadow">
-            <p className="text-xs text-muted-foreground mb-1">{stat.label}</p>
-            <p className={`text-2xl font-bold ${stat.color}`}>{stat.value}</p>
-          </div>
-        ))}
-      </div>
-
-      {/* ── Table card ───────────────────────────────────────────────────── */}
-      <div className="rounded-xl border border-border bg-card shadow">
-
-        {/* ── Filter bar ─────────────────────────────────────────────────── */}
-        {!isLoading && entries.length > 0 && (
-          <div className="px-5 py-4 border-b border-border space-y-3">
-            {/* Row 1: filters label + controls */}
-            <div className="flex flex-wrap items-center gap-2">
-              <div className="flex items-center gap-1.5 text-xs text-muted-foreground shrink-0 ml-1">
-                <SlidersHorizontal className="h-3.5 w-3.5" />
-                <span>فلتر:</span>
-              </div>
-
-              {/* Search input */}
-              <div className="relative flex-1 min-w-[140px] max-w-[200px]">
-                <Search className="absolute right-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground pointer-events-none" />
-                <input
-                  type="text"
-                  placeholder="رمز أو سبب…"
-                  value={searchText}
-                  onChange={(e) => setSearchText(e.target.value)}
-                  className="w-full rounded-md border border-border bg-background pr-7 pl-2.5 py-1.5 text-xs text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-amber-500/50"
-                />
-              </div>
-
-              <FilterSelect value={filterStatus}    onChange={setFilterStatus}    options={STATUS_OPTIONS}    />
-              <FilterSelect value={filterDecision}  onChange={setFilterDecision}  options={DECISION_OPTIONS}  />
-              <FilterSelect value={filterTimeframe} onChange={setFilterTimeframe} options={TIMEFRAME_OPTIONS} />
-              <FilterSelect value={filterPlatform}  onChange={setFilterPlatform}  options={PLATFORM_OPTIONS}  />
-
-              {/* Sort toggle */}
-              <button
-                onClick={() => setSortAsc((v) => !v)}
-                title={sortAsc ? "عرض الأحدث أولاً" : "عرض الأقدم أولاً"}
-                className="inline-flex items-center gap-1 rounded-md border border-border bg-background px-2 py-1.5 text-xs text-muted-foreground hover:text-foreground hover:border-amber-500/40 transition-colors"
-              >
-                <ArrowUpDown className="h-3.5 w-3.5" />
-                {sortAsc ? "الأقدم أولاً" : "الأحدث أولاً"}
-              </button>
-
-              {/* Clear filters */}
-              {hasActiveFilters && (
-                <button
-                  onClick={clearFilters}
-                  className="inline-flex items-center gap-1 rounded-md border border-red-500/20 bg-red-500/5 px-2 py-1.5 text-xs text-red-400 hover:bg-red-500/10 transition-colors"
-                >
-                  <X className="h-3.5 w-3.5" />
-                  مسح الفلاتر
-                </button>
-              )}
+        {/* Header */}
+        <div className="flex items-start justify-between gap-3">
+          <div className="flex items-center gap-3">
+            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-amber-500/15 border border-amber-500/25">
+              <BookOpen className="h-5 w-5 text-amber-400" />
             </div>
+            <div>
+              <h1 className="text-xl font-bold text-foreground">
+                سجل القرارات التحليلية
+              </h1>
+              <p className="text-xs text-muted-foreground">
+                تاريخ تصويتات مجلس الوكلاء — للأغراض المعلوماتية فقط
+              </p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => refetch()}
+            disabled={isFetching}
+            className="flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-xs text-muted-foreground hover:text-foreground hover:border-amber-500/30 transition-colors disabled:opacity-50"
+          >
+            <RefreshCw className={`h-3.5 w-3.5 ${isFetching ? "animate-spin" : ""}`} />
+            تحديث
+          </button>
+        </div>
 
-            {/* Count */}
-            <p className="text-xs text-muted-foreground">
-              {hasActiveFilters ? (
-                <>
-                  يعرض{" "}
-                  <span className="font-semibold text-amber-400">{filteredEntries.length}</span>
-                  {" "}من{" "}
-                  <span className="font-semibold">{entries.length}</span>
-                  {" "}قرار
-                </>
-              ) : (
-                <>
-                  إجمالي{" "}
-                  <span className="font-semibold text-foreground">{entries.length}</span>
-                  {" "}قرار
-                </>
-              )}
+        {/* Info banner */}
+        <div className="flex items-start gap-2 rounded-xl border border-amber-500/20 bg-amber-500/5 px-4 py-3">
+          <AlertTriangle className="h-4 w-4 shrink-0 text-amber-400 mt-0.5" />
+          <p className="text-xs text-amber-200/80 leading-relaxed">
+            هذا السجل يعرض نتائج تحليل مجلس الوكلاء الآلي — تحليل معلوماتي فقط —
+            ليس توصية مالية — القرار النهائي للإنسان دائماً.
+          </p>
+        </div>
+
+        {/* Filters */}
+        <div className="flex flex-wrap gap-3">
+          <select
+            value={filterResult}
+            onChange={(e) =>
+              setFilterResult(e.target.value as "" | "APPROVED" | "REJECTED")
+            }
+            className="rounded-lg border border-border bg-card px-3 py-1.5 text-sm text-foreground focus:outline-none focus:border-amber-500/50"
+          >
+            <option value="">جميع النتائج</option>
+            <option value="APPROVED">مقبولة فقط</option>
+            <option value="REJECTED">مرفوضة فقط</option>
+          </select>
+
+          <input
+            type="text"
+            value={filterSymbol}
+            onChange={(e) => setFilterSymbol(e.target.value.toUpperCase())}
+            placeholder="فلتر بالرمز (مثال: XAUUSD)"
+            className="rounded-lg border border-border bg-card px-3 py-1.5 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:border-amber-500/50 w-48"
+            maxLength={20}
+          />
+        </div>
+
+        {/* Stats */}
+        {!isLoading && !isError && (
+          <StatsBar
+            total={stats.total}
+            approved={stats.approved}
+            rejected={stats.rejected}
+          />
+        )}
+
+        {/* Loading */}
+        {isLoading && (
+          <div className="space-y-3">
+            {Array.from({ length: 5 }).map((_, i) => (
+              <div
+                key={i}
+                className="h-14 rounded-xl border border-border bg-card/50 animate-pulse"
+              />
+            ))}
+          </div>
+        )}
+
+        {/* Error */}
+        {isError && (
+          <div className="rounded-xl border border-rose-500/20 bg-rose-500/5 px-4 py-6 text-center">
+            <XCircle className="h-8 w-8 text-rose-400 mx-auto mb-2" />
+            <p className="text-sm font-medium text-rose-300">
+              تعذر الاتصال بخدمة FastAPI المحلية
+            </p>
+            <p className="text-xs text-muted-foreground mt-1">
+              تأكد من تشغيل{" "}
+              <span className="font-mono">uvicorn main:app --port 8010</span>
             </p>
           </div>
         )}
 
-        <div className="p-5">
+        {/* Empty state */}
+        {!isLoading && !isError && entries.length === 0 && (
+          <div className="rounded-xl border border-border bg-card/30 px-4 py-12 text-center">
+            <BookOpen className="h-10 w-10 text-muted-foreground/30 mx-auto mb-3" />
+            <p className="text-sm text-muted-foreground">
+              لا توجد تحليلات محفوظة بعد
+            </p>
+            <p className="text-xs text-muted-foreground/70 mt-1">
+              ستظهر هنا بمجرد تشغيل محرك المسح في خدمة FastAPI
+            </p>
+          </div>
+        )}
 
-          {/* Loading */}
-          {isLoading && (
-            <div className="flex items-center justify-center py-12 text-muted-foreground text-sm">
-              <span className="animate-pulse">جارٍ تحميل القرارات...</span>
-            </div>
-          )}
+        {/* Journal entries */}
+        {!isLoading && entries.length > 0 && (
+          <div className="space-y-2">
+            {entries.map((entry) => (
+              <JournalRow key={entry.id} entry={entry} />
+            ))}
+          </div>
+        )}
 
-          {/* Empty — لا بيانات نهائياً */}
-          {!isLoading && entries.length === 0 && (
-            <div className="flex flex-col items-center justify-center py-12 text-center text-muted-foreground">
-              <BookOpen className="h-12 w-12 text-muted-foreground/30 mb-4" />
-              <h3 className="text-lg font-medium text-foreground mb-1">
-                لا توجد قرارات محفوظة بعد
-              </h3>
-              <p className="text-sm max-w-sm mx-auto">
-                سيظهر السجل هنا عند ربط محرك التحليل بحفظ القرارات.
-              </p>
-            </div>
-          )}
-
-          {/* No results after filter */}
-          {!isLoading && entries.length > 0 && filteredEntries.length === 0 && (
-            <div className="flex flex-col items-center justify-center py-10 text-center text-muted-foreground">
-              <Search className="h-10 w-10 text-muted-foreground/25 mb-3" />
-              <p className="text-sm font-medium text-foreground mb-1">
-                لا توجد نتائج تطابق الفلاتر الحالية
-              </p>
-              <button
-                onClick={clearFilters}
-                className="mt-2 text-xs text-amber-400 hover:text-amber-300 underline underline-offset-2"
-              >
-                مسح الفلاتر
-              </button>
-            </div>
-          )}
-
-          {/* Data table */}
-          {!isLoading && filteredEntries.length > 0 && (
-            <>
-              <p className="text-xs text-muted-foreground mb-3">
-                اضغط على صف لعرض تقرير اللجان وسجل التدقيق
-              </p>
-              <div className="overflow-x-auto rounded-xl border border-border">
-                <table className="w-full text-sm text-right">
-                  <thead className="bg-muted/30 text-muted-foreground">
-                    <tr>
-                      <th className="px-4 py-3 font-medium whitespace-nowrap">الوقت</th>
-                      <th className="px-4 py-3 font-medium whitespace-nowrap">المنصة</th>
-                      <th className="px-4 py-3 font-medium whitespace-nowrap">الرمز</th>
-                      <th className="px-4 py-3 font-medium whitespace-nowrap">الفريم</th>
-                      <th className="px-4 py-3 font-medium whitespace-nowrap">الحالة</th>
-                      <th className="px-4 py-3 font-medium whitespace-nowrap">القرار</th>
-                      <th className="px-4 py-3 font-medium whitespace-nowrap">الدرجة</th>
-                      <th className="px-4 py-3 font-medium whitespace-nowrap">%</th>
-                      <th className="px-4 py-3 font-medium whitespace-nowrap">السبب</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-border border-t border-border">
-                    {filteredEntries.map((entry) => {
-                      const isSelected = selected?.decisionId === entry.decisionId;
-                      return (
-                        <tr
-                          key={entry._id}
-                          onClick={() =>
-                            setSelected(
-                              isSelected
-                                ? null
-                                : { decisionId: entry.decisionId, symbol: entry.symbol },
-                            )
-                          }
-                          className={`cursor-pointer transition-colors ${
-                            isSelected
-                              ? "bg-amber-500/10 border-r-2 border-r-amber-500"
-                              : "hover:bg-muted/10"
-                          }`}
-                        >
-                          <td className="px-4 py-3 whitespace-nowrap text-muted-foreground text-xs">
-                            {formatTs(entry.createdAt)}
-                          </td>
-                          <td className="px-4 py-3 whitespace-nowrap">
-                            <span className="inline-flex items-center rounded-full border border-amber-500/20 bg-amber-500/10 px-2 py-0.5 text-xs font-medium text-amber-300">
-                              {entry.platform}
-                            </span>
-                          </td>
-                          <td className="px-4 py-3 whitespace-nowrap font-mono font-semibold text-sm">
-                            {entry.symbol}
-                          </td>
-                          <td className="px-4 py-3 whitespace-nowrap text-xs text-muted-foreground">
-                            {entry.timeframe}
-                          </td>
-                          <td className="px-4 py-3 whitespace-nowrap">
-                            <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${statusColor(entry.status)}`}>
-                              {statusLabel(entry.status)}
-                            </span>
-                          </td>
-                          <td className={`px-4 py-3 whitespace-nowrap font-semibold text-sm ${decisionColor(entry.finalDecision)}`}>
-                            {decisionLabel(entry.finalDecision)}
-                          </td>
-                          <td className={`px-4 py-3 whitespace-nowrap font-bold ${gradeColor(entry.grade)}`}>
-                            {entry.grade}
-                          </td>
-                          <td className="px-4 py-3 whitespace-nowrap text-xs text-muted-foreground">
-                            {entry.probability}%
-                          </td>
-                          <td className="px-4 py-3 text-xs text-muted-foreground max-w-[200px] truncate">
-                            {entry.reason}
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            </>
-          )}
-
-        </div>
+        {/* Footer */}
+        <p className="text-center text-xs text-muted-foreground/60 pb-4">
+          نظام محكوم بالقواعد — Stage 14 مقفل — لا تنفيذ تداول آلي
+        </p>
       </div>
-
-      {/* ── قسم التفاصيل — يظهر عند اختيار صف ──────────────────────────── */}
-      {selected !== null && (
-        <div className="space-y-4">
-
-          {/* شريط المعلومات + زر الإغلاق الرئيسي */}
-          <div className="flex items-center justify-between rounded-xl border border-amber-500/30 bg-amber-500/5 px-4 py-3">
-            <div className="flex items-center gap-3 flex-wrap">
-              <span className="font-mono font-bold text-amber-400 text-sm">
-                {selected.symbol}
-              </span>
-              <span className="text-muted-foreground text-xs">— عرض التفاصيل</span>
-              <span className="text-xs text-muted-foreground border border-border rounded px-1.5 py-0.5">
-                قراءة فقط
-              </span>
-            </div>
-            <button
-              onClick={() => setSelected(null)}
-              className="inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs text-muted-foreground hover:text-foreground hover:bg-muted/30 border border-border transition-colors"
-            >
-              <X className="h-3.5 w-3.5" />
-              إغلاق التفاصيل
-            </button>
-          </div>
-
-          {/* اللجان + التدقيق في grid ─────────────────────────────────────── */}
-          <div className="grid gap-5 lg:grid-cols-2">
-            <CommitteeBreakdownPanel
-              decisionId={selected.decisionId}
-              symbol={selected.symbol}
-              isAuthenticated={isAuthenticated}
-              onClose={() => setSelected(null)}
-            />
-            <AuditEventsPanel
-              decisionId={selected.decisionId}
-              symbol={selected.symbol}
-              isAuthenticated={isAuthenticated}
-              onClose={() => setSelected(null)}
-            />
-          </div>
-
-        </div>
-      )}
-
     </div>
-  );
-}
-
-export default function DecisionJournalPage() {
-  return (
-    <ConvexSafeWrapper>
-      <DecisionJournalPageContent />
-    </ConvexSafeWrapper>
   );
 }

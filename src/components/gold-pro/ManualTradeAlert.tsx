@@ -122,7 +122,7 @@ export function ManualTradeAlert({ analysis }: Props) {
         className={`rounded-xl border-2 ${borderCls} ${bgCls} p-4 shadow-lg`}
         dir="rtl"
       >
-        {/* ─── Header ─────────────────────────────────────────────── */}
+        {/* --- Header ----------------------------------------------- */}
         <div className="mb-3 flex items-center justify-between">
           <div className="flex items-center gap-3">
             <span className="text-2xl">{isBuy ? "🟢" : "🔴"}</span>
@@ -152,7 +152,7 @@ export function ManualTradeAlert({ analysis }: Props) {
 
         {expanded && (
           <>
-            {/* ─── Parameters ─────────────────────────────────────── */}
+            {/* --- Parameters --------------------------------------- */}
             <div className="mb-4 grid grid-cols-2 gap-x-6 gap-y-1 text-sm">
               {rows.map((row) => (
                 <div
@@ -168,7 +168,7 @@ export function ManualTradeAlert({ analysis }: Props) {
               ))}
             </div>
 
-            {/* ─── Execute Button ──────────────────────────────────── */}
+            {/* --- Execute Button ------------------------------------ */}
             <button
               onClick={() => setShowModal(true)}
               className={`mb-3 w-full rounded-xl py-3 text-base font-bold shadow-md transition-all active:scale-95 ${
@@ -180,7 +180,7 @@ export function ManualTradeAlert({ analysis }: Props) {
               {isBuy ? "⚡ تنفيذ الشراء تلقائياً" : "⚡ تنفيذ البيع تلقائياً"}
             </button>
 
-            {/* ─── Disclaimer ─────────────────────────────────────── */}
+            {/* --- Disclaimer --------------------------------------- */}
             <p className="text-center text-[10px] text-slate-600">
               ⚠️ تنفيذ على Demo فقط — ليست توصية مالية — على مسؤوليتك الكاملة
             </p>
@@ -188,7 +188,7 @@ export function ManualTradeAlert({ analysis }: Props) {
         )}
       </div>
 
-      {/* ─── Confirmation Modal ──────────────────────────────────── */}
+      {/* --- Confirmation Modal ------------------------------------ */}
       {showModal && (
         <TradeConfirmModal
           data={modalData}

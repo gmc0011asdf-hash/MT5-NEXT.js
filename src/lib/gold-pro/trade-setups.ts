@@ -6,7 +6,7 @@ import type { RawCandle, TradeSetup, TradeSetupId } from "./types";
 import { lastEMA, lastRSI, calculateATR, calculateMACD, calculateADX } from "./indicators";
 import { calculateSLTP, calculatePositionSize } from "./position-sizing";
 
-// ─── إعداد المضاعفات لكل إطار زمني ──────────────────────────────────────────
+// --- إعداد المضاعفات لكل إطار زمني ------------------------------------------
 const TF_CONFIG: Record<TradeSetupId, {
   sl: number;
   tp1: number;
@@ -29,7 +29,7 @@ interface SetupInput {
   sessionOk: boolean;
 }
 
-// ─── بناء إعداد صفقة واحدة ───────────────────────────────────────────────────
+// --- بناء إعداد صفقة واحدة ---------------------------------------------------
 function buildSetup(input: SetupInput): TradeSetup | null {
   const { id, label, emoji, candles, currentPrice, balance, sessionOk } = input;
   const cfg = TF_CONFIG[id];
@@ -39,7 +39,7 @@ function buildSetup(input: SetupInput): TradeSetup | null {
 
   if (candles.length < cfg.minCandles) return null;
 
-  // ─── حساب المؤشرات ───────────────────────────────────────────────
+  // --- حساب المؤشرات -----------------------------------------------
   const e21  = lastEMA(candles, 21);
   const e50  = lastEMA(candles, 50);
   const e200 = lastEMA(candles, 200);
@@ -49,7 +49,7 @@ function buildSetup(input: SetupInput): TradeSetup | null {
   const atrCalc = calculateATR(candles, 14);
   const atr  = atrCalc > 0 ? atrCalc : cfg.atrFallback;
 
-  // ─── حساب نقاط الثقة — Bullish vs Bearish ────────────────────────
+  // --- حساب نقاط الثقة — Bullish vs Bearish ------------------------
   let bull = 0;
   let bear = 0;
   const reasons: string[] = [];
@@ -117,7 +117,7 @@ function buildSetup(input: SetupInput): TradeSetup | null {
     else bear += 5;
   }
 
-  // ─── قرار الإشارة ─────────────────────────────────────────────────
+  // --- قرار الإشارة -------------------------------------------------
   const maxScore = 100;
   let signal: "BUY" | "SELL";
   let confidence: number;
@@ -132,7 +132,7 @@ function buildSetup(input: SetupInput): TradeSetup | null {
     return null; // إشارة غير كافية — WAIT
   }
 
-  // ─── حساب SL/TP و Lot Size ───────────────────────────────────────
+  // --- حساب SL/TP و Lot Size ---------------------------------------
   const sltp = calculateSLTP(currentPrice, atr, signal, cfg.sl, cfg.tp1, cfg.tp2);
   const sizing = calculatePositionSize(balance, sltp.slDistance);
 
@@ -160,7 +160,7 @@ function buildSetup(input: SetupInput): TradeSetup | null {
   };
 }
 
-// ─── المُصدَّر الرئيسي ────────────────────────────────────────────────────────
+// --- المُصدَّر الرئيسي --------------------------------------------------------
 export function generateTradeSetups(
   currentPrice: number,
   balance: number,

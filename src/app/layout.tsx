@@ -1,9 +1,8 @@
 ﻿import type { Metadata } from "next";
-import { ClerkProvider } from "@clerk/nextjs";
 import { Cairo, Geist_Mono } from "next/font/google";
 
 import { TooltipProvider } from "@/components/ui/tooltip";
-import { ConvexClerkProvider } from "@/components/providers/convex-clerk-provider";
+import { ApiProvider } from "@/components/providers/api-provider";
 
 import "./globals.css";
 
@@ -31,19 +30,17 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <ClerkProvider>
-      <html
-        lang="ar"
-        dir="rtl"
-        className={`${cairo.variable} ${geistMono.variable} dark h-full antialiased`}
-        suppressHydrationWarning
-      >
-        <body className="min-h-full bg-background font-sans text-foreground">
-          <ConvexClerkProvider>
-            <TooltipProvider delay={0}>{children}</TooltipProvider>
-          </ConvexClerkProvider>
-        </body>
-      </html>
-    </ClerkProvider>
+    <html
+      lang="ar"
+      dir="rtl"
+      className={`${cairo.variable} ${geistMono.variable} dark h-full antialiased`}
+      suppressHydrationWarning
+    >
+      <body className="min-h-full bg-background font-sans text-foreground">
+        <ApiProvider>
+          <TooltipProvider delay={0}>{children}</TooltipProvider>
+        </ApiProvider>
+      </body>
+    </html>
   );
 }

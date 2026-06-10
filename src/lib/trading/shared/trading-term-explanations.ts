@@ -4,7 +4,7 @@
  * لا تنفيذ تداول — قراءة فقط — للعرض التوضيحي فقط.
  */
 
-// ─── هيكل السوق (B1) ─────────────────────────────────────────────────────────
+// --- هيكل السوق (B1) ---------------------------------------------------------
 
 export const STRUCTURE_POINT_EXPLANATIONS: Record<string, string> = {
   HH: "قمة أعلى — صنع السعر قمة أعلى من السابقة، دليل على استمرار الصعود.",
@@ -33,7 +33,7 @@ export const BOS_EXPLANATION =
 export const CHOCH_EXPLANATION =
   "تغير سلوك السعر (Change of Character) — أول إشارة محتملة على أن الاتجاه السابق بدأ يتغير.";
 
-// ─── الشموع (B2) ──────────────────────────────────────────────────────────────
+// --- الشموع (B2) --------------------------------------------------------------
 
 export const CANDLE_PATTERN_EXPLANATIONS: Record<string, string> = {
   BULLISH_ENGULFING:    "شمعة ابتلاعية صاعدة — جسم الشمعة الصاعدة ابتلع جسم الهابطة السابقة. ضغط شرائي قوي.",
@@ -59,7 +59,7 @@ export const LIQUIDITY_SWEEP_EXPLANATION =
 export const FAKE_BREAKOUT_EXPLANATION =
   "الكسر الوهمي — السعر يخترق مستوى مهماً ثم يفشل في الثبات فوقه/تحته. يكشف ضعف الحركة.";
 
-// ─── المناطق (B3) ────────────────────────────────────────────────────────────
+// --- المناطق (B3) ------------------------------------------------------------
 
 export const ZONE_TYPE_EXPLANATIONS: Record<string, string> = {
   SUPPLY:              "منطقة عرض — منطقة يُحتمل وجود ضغط بيع فيها. يُفضَّل البيع قربها لا الشراء.",
@@ -85,12 +85,12 @@ export const FVG_EXPLANATION =
 export const ORDER_BLOCK_EXPLANATION =
   "Order Block — آخر شمعة عكسية قبل اندفاع قوي. تمثل منطقة اهتمام مؤسسي محتملة.";
 
-// ─── ملاحظة عامة ─────────────────────────────────────────────────────────────
+// --- ملاحظة عامة -------------------------------------------------------------
 
 export const GENERAL_DISCLAIMER =
   "هذه المصطلحات لا تعني دخولاً مباشراً، بل تُستخدم كأدلة ضمن قرار اللجان.";
 
-// ─── Getter functions ─────────────────────────────────────────────────────────
+// --- Getter functions ---------------------------------------------------------
 
 export function getStructurePointExplanation(type: "HH" | "HL" | "LH" | "LL"): string {
   return STRUCTURE_POINT_EXPLANATIONS[type] ?? type;
@@ -104,7 +104,7 @@ export function getCandlePatternExplanation(type: string): string {
   return CANDLE_PATTERN_EXPLANATIONS[type] ?? type;
 }
 
-// ─── Fibonacci (B4) ──────────────────────────────────────────────────────────
+// --- Fibonacci (B4) ----------------------------------------------------------
 
 export const FIBONACCI_EXPLANATIONS: Record<string, string> = {
   Fibonacci:    "أداة تقيس مناطق التصحيح والأهداف المحتملة بناءً على آخر موجة سعرية.",
@@ -119,7 +119,7 @@ export const FIBONACCI_EXPLANATIONS: Record<string, string> = {
   "78.6%":     "تصحيح عميق — قد يدل على ضعف الموجة الأصلية.",
 };
 
-// ─── Multi-Timeframe (B5) ─────────────────────────────────────────────────────
+// --- Multi-Timeframe (B5) -----------------------------------------------------
 
 export const MTF_EXPLANATIONS: Record<string, string> = {
   MultiTimeframeConsensus: "توافق الفريمات — يقارن H4/H1/M30/M15 لمنع الدخول ضد الاتجاه الأكبر.",
@@ -130,7 +130,7 @@ export const MTF_EXPLANATIONS: Record<string, string> = {
   TimeframeAlignment: "توافق الفريمات — عندما تتفق H4/H1 مع اتجاه الدخول على M15، مما يعزز ثقة الإشارة.",
 };
 
-// ─── News Protection (B6.2) ───────────────────────────────────────────────────
+// --- News Protection (B6.2) ---------------------------------------------------
 
 export const NEWS_PROTECTION_EXPLANATIONS: Record<string, string> = {
   NewsProtectionCommittee: "لجنة الأخبار والحماية — تراقب الأخبار المؤثرة على الرمز وتمنع الدخول إذا كان هناك خبر عالي الخطورة حديث.",

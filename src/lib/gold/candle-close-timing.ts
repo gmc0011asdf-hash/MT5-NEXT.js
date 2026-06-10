@@ -1,6 +1,6 @@
 /**
  * candle-close-timing.ts — Candle Close Auto Re-Analysis v1
- * ─────────────────────────────────────────────────────────────────────────────
+ * -----------------------------------------------------------------------------
  * Pure utilities:
  *   - حساب وقت إغلاق الشمعة القادم (UTC-aligned)
  *   - تنسيق العداد التنازلي
@@ -8,10 +8,10 @@
  *   - localStorage helpers
  *
  * ⚠️ لا تنفيذ تداول — لا order_send — لا Convex — قراءة وحساب فقط.
- * ─────────────────────────────────────────────────────────────────────────────
+ * -----------------------------------------------------------------------------
  */
 
-// ─── Timeframe periods ────────────────────────────────────────────────────────
+// --- Timeframe periods --------------------------------------------------------
 
 export const TF_PERIOD_MS: Record<string, number> = {
   M1:  60_000,
@@ -76,7 +76,7 @@ export function formatTimestamp(ms: number | null | undefined): string {
   });
 }
 
-// ─── Analysis trigger and state types ────────────────────────────────────────
+// --- Analysis trigger and state types ----------------------------------------
 
 export type AnalysisTrigger = "MANUAL" | "AUTO_CANDLE_CLOSE";
 
@@ -110,7 +110,7 @@ export type AnalysisMetadata = {
   delayAfterCloseMs:       number | null;
 };
 
-// ─── Timeline (localStorage) ──────────────────────────────────────────────────
+// --- Timeline (localStorage) --------------------------------------------------
 
 export type AnalysisTimelineEntry = {
   id:               string;

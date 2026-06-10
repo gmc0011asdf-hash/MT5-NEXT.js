@@ -13,7 +13,7 @@ import { MARKET_SESSIONS, type MarketSession } from "@/lib/constants/market-sess
 import { formatTimeString12h, getSessionStatus } from "@/lib/market-session-time";
 import { cn } from "@/lib/utils";
 
-// ─── helpers ─────────────────────────────────────────────────────────────────
+// --- helpers -----------------------------------------------------------------
 
 function toneToBadge(tone: "ok" | "warning" | "danger" | "neutral"): StatusBadgeVariant {
   return tone;
@@ -59,7 +59,7 @@ function formatSessionTime12(date: Date | null, timeZone: string): string {
   }).format(date);
 }
 
-// ─── accent strip per tone ────────────────────────────────────────────────────
+// --- accent strip per tone ----------------------------------------------------
 
 function stripClass(tone: "ok" | "warning" | "danger" | "neutral"): string {
   if (tone === "ok")      return "from-emerald-500/70 via-emerald-500/20 to-transparent";
@@ -68,7 +68,7 @@ function stripClass(tone: "ok" | "warning" | "danger" | "neutral"): string {
   return "from-amber-500/20 via-amber-500/5 to-transparent";
 }
 
-// ─── SessionCard ─────────────────────────────────────────────────────────────
+// --- SessionCard -------------------------------------------------------------
 
 function SessionCard({ session, at }: { session: MarketSession; at: Date | null }) {
   const stableDate = at ?? new Date("1970-01-01T00:00:00Z");
@@ -103,33 +103,33 @@ function SessionCard({ session, at }: { session: MarketSession; at: Date | null 
         "transition-all duration-200 hover:border-amber-500/25 hover:shadow-lg hover:shadow-amber-500/[0.06]",
       )}
     >
-      {/* ── Status accent strip ─────────────────────────────────────────── */}
+      {/* -- Status accent strip ------------------------------------------- */}
       <div className={cn("h-[2px] w-full bg-gradient-to-r", stripClass(st.tone))} />
 
       <div className="flex flex-1 flex-col items-center gap-0 px-3 pb-3 pt-2.5">
 
-        {/* ── City name ───────────────────────────────────────────────── */}
+        {/* -- City name ------------------------------------------------- */}
         <p className="mb-2 text-center text-[11px] font-bold tracking-widest text-amber-200/75 uppercase">
           {session.nameAr}
         </p>
 
-        {/* ── Analog clock ────────────────────────────────────────────── */}
+        {/* -- Analog clock ---------------------------------------------- */}
         <div className="mb-2 flex items-center justify-center">
           <AnalogMarketClock session={session} at={stableDate} size={72} tone={st.tone} />
         </div>
 
-        {/* ── Digital time ────────────────────────────────────────────── */}
+        {/* -- Digital time ---------------------------------------------- */}
         <p className="font-mono text-sm tabular-nums text-amber-100/95 leading-none">
           {at ? localTime : TIME_PLACEHOLDER}
         </p>
 
-        {/* ── Timezone abbr ───────────────────────────────────────────── */}
+        {/* -- Timezone abbr --------------------------------------------- */}
         <p className="mt-0.5 text-[10px] tabular-nums text-muted-foreground/55">{tzShort}</p>
 
-        {/* ── Divider ─────────────────────────────────────────────────── */}
+        {/* -- Divider --------------------------------------------------- */}
         <div className="my-2.5 h-px w-full bg-amber-500/10" />
 
-        {/* ── Status + Activity ───────────────────────────────────────── */}
+        {/* -- Status + Activity ----------------------------------------- */}
         <div className="flex w-full items-center justify-between gap-1">
           <StatusBadge
             variant={toneToBadge(st.tone)}
@@ -142,7 +142,7 @@ function SessionCard({ session, at }: { session: MarketSession; at: Date | null 
           ) : null}
         </div>
 
-        {/* ── Progress bar ────────────────────────────────────────────── */}
+        {/* -- Progress bar ---------------------------------------------- */}
         {hasProgress ? (
           <div className="mt-2 h-1 w-full overflow-hidden rounded-full bg-muted/40">
             <div
@@ -152,7 +152,7 @@ function SessionCard({ session, at }: { session: MarketSession; at: Date | null 
           </div>
         ) : null}
 
-        {/* ── Hours + ETA ─────────────────────────────────────────────── */}
+        {/* -- Hours + ETA ----------------------------------------------- */}
         {(hoursLine || eta) ? (
           <div className="mt-2 flex w-full items-center justify-between gap-1">
             {hoursLine ? (
@@ -164,7 +164,7 @@ function SessionCard({ session, at }: { session: MarketSession; at: Date | null 
           </div>
         ) : null}
 
-        {/* ── Baghdad footer ──────────────────────────────────────────── */}
+        {/* -- Baghdad footer -------------------------------------------- */}
         <div className="mt-auto flex w-full items-center justify-between border-t border-amber-500/8 pt-2">
           <span className="text-[10px] text-muted-foreground/45">بغداد</span>
           <span className="font-mono text-[10px] tabular-nums text-amber-100/55">{baghdad}</span>
@@ -175,7 +175,7 @@ function SessionCard({ session, at }: { session: MarketSession; at: Date | null 
   );
 }
 
-// ─── MarketSessionsPanel ──────────────────────────────────────────────────────
+// --- MarketSessionsPanel ------------------------------------------------------
 
 export function MarketSessionsPanel() {
   const [now, setNow] = useState<Date | null>(null);

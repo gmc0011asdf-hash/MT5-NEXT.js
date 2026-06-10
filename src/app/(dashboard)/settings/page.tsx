@@ -1,1128 +1,887 @@
 "use client";
 
-import { ConvexSafeWrapper } from "@/components/gold-pro/ConvexSafeWrapper";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
+import { useEffect, useState, useCallback } from "react";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
-import { institutionalCardClass } from "@/lib/ui-institutional";
-import { useConvexAuth, useMutation, useQuery } from "convex/react";
-import { useEffect, useMemo, useState } from "react";
+  Settings,
+  Wifi,
+  WifiOff,
+  RefreshCw,
+  CheckCircle2,
+  XCircle,
+  AlertTriangle,
+  Server,
+  Activity,
+  Bell,
+  Shield,
+  Save,
+  RotateCcw,
+  Info,
+  Eye,
+  EyeOff,
+  FlaskConical,
+  Globe,
+} from "lucide-react";
 
-import { api } from "../../../../convex/_generated/api";
-import {
-  type DemoExecutionSettings,
-  type ExecutionMode,
-  type ExecutionPolicy,
-  DEFAULT_DEMO_SETTINGS,
-  EXECUTION_MODE_LABELS,
-  loadDemoSettings,
-  saveDemoSettings,
-} from "@/lib/trading/shared/demo-execution-settings";
+const FASTAPI_BASE = "http://127.0.0.1:8010";
 
-const SYMBOL_SYNC_CHUNK = 100;
-const DISPLAY_ROW_CAP = 300;
-const DEFAULT_TERMINAL_PATH = "C:\\Program Files\\MetaTrader 5\\terminal64.exe";
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
 
-type Mt5ConnectionStatus = {
-  connected: boolean;
+interface Mt5Status {
+  connected:     boolean;
   account_login: number | null;
-  server: string | null;
-  company: string | null;
-  name: string | null;
-  balance: number | null;
-  equity: number | null;
-  free_margin: number | null;
-  currency: string | null;
-  leverage: number | null;
-  read_only: boolean;
-  error?: string;
+  name:          string | null;
+  server:        string | null;
+  balance:       number | null;
+  equity:        number | null;
+  currency:      string | null;
+  error?:        string | null;
+}
+
+interface HealthStatus {
+  status:             string;
+  read_only_mode:     boolean;
+  build_version:      string;
+  uptime_seconds:     number;
+  mt5_connected:      boolean;
+  symbols_configured: string[];
+  detail:             string | null;
+}
+
+interface ConfigMap {
+  ema_length:         string;
+  rsi_length:         string;
+  atr_length:         string;
+  bb_length:          string;
+  bb_std:             string;
+  atr_sl_mult:        string;
+  atr_tp_mult:        string;
+  min_rr:             string;
+  telegram_bot_token: string;
+  telegram_chat_id:   string;
+  [key: string]: string;
+}
+
+// ---------------------------------------------------------------------------
+// Engine defaults
+// ---------------------------------------------------------------------------
+
+const ENGINE_DEFAULTS: Omit<ConfigMap, "telegram_bot_token" | "telegram_chat_id"> = {
+  ema_length:  "200",
+  rsi_length:  "14",
+  atr_length:  "14",
+  bb_length:   "20",
+  bb_std:      "2.0",
+  atr_sl_mult: "1.5",
+  atr_tp_mult: "3.0",
+  min_rr:      "2.0",
 };
 
-function SymbolToggleSwitch({
-  checked,
-  onToggle,
-  label,
+// ---------------------------------------------------------------------------
+// API functions
+// ---------------------------------------------------------------------------
+
+async function fetchMt5Status(): Promise<Mt5Status> {
+  const res = await fetch("/api/mt5-readonly/connection-status", { cache: "no-store" });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json() as Promise<Mt5Status>;
+}
+
+async function fetchHealth(): Promise<HealthStatus> {
+  const res = await fetch(`${FASTAPI_BASE}/health`, { cache: "no-store" });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json() as Promise<HealthStatus>;
+}
+
+async function fetchConfig(): Promise<{ ok: boolean; config: ConfigMap }> {
+  const res = await fetch(`${FASTAPI_BASE}/api/config`, { cache: "no-store" });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+
+async function saveConfigBatch(entries: { key: string; value: string }[]) {
+  const res = await fetch(`${FASTAPI_BASE}/api/config/batch`, {
+    method:  "POST",
+    headers: { "Content-Type": "application/json" },
+    body:    JSON.stringify({ entries }),
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+
+async function deleteConfigKey(key: string) {
+  const res = await fetch(`${FASTAPI_BASE}/api/config/${key}`, { method: "DELETE" });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+
+// ---------------------------------------------------------------------------
+// localStorage helpers (demo settings — not sent to server)
+// ---------------------------------------------------------------------------
+
+const LS_DEMO_LOT   = "demo_lot_size";
+const LS_DEMO_ALERT = "demo_audio_alerts";
+
+function loadDemoSettings() {
+  return {
+    lot:   parseFloat(localStorage.getItem(LS_DEMO_LOT)   ?? "0.01"),
+    alert: localStorage.getItem(LS_DEMO_ALERT) !== "false",
+  };
+}
+
+function saveDemoSettings(lot: number, alert: boolean) {
+  localStorage.setItem(LS_DEMO_LOT,   String(lot));
+  localStorage.setItem(LS_DEMO_ALERT, String(alert));
+}
+
+// ---------------------------------------------------------------------------
+// Shared components
+// ---------------------------------------------------------------------------
+
+function SectionHeader({
+  icon: Icon,
+  title,
+  sub,
+  color = "text-amber-400",
 }: {
-  checked: boolean;
-  onToggle: () => void;
-  label: string;
+  icon:   React.ElementType;
+  title:  string;
+  sub?:   string;
+  color?: string;
 }) {
   return (
-    <button
-      type="button"
-      role="switch"
-      aria-checked={checked}
-      aria-label={label}
-      onClick={onToggle}
-      className={`group relative inline-flex h-8 w-[78px] items-center rounded-full border px-1 transition-all focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-300/60 ${
-        checked
-          ? "border-emerald-500/50 bg-emerald-500/20"
-          : "border-rose-500/45 bg-rose-500/20"
-      }`}
-    >
-      <span className={`w-full px-1 text-[10px] font-semibold tracking-wide ${checked ? "text-emerald-100 text-right" : "text-rose-100 text-left"}`}>
-        {checked ? "ON" : "OFF"}
-      </span>
-      <span
-        className={`absolute top-1 h-6 w-6 rounded-full border shadow-sm transition-transform ${
-          checked
-            ? "left-1 border-emerald-300/50 bg-emerald-100/90 translate-x-0"
-            : "left-1 border-rose-300/50 bg-rose-100/90 translate-x-[48px]"
-        }`}
-      />
-    </button>
+    <div className="flex items-start gap-3 mb-5">
+      <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-amber-500/15 border border-amber-500/25 shrink-0">
+        <Icon className={`h-4 w-4 ${color}`} />
+      </div>
+      <div>
+        <h2 className="text-base font-semibold text-foreground">{title}</h2>
+        {sub && <p className="text-xs text-muted-foreground">{sub}</p>}
+      </div>
+    </div>
   );
 }
 
-function dedupeSymbolsByName(raw: unknown[]): Record<string, unknown>[] {
-  const map = new Map<string, Record<string, unknown>>();
-  for (const item of raw) {
-    if (!item || typeof item !== "object") continue;
-    const rec = item as Record<string, unknown>;
-    const name = typeof rec.name === "string" ? rec.name.trim() : "";
-    if (!name) continue;
-    map.set(name, rec);
-  }
-  return [...map.values()];
+function FieldHint({ children }: { children: React.ReactNode }) {
+  return (
+    <p className="mt-1 flex items-start gap-1 text-[11px] text-muted-foreground/80 leading-relaxed">
+      <Info className="h-3 w-3 shrink-0 mt-0.5" />
+      {children}
+    </p>
+  );
 }
 
-function SettingsPageContent() {
-  const { isLoading: isConvexAuthLoading, isAuthenticated } = useConvexAuth();
-  const canUseConvex = !isConvexAuthLoading && isAuthenticated;
-
-  const syncSymbolsMutation = useMutation(api.mt5Bridge.syncReadOnlySymbolsFromLocalService);
-  const syncSnapshotMutation = useMutation(api.mt5Bridge.syncReadOnlySnapshotFromLocalService);
-  const updateSymbolMutation = useMutation(api.mt5Bridge.updateMySymbolSetting);
-
-  // Fix-2: getMyMt5SymbolsWithSettings is heavy (reads ~500 symbol docs) — make it lazy
-  const [cloudSymbolsRequested, setCloudSymbolsRequested] = useState(false);
-  const mt5Symbols = useQuery(
-    api.coreQueries.getMyMt5SymbolsWithSettings,
-    canUseConvex && cloudSymbolsRequested ? {} : "skip",
+function SaveToast({ visible }: { visible: boolean }) {
+  if (!visible) return null;
+  return (
+    <span className="flex items-center gap-1 text-xs text-emerald-400 animate-in fade-in">
+      <CheckCircle2 className="h-3.5 w-3.5" />
+      تم الحفظ
+    </span>
   );
-  const [showAuditLog, setShowAuditLog] = useState(false);
-  const auditEvents = useQuery(api.coreQueries.getMyAuditEvents, showAuditLog && canUseConvex ? {} : "skip");
-  const mt5Summary = useQuery(api.coreQueries.getMyMt5ReadOnlySummary, canUseConvex ? {} : "skip");
-  const governance = useQuery(api.coreQueries.getMyGovernanceState, canUseConvex ? {} : "skip");
+}
 
-  const [syncBusy, setSyncBusy] = useState(false);
-  const [syncMessage, setSyncMessage] = useState<string | null>(null);
-  const [syncProgress, setSyncProgress] = useState<string | null>(null);
-  const [symbolSearch, setSymbolSearch] = useState("");
-  const [connectBusy, setConnectBusy] = useState(false);
-  const [connectMessage, setConnectMessage] = useState<string | null>(null);
-  const [connectionStatus, setConnectionStatus] = useState<Mt5ConnectionStatus | null>(null);
-  const [mt5Login, setMt5Login] = useState("");
-  const [mt5Server, setMt5Server] = useState("");
-  const [mt5Password, setMt5Password] = useState("");
-  const [mt5TerminalPath, setMt5TerminalPath] = useState(DEFAULT_TERMINAL_PATH);
+// ---------------------------------------------------------------------------
+// MT5 Connection Card
+// ---------------------------------------------------------------------------
 
-  // ── A25: Demo Execution Settings — localStorage only, no secrets ──────────
-  const [demoSettings, setDemoSettings] = useState<DemoExecutionSettings>(DEFAULT_DEMO_SETTINGS);
-
-  useEffect(() => {
-    setDemoSettings(loadDemoSettings());
-  }, []);
-
-  // ── Local symbols fallback (when Convex auth is unavailable) ───────────────
-  const LOCAL_SYMBOLS_KEY = "mt5:selectedAnalysisSymbols";
-  type LocalSymbolRow = { name: string; description?: string };
-  const [localApiSymbols, setLocalApiSymbols] = useState<LocalSymbolRow[]>([]);
-  const [localApiLoading, setLocalApiLoading] = useState(false);
-  const [localApiError, setLocalApiError] = useState<string | null>(null);
-  const [localSelectedSymbols, setLocalSelectedSymbols] = useState<Set<string>>(new Set());
-
-  useEffect(() => {
-    try {
-      const stored = localStorage.getItem(LOCAL_SYMBOLS_KEY);
-      if (stored) {
-        const parsed = JSON.parse(stored) as unknown;
-        if (Array.isArray(parsed)) {
-          setLocalSelectedSymbols(new Set(parsed.filter((s): s is string => typeof s === "string")));
-        }
-      }
-    } catch { /* ignore */ }
-  }, []);
-
-  const filteredSymbols = useMemo(() => {
-    if (!mt5Symbols || mt5Symbols.length === 0) return [];
-    const q = symbolSearch.trim().toLowerCase();
-    if (!q) return mt5Symbols;
-    return mt5Symbols.filter((row) => {
-      const name = row.name.toLowerCase();
-      const desc = (row.description ?? "").toLowerCase();
-      const cur = [row.currencyBase, row.currencyProfit, row.currencyMargin].filter(Boolean).join(" ").toLowerCase();
-      return name.includes(q) || desc.includes(q) || cur.includes(q);
+function Mt5ConnectionCard() {
+  const { data: status, isLoading, isError, refetch, isFetching } =
+    useQuery<Mt5Status>({
+      queryKey:        ["settings-mt5-status"],
+      queryFn:         fetchMt5Status,
+      refetchInterval: 30_000,
+      retry:           false,
     });
-  }, [mt5Symbols, symbolSearch]);
 
-  const tableRows = useMemo(
-    () => filteredSymbols.slice(0, DISPLAY_ROW_CAP),
-    [filteredSymbols],
-  );
-
-  const showDisplayCapHint = filteredSymbols.length > DISPLAY_ROW_CAP;
-
-  useEffect(() => {
-    let mounted = true;
-    async function loadConnectionStatus() {
-      try {
-        const res = await fetch("/api/mt5-readonly/connection-status", { cache: "no-store" });
-        const payload = (await res.json()) as Mt5ConnectionStatus;
-        if (mounted) setConnectionStatus(payload);
-      } catch {
-        if (mounted) {
-          setConnectionStatus({
-            connected: false,
-            account_login: null,
-            server: null,
-            company: null,
-            name: null,
-            balance: null,
-            equity: null,
-            free_margin: null,
-            currency: null,
-            leverage: null,
-            read_only: true,
-          });
-        }
-      }
-    }
-    void loadConnectionStatus();
-    return () => {
-      mounted = false;
-    };
-  }, []);
-
-  async function syncPairsFromMt5() {
-    setSyncMessage(null);
-    setSyncProgress(null);
-    setSyncBusy(true);
-    try {
-      const res = await fetch("/api/mt5-readonly/symbols?visibleOnly=true", { cache: "no-store" });
-      const payload = (await res.json()) as Record<string, unknown>;
-      if (!res.ok || payload.connected === false) {
-        setSyncMessage(
-          typeof payload.error === "string"
-            ? payload.error
-            : "فشل جلب الأزواج من الخدمة المحلية أو MT5 غير متصل.",
-        );
-        return;
-      }
-      const list = dedupeSymbolsByName(Array.isArray(payload.symbols) ? payload.symbols : []);
-      if (list.length === 0) {
-        setSyncMessage("لا توجد رموز في الاستجابة.");
-        return;
-      }
-      const total = list.length;
-      const syncRunId = `sym-${Date.now()}`;
-      const chunks: Record<string, unknown>[][] = [];
-      for (let i = 0; i < list.length; i += SYMBOL_SYNC_CHUNK) {
-        chunks.push(list.slice(i, i + SYMBOL_SYNC_CHUNK));
-      }
-      const totalChunks = chunks.length;
-      let acc = 0;
-      for (let i = 0; i < totalChunks; i++) {
-        const chunk = chunks[i]!;
-        setSyncProgress(`جاري مزامنة الأزواج: ${acc} / ${total}`);
-        try {
-          await syncSymbolsMutation({
-            connected: true,
-            symbols: chunk,
-            syncRunId,
-            total,
-            chunkIndex: i,
-            totalChunks,
-            read_only_mode: typeof payload.read_only_mode === "boolean" ? payload.read_only_mode : true,
-          });
-        } catch (e) {
-          const reason = e instanceof Error ? e.message : String(e);
-          setSyncMessage(
-            `فشلت المزامنة في الدفعة ${i + 1} من ${totalChunks}. ${reason}`,
-          );
-          setSyncProgress(null);
-          return;
-        }
-        acc += chunk.length;
-        setSyncProgress(`جاري مزامنة الأزواج: ${acc} / ${total}`);
-      }
-      setSyncMessage("تمت مزامنة الرموز الظاهرة في MT5.");
-    } catch {
-      setSyncMessage("فشل الاتصال بالخدمة المحلية أو الخادم.");
-    } finally {
-      setSyncBusy(false);
-      setSyncProgress(null);
-    }
-  }
-
-  async function patchSymbol(symbol: string, next: { enabled: boolean; showInLab: boolean }) {
-    try {
-      await updateSymbolMutation({
-        symbol,
-        enabled: next.enabled,
-        showInLab: next.showInLab,
-      });
-      setSyncMessage(null);
-    } catch {
-      setSyncMessage("تعذّر حفظ الإعدادات.");
-    }
-  }
-
-  function updateDemoSetting<K extends keyof DemoExecutionSettings>(
-    key: K,
-    value: DemoExecutionSettings[K],
-  ) {
-    setDemoSettings((prev) => {
-      const next = { ...prev, [key]: value };
-      saveDemoSettings(next);
-      return next;
-    });
-  }
-
-  async function fetchSymbolsLocally() {
-    setLocalApiLoading(true);
-    setLocalApiError(null);
-    try {
-      const res = await fetch("/api/mt5-readonly/symbols?visibleOnly=true", { cache: "no-store" });
-      const payload = (await res.json()) as Record<string, unknown>;
-      if (!res.ok || payload.connected === false) {
-        setLocalApiError(typeof payload.error === "string" ? payload.error : "فشل جلب الرموز من الخدمة المحلية.");
-        return;
-      }
-      const list = dedupeSymbolsByName(Array.isArray(payload.symbols) ? payload.symbols : []);
-      setLocalApiSymbols(
-        list
-          .map((r) => ({ name: String(r.name ?? ""), description: r.description != null ? String(r.description) : undefined }))
-          .filter((r) => r.name.length > 0),
-      );
-    } catch {
-      setLocalApiError("فشل الاتصال بخدمة MT5 المحلية.");
-    } finally {
-      setLocalApiLoading(false);
-    }
-  }
-
-  function toggleLocalSymbol(name: string) {
-    setLocalSelectedSymbols((prev) => {
-      const next = new Set(prev);
-      if (next.has(name)) { next.delete(name); } else { next.add(name); }
-      try { localStorage.setItem(LOCAL_SYMBOLS_KEY, JSON.stringify([...next])); } catch { /* ignore */ }
-      return next;
-    });
-  }
-
-  async function syncSnapshotAfterConnect() {
-    const res = await fetch("/api/mt5-readonly/snapshot", { cache: "no-store" });
-    const payload = (await res.json()) as { ok?: boolean; snapshot?: unknown; error?: string };
-    if (!res.ok || !payload.ok || payload.snapshot === undefined) {
-      throw new Error(payload.error ?? "فشل مزامنة لقطة MT5 بعد الاتصال.");
-    }
-    await syncSnapshotMutation({ snapshot: payload.snapshot as never });
-  }
-
-  async function connectRealMt5Account() {
-    setConnectMessage(null);
-    setConnectBusy(true);
-    try {
-      const loginValue = Number(mt5Login);
-      if (!Number.isFinite(loginValue) || loginValue <= 0) {
-        setConnectMessage("رقم الحساب غير صالح.");
-        return;
-      }
-      if (!mt5Server.trim()) {
-        setConnectMessage("السيرفر مطلوب.");
-        return;
-      }
-      if (!mt5Password) {
-        setConnectMessage("كلمة المرور مطلوبة.");
-        return;
-      }
-      if (!mt5TerminalPath.trim()) {
-        setConnectMessage("مسار terminal64.exe مطلوب.");
-        return;
-      }
-
-      const res = await fetch("/api/mt5-readonly/connect", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          login: loginValue,
-          server: mt5Server.trim(),
-          password: mt5Password,
-          terminal_path: mt5TerminalPath.trim(),
-        }),
-      });
-      const payload = (await res.json()) as {
-        connected?: boolean;
-        account?: {
-          login?: number;
-          name?: string | null;
-          company?: string | null;
-          server?: string | null;
-          balance?: number | null;
-          equity?: number | null;
-          free_margin?: number | null;
-          currency?: string | null;
-          leverage?: number | null;
-        };
-        error?: string;
-      };
-      if (!res.ok || payload.connected !== true) {
-        setConnectMessage(payload.error ?? "فشل الاتصال بمنصة MT5.");
-        return;
-      }
-
-      const account = payload.account;
-      setConnectionStatus({
-        connected: true,
-        account_login: account?.login ?? null,
-        server: account?.server ?? null,
-        company: account?.company ?? null,
-        name: account?.name ?? null,
-        balance: account?.balance ?? null,
-        equity: account?.equity ?? null,
-        free_margin: account?.free_margin ?? null,
-        currency: account?.currency ?? null,
-        leverage: account?.leverage ?? null,
-        read_only: true,
-      });
-
-      if (canUseConvex) {
-        await syncSnapshotAfterConnect();
-      }
-      setConnectMessage("تم الاتصال بمنصة MT5 بنجاح.");
-    } catch (e) {
-      const reason = e instanceof Error ? e.message : "فشل الاتصال بخدمة MT5 المحلية.";
-      setConnectMessage(reason);
-    } finally {
-      setMt5Password("");
-      setConnectBusy(false);
-    }
-  }
+  const connected = status?.connected === true;
 
   return (
-    <div dir="rtl" className="mx-auto flex max-w-7xl flex-col gap-6">
-      <div>
-        <h2 className="page-title">الإعدادات</h2>
-        <p className="label-secondary mt-1">تكوين وتخصيص إعدادات المنصة.</p>
-        <p className="mt-2 rounded-xl border border-amber-500/20 bg-amber-500/5 px-4 py-2 text-amber-100/90 text-sm">
-          تأسيس أولي للإعدادات — بعض الأقسام تعمل كـ Placeholders للعرض فقط.
-        </p>
-      </div>
+    <div className="rounded-xl border border-border bg-card p-5">
+      <SectionHeader
+        icon={Wifi}
+        title="حالة اتصال MT5"
+        sub="قراءة فقط — لا تنفيذ تداول"
+      />
 
-      <Section title="إعدادات MT5">
-        <p className="rounded-xl border border-amber-500/20 bg-amber-500/5 px-3 py-2 text-amber-100/90 text-xs leading-relaxed mb-4">
-          اتصال MT5 للتحليل والتنفيذ المحكوم.
-        </p>
-        <div className="grid gap-4 md:grid-cols-2">
-          <div className="space-y-2">
-            <label className="text-sm font-medium leading-none" htmlFor="mt5-login">
-              رقم الحساب
-            </label>
-            <Input
-              id="mt5-login"
-              value={mt5Login}
-              onChange={(e) => setMt5Login(e.target.value)}
-              placeholder="123456"
-              dir="ltr"
-              autoComplete="off"
-            />
-          </div>
-          <div className="space-y-2">
-            <label className="text-sm font-medium leading-none" htmlFor="mt5-server">
-              السيرفر
-            </label>
-            <Input
-              id="mt5-server"
-              value={mt5Server}
-              onChange={(e) => setMt5Server(e.target.value)}
-              placeholder="Broker-Server"
-              dir="ltr"
-              autoComplete="off"
-            />
-          </div>
-          <div className="space-y-2">
-            <label className="text-sm font-medium leading-none" htmlFor="mt5-password">
-              كلمة المرور
-            </label>
-            <Input
-              id="mt5-password"
-              type="password"
-              value={mt5Password}
-              onChange={(e) => setMt5Password(e.target.value)}
-              placeholder="********"
-              dir="ltr"
-              autoComplete="new-password"
-            />
-          </div>
-          <div className="space-y-2">
-            <label className="text-sm font-medium leading-none" htmlFor="mt5-terminal-path">
-              مسار terminal64.exe
-            </label>
-            <Input
-              id="mt5-terminal-path"
-              value={mt5TerminalPath}
-              onChange={(e) => setMt5TerminalPath(e.target.value)}
-              placeholder={DEFAULT_TERMINAL_PATH}
-              dir="ltr"
-              autoComplete="off"
-            />
-          </div>
+      {isLoading && (
+        <div className="h-20 rounded-lg bg-muted/30 animate-pulse" />
+      )}
+
+      {isError && (
+        <div className="flex items-center gap-2 rounded-lg border border-rose-500/20 bg-rose-500/5 px-4 py-3">
+          <WifiOff className="h-4 w-4 text-rose-400 shrink-0" />
+          <span className="text-sm text-rose-300">تعذر الوصول — تأكد من تشغيل خدمة FastAPI</span>
         </div>
-        <div className="flex flex-wrap items-center gap-3 mt-4">
-          <Button
-            type="button"
-            variant="outline"
-            disabled={connectBusy}
-            onClick={() => void connectRealMt5Account()}
+      )}
+
+      {status && (
+        <div className="space-y-3">
+          <div
+            className={`flex items-center gap-2 rounded-lg border px-4 py-3 ${
+              connected
+                ? "border-emerald-500/20 bg-emerald-500/5"
+                : "border-rose-500/20 bg-rose-500/5"
+            }`}
           >
-            {connectBusy ? "جاري الاتصال…" : "اتصال بمنصة MT5"}
-          </Button>
-          {connectMessage ? <span className="text-muted-foreground text-xs">{connectMessage}</span> : null}
-        </div>
-        {connectionStatus?.connected ? (
-          <div className="grid gap-2 mt-4 rounded-xl border border-emerald-500/20 bg-emerald-500/5 p-3 text-sm md:grid-cols-2">
-            <div>رقم الحساب: <span className="tabular-nums">{connectionStatus.account_login ?? "—"}</span></div>
-            <div>الاسم: {connectionStatus.name ?? "—"}</div>
-            <div>الشركة: {connectionStatus.company ?? "—"}</div>
-            <div>السيرفر: {connectionStatus.server ?? "—"}</div>
-            <div>الرصيد: <span className="tabular-nums">{connectionStatus.balance ?? "—"}</span></div>
-            <div>Equity: <span className="tabular-nums">{connectionStatus.equity ?? "—"}</span></div>
-            <div>Free Margin: <span className="tabular-nums">{connectionStatus.free_margin ?? "—"}</span></div>
-            <div>العملة: {connectionStatus.currency ?? "—"}</div>
-            <div>الرافعة: <span className="tabular-nums">{connectionStatus.leverage ?? "—"}</span></div>
-            <div>حالة تنفيذ النظام: {connectionStatus.read_only ? "مقيّد" : "مفعّل"}</div>
-          </div>
-        ) : null}
-      </Section>
-
-      <Section title="إعدادات OKX — Placeholder">
-        <p className="rounded-xl border border-amber-500/20 bg-amber-500/5 px-3 py-2 text-amber-100/90 text-xs leading-relaxed mb-4">
-          هذا القسم مجرد عنصر نائب (Placeholder). سيتم تفعيل الاتصال بواجهة برمجة التطبيقات (API) الخاصة بـ OKX لاحقاً.
-        </p>
-        <div className="grid gap-4 md:grid-cols-2">
-          <Field label="API Key" placeholder="مخفي (عنصر نائب)" />
-          <Field label="Secret Key" placeholder="مخفي (عنصر نائب)" />
-          <Field label="Passphrase" placeholder="مخفي (عنصر نائب)" />
-          <Field label="وضع الاتصال" value="Placeholder (مخطط له)" />
-        </div>
-        <div className="flex flex-wrap items-center gap-3 mt-4">
-          <Button type="button" variant="outline" disabled>
-            اتصال بـ OKX (قريباً)
-          </Button>
-        </div>
-      </Section>
-
-      <Section title="إعدادات الرموز والأزواج (Symbols)">
-        <p className="rounded-xl border border-amber-500/20 bg-amber-500/5 px-3 py-2 text-amber-100/90 text-xs leading-relaxed mb-2">
-          تظهر هنا فقط الرموز المعروضة في Market Watch داخل MT5. لإضافة رمز جديد، أظهره أولًا في MT5 ثم أعد المزامنة.
-        </p>
-        <p className="rounded-xl border border-zinc-500/20 bg-zinc-500/5 px-3 py-2 text-zinc-300/80 text-xs mb-4">
-          Convex usage guard: الرموز السحابية لا تُحمَّل تلقائياً — اضغط &quot;تحميل&quot; أو &quot;مزامنة&quot; عند الحاجة.
-        </p>
-        <div className="flex flex-wrap items-center gap-3 mb-4">
-          {canUseConvex ? (
-            <div className="flex flex-wrap gap-2">
-              <Button
-                type="button"
-                variant="outline"
-                disabled={syncBusy}
-                onClick={() => { setCloudSymbolsRequested(true); void syncPairsFromMt5(); }}
-              >
-                {syncBusy ? "جاري المزامنة…" : "مزامنة الرموز وحفظها في السحابة"}
-              </Button>
-              {!cloudSymbolsRequested && (
-                <Button
-                  type="button"
-                  variant="ghost"
-                  onClick={() => setCloudSymbolsRequested(true)}
-                >
-                  تحميل الرموز من السحابة فقط
-                </Button>
-              )}
-            </div>
-          ) : (
-            <Button
-              type="button"
-              variant="outline"
-              disabled={localApiLoading}
-              onClick={() => void fetchSymbolsLocally()}
-            >
-              {localApiLoading ? "جاري الجلب…" : "جلب الرموز من MT5 المحلي"}
-            </Button>
-          )}
-          {syncProgress ? (
-            <span className="text-muted-foreground text-xs leading-snug tabular-nums">{syncProgress}</span>
-          ) : null}
-          {syncMessage ? (
-            <span className="text-muted-foreground text-xs leading-snug">{syncMessage}</span>
-          ) : null}
-          {localApiError ? (
-            <span className="text-rose-300/90 text-xs leading-snug">{localApiError}</span>
-          ) : null}
-        </div>
-
-        <div className="max-w-md space-y-2 mb-4">
-          <label className="text-sm font-medium leading-none" htmlFor="mt5-symbol-search">
-            بحث في الأزواج
-          </label>
-          <Input
-            id="mt5-symbol-search"
-            value={symbolSearch}
-            onChange={(e) => setSymbolSearch(e.target.value)}
-            placeholder="مثال: XAUUSD أو metal"
-            className="bg-background/80"
-            dir="ltr"
-          />
-        </div>
-
-        {!canUseConvex && !isConvexAuthLoading ? (
-          <div className="space-y-3">
-            <div className="rounded-xl border border-amber-500/20 bg-amber-500/5 px-3 py-2 text-amber-200/90 text-sm">
-              الحفظ السحابي غير متاح حاليًا — يمكن استخدام الاختيار المحلي مؤقتًا.
-            </div>
-            {localApiSymbols.length > 0 && !localApiSymbols.some((s) => s.name === "XAUUSD") && (
-              <div className="rounded-xl border border-rose-500/20 bg-rose-500/5 px-3 py-2 text-rose-200/90 text-sm">
-                XAUUSD غير ظاهر في Market Watch — فعّله من MT5 ثم أعد المزامنة.
-              </div>
-            )}
-            {localApiSymbols.some((s) => s.name === "XAUUSD") && (
-              <div className="rounded-xl border border-amber-400/30 bg-amber-400/10 px-3 py-2 text-amber-100 text-sm font-medium">
-                ✓ XAUUSD ظاهر في Market Watch
-              </div>
-            )}
-            {localApiSymbols.length === 0 ? (
-              <p className="text-muted-foreground text-sm">
-                اضغط &quot;جلب الرموز من MT5 المحلي&quot; لعرض الأزواج المتاحة.
-              </p>
+            {connected ? (
+              <CheckCircle2 className="h-4 w-4 text-emerald-400 shrink-0" />
             ) : (
-              <div className="space-y-2">
-                <div className="overflow-x-auto rounded-xl border border-amber-500/10">
-                  <Table>
-                    <TableHeader>
-                      <TableRow className="border-amber-500/10 hover:bg-transparent">
-                        <TableHead className="text-foreground">الرمز</TableHead>
-                        <TableHead className="text-foreground">الوصف</TableHead>
-                        <TableHead className="text-foreground">للمختبر (محلي)</TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {localApiSymbols.slice(0, DISPLAY_ROW_CAP).map((row) => (
-                        <TableRow
-                          key={row.name}
-                          className={`border-border/60 ${row.name === "XAUUSD" ? "bg-amber-500/5" : ""}`}
-                        >
-                          <TableCell className={`font-medium tabular-nums ${row.name === "XAUUSD" ? "text-amber-300" : "text-amber-100/90"}`}>
-                            {row.name === "XAUUSD" && <span className="ml-1">★</span>}
-                            {row.name}
-                          </TableCell>
-                          <TableCell className="max-w-[200px] text-muted-foreground text-xs">
-                            {row.description ?? "—"}
-                          </TableCell>
-                          <TableCell>
-                            <SymbolToggleSwitch
-                              checked={localSelectedSymbols.has(row.name)}
-                              label={`اختيار ${row.name} للمختبر محلياً`}
-                              onToggle={() => toggleLocalSymbol(row.name)}
-                            />
-                          </TableCell>
-                        </TableRow>
-                      ))}
-                    </TableBody>
-                  </Table>
-                </div>
-                {localSelectedSymbols.size > 0 && (
-                  <p className="text-xs text-muted-foreground">
-                    الأزواج المختارة محلياً ({localSelectedSymbols.size}): {[...localSelectedSymbols].join(" · ")}
-                  </p>
-                )}
-              </div>
+              <XCircle className="h-4 w-4 text-rose-400 shrink-0" />
             )}
+            <span className={`text-sm font-medium ${connected ? "text-emerald-300" : "text-rose-300"}`}>
+              {connected ? "متصل بـ MetaTrader 5" : "غير متصل"}
+            </span>
           </div>
-        ) : !cloudSymbolsRequested ? (
-          <p className="text-muted-foreground text-sm">
-            اضغط &quot;تحميل الرموز من السحابة فقط&quot; لعرض الأزواج المخزنة — أو &quot;مزامنة&quot; للتحديث.
-          </p>
-        ) : isConvexAuthLoading || mt5Symbols === undefined ? (
-          <p className="text-muted-foreground text-sm">جاري تحميل بيانات الأزواج…</p>
-        ) : mt5Symbols.length === 0 ? (
-          <p className="text-muted-foreground text-sm">
-            لا توجد رموز ظاهرة من MT5 بعد — افتح Market Watch في MT5 ثم اضغط مزامنة الرموز الظاهرة.
-          </p>
-        ) : (
-          <div className="space-y-2">
-            {showDisplayCapHint ? (
-              <p className="rounded-xl border border-amber-500/15 bg-amber-500/5 px-3 py-2 text-amber-100/90 text-xs leading-relaxed">
-                تمت مزامنة جميع الرموز، يتم عرض أول 300 فقط. استخدم البحث للعثور على رمز محدد.
-              </p>
-            ) : null}
-            <div className="overflow-x-auto rounded-xl border border-amber-500/10">
-              <Table>
-                <TableHeader>
-                  <TableRow className="border-amber-500/10 hover:bg-transparent">
-                    <TableHead className="text-foreground">الرمز</TableHead>
-                    <TableHead className="text-foreground">الوصف</TableHead>
-                    <TableHead className="text-foreground">العملات</TableHead>
-                    <TableHead className="text-foreground">ظاهر</TableHead>
-                    <TableHead className="text-foreground">المصدر</TableHead>
-                    <TableHead className="text-foreground">مفعّل</TableHead>
-                    <TableHead className="text-foreground">عرض في المختبر</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {tableRows.map((row) => {
-                    const cur = [row.currencyBase, row.currencyProfit, row.currencyMargin]
-                      .filter(Boolean)
-                      .join(" / ");
-                    return (
-                      <TableRow key={row._id} className="border-border/60">
-                        <TableCell className="font-medium text-amber-100/90 tabular-nums">{row.name}</TableCell>
-                        <TableCell className="max-w-[200px] text-muted-foreground text-xs">
-                          {row.description ?? "—"}
-                        </TableCell>
-                        <TableCell className="text-muted-foreground text-xs tabular-nums">
-                          {cur || "—"}
-                        </TableCell>
-                        <TableCell className="text-muted-foreground text-sm">
-                          {row.visible ? "نعم" : "لا"}
-                        </TableCell>
-                        <TableCell className="text-muted-foreground text-xs">MT5 Market Watch</TableCell>
-                        <TableCell>
-                          <SymbolToggleSwitch
-                            checked={row.enabled}
-                            label={`تبديل مفعّل للرمز ${row.name}`}
-                            onToggle={() =>
-                              void patchSymbol(row.name, { enabled: !row.enabled, showInLab: row.showInLab })
-                            }
-                          />
-                        </TableCell>
-                        <TableCell>
-                          <SymbolToggleSwitch
-                            checked={row.showInLab}
-                            label={`تبديل عرض المختبر للرمز ${row.name}`}
-                            onToggle={() =>
-                              void patchSymbol(row.name, { enabled: row.enabled, showInLab: !row.showInLab })
-                            }
-                          />
-                        </TableCell>
-                      </TableRow>
-                    );
-                  })}
-                </TableBody>
-              </Table>
+
+          {connected && (
+            <div className="grid grid-cols-2 gap-2 text-sm">
+              {[
+                { label: "رقم الحساب",   value: status.account_login ?? "—" },
+                { label: "اسم الحساب",   value: status.name ?? "—"          },
+                { label: "الخادم",       value: status.server ?? "—"        },
+                { label: "الرصيد",       value: status.balance != null ? `${status.balance} ${status.currency ?? ""}` : "—" },
+              ].map(({ label, value }) => (
+                <div key={label} className="rounded-lg border border-border/50 bg-background/50 px-3 py-2">
+                  <p className="text-xs text-muted-foreground">{label}</p>
+                  <p className="font-mono text-sm text-foreground">{String(value)}</p>
+                </div>
+              ))}
             </div>
-          </div>
-        )}
-      </Section>
-
-      <Section title="إعدادات المخاطرة (Risk Settings)">
-        <p className="rounded-xl border border-amber-500/20 bg-amber-500/5 px-3 py-2 text-amber-100/90 text-xs leading-relaxed mb-4">
-          إعدادات المخاطرة وإدارة الحوكمة. (للعرض فقط ولن يتم تطبيقها فعلياً في هذه المرحلة).
-        </p>
-        <div className="grid gap-4 md:grid-cols-2">
-          <Field label="مخاطرة بالدولار (عنصر نائب)" value="50 USD" />
-          <Field label="حد أقصى يومي للصفقات" value="3 صفقات" />
-          <Field label="حد أقصى يومي للخسارة" value="150 USD" />
-          <Field label="حد أقصى لنفس الزوج" value="1 صفقة" />
-          
-          <div className="col-span-2 mt-2">
-            <h4 className="text-sm font-semibold text-amber-100/80 mb-3 border-b border-amber-500/10 pb-2">ضوابط الحوكمة</h4>
-          </div>
-          <Field label="Kill switch (مفتاح الطوارئ)" value="غير مفعل (عرض)" />
-          <Field label="تبريد بعد خسارة متتالية" value="60 دقيقة" />
-          <Field label="حد الخسائر المتتالية (Drawdown)" value="3 صفقات خاسرة" />
+          )}
         </div>
-      </Section>
+      )}
 
-      {/* ── A25: MT5 Platform Execution Settings ─────────────────────────────── */}
-      <Section title="إعدادات تنفيذ MT5 عبر النظام">
-        <p className="rounded-xl border border-red-500/20 bg-red-500/5 px-3 py-2 text-red-200/90 text-xs leading-relaxed mb-4">
-          ⚠ هذه الإعدادات للتنفيذ عبر منصة MT5 — محكوم بقواعد الحوكمة والحراس — لا order_send —
-          الإعدادات محفوظة محلياً (localStorage) ولا تُرسَل إلى أي سيرفر.
-        </p>
+      <button
+        type="button"
+        onClick={() => refetch()}
+        disabled={isFetching}
+        className="mt-4 flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-xs text-muted-foreground hover:text-foreground hover:border-amber-500/30 transition-colors disabled:opacity-50"
+      >
+        <RefreshCw className={`h-3.5 w-3.5 ${isFetching ? "animate-spin" : ""}`} />
+        تحديث الحالة
+      </button>
+    </div>
+  );
+}
 
-        {/* وضع التنفيذ */}
-        <div className="space-y-2">
-          <label className="text-sm font-medium">وضع التنفيذ</label>
-          <div className="flex flex-wrap gap-2">
-            {(["READ_ONLY", "DEMO_PREVIEW", "DEMO_ARMED"] as ExecutionMode[]).map((mode) => (
-              <button
-                key={mode}
-                type="button"
-                onClick={() => updateDemoSetting("executionMode", mode)}
-                className={`rounded-md border px-3 py-1.5 text-xs font-medium transition-colors ${
-                  demoSettings.executionMode === mode
-                    ? mode === "READ_ONLY"
-                      ? "border-zinc-500/60 bg-zinc-500/20 text-zinc-200"
-                      : mode === "DEMO_PREVIEW"
-                        ? "border-amber-500/60 bg-amber-500/20 text-amber-200"
-                        : "border-emerald-500/60 bg-emerald-500/20 text-emerald-200"
-                    : "border-border bg-muted/10 text-muted-foreground hover:bg-muted/20"
-                }`}
-              >
-                {EXECUTION_MODE_LABELS[mode]}
-              </button>
+// ---------------------------------------------------------------------------
+// Agent Scan Card
+// ---------------------------------------------------------------------------
+
+const MT5_SCAN_SYMBOLS  = ["XAUUSD"];
+const OKX_SCAN_SYMBOLS  = ["BTC-USDT", "ETH-USDT"];
+
+function AgentScanCard() {
+  const { data, isLoading, isError } = useQuery<HealthStatus>({
+    queryKey:        ["settings-health"],
+    queryFn:         fetchHealth,
+    refetchInterval: 60_000,
+    retry:           false,
+  });
+
+  const uptimeMins = data?.uptime_seconds != null ? Math.floor(data.uptime_seconds / 60) : null;
+
+  return (
+    <div className="rounded-xl border border-border bg-card p-5">
+      <SectionHeader
+        icon={Activity}
+        title="محرك المسح الآلي"
+        sub="إعدادات الوكلاء التحليليين — للعرض فقط"
+      />
+
+      {isLoading && <div className="h-24 rounded-lg bg-muted/30 animate-pulse" />}
+
+      {isError && (
+        <div className="flex items-center gap-2 rounded-lg border border-amber-500/20 bg-amber-500/5 px-4 py-3">
+          <AlertTriangle className="h-4 w-4 text-amber-400 shrink-0" />
+          <span className="text-sm text-amber-300">
+            خدمة FastAPI غير متاحة — ابدأ التشغيل من الطرفية
+          </span>
+        </div>
+      )}
+
+      {data && (
+        <div className="space-y-3">
+          <div className="grid grid-cols-3 gap-2 text-sm">
+            {[
+              { label: "حالة الخدمة",  value: data.status === "ok" ? "تعمل" : data.status,      color: data.status === "ok" ? "text-emerald-400" : "text-amber-400" },
+              { label: "وضع القراءة",  value: data.read_only_mode ? "محمي - قراءة فقط" : "غير محمي", color: data.read_only_mode ? "text-emerald-400" : "text-rose-400"    },
+              { label: "وقت التشغيل", value: uptimeMins != null ? `${uptimeMins} دقيقة` : "—",    color: "text-foreground"                                              },
+            ].map(({ label, value, color }) => (
+              <div key={label} className="rounded-lg border border-border/50 bg-background/50 px-3 py-2">
+                <p className="text-xs text-muted-foreground">{label}</p>
+                <p className={`text-sm font-medium ${color}`}>{value}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Symbols always shown — static config */}
+      <div className="mt-3 space-y-2">
+        <div className="rounded-lg border border-border/50 bg-background/50 px-3 py-2.5">
+          <div className="flex items-center gap-1.5 mb-1.5">
+            <FlaskConical className="h-3.5 w-3.5 text-amber-400" />
+            <p className="text-xs font-medium text-muted-foreground">رموز MT5 (الذهب)</p>
+          </div>
+          <div className="flex flex-wrap gap-1.5">
+            {MT5_SCAN_SYMBOLS.map((sym) => (
+              <span key={sym} className="rounded px-2 py-0.5 text-xs font-mono bg-amber-500/10 border border-amber-500/20 text-amber-300">
+                {sym}
+              </span>
             ))}
           </div>
         </div>
 
-        {/* Kill Switch + Demo Confirmation */}
-        <div className="grid gap-4 md:grid-cols-2">
-          <div className="flex items-center justify-between rounded-xl border border-border/60 px-4 py-3">
-            <div>
-              <p className="text-sm font-medium">Kill Switch</p>
-              <p className="text-xs text-muted-foreground">إيقاف فوري لجميع التنفيذات</p>
-            </div>
-            <SymbolToggleSwitch
-              checked={demoSettings.killSwitchEnabled}
-              label="تبديل Kill Switch"
-              onToggle={() => updateDemoSetting("killSwitchEnabled", !demoSettings.killSwitchEnabled)}
-            />
+        <div className="rounded-lg border border-border/50 bg-background/50 px-3 py-2.5">
+          <div className="flex items-center gap-1.5 mb-1.5">
+            <Globe className="h-3.5 w-3.5 text-cyan-400" />
+            <p className="text-xs font-medium text-muted-foreground">رموز OKX (كريبتو)</p>
           </div>
-
-          <div className="flex items-center justify-between rounded-xl border border-border/60 px-4 py-3">
-            <div>
-              <p className="text-sm font-medium">تأكيد مراجعة التنفيذ</p>
-              <p className="text-xs text-muted-foreground">
-                يجب تأكيده يدوياً قبل إرسال الأمر لـ MT5
-              </p>
-            </div>
-            <SymbolToggleSwitch
-              checked={demoSettings.isConfirmedDemo}
-              label="تأكيد مراجعة التنفيذ"
-              onToggle={() => updateDemoSetting("isConfirmedDemo", !demoSettings.isConfirmedDemo)}
-            />
+          <div className="flex flex-wrap gap-1.5">
+            {OKX_SCAN_SYMBOLS.map((sym) => (
+              <span key={sym} className="rounded px-2 py-0.5 text-xs font-mono bg-cyan-500/10 border border-cyan-500/20 text-cyan-300">
+                {sym}
+              </span>
+            ))}
           </div>
         </div>
+      </div>
 
-        {demoSettings.killSwitchEnabled && (
-          <p className="rounded-md border border-red-500/20 bg-red-500/5 px-3 py-2 text-xs text-red-300">
-            ⛔ Kill Switch مفعّل — زر التنفيذ في /gold سيبقى معطّلًا ما دام Kill Switch مفعّلًا. أوقفه للسماح بالتنفيذ عند اكتمال الشروط.
+      <p className="mt-3 text-xs text-muted-foreground/70">
+        الإطار الزمني الافتراضي: <span className="font-mono">H1</span> — قابل للتغيير عبر متغير البيئة{" "}
+        <span className="font-mono">AGENT_SCAN_BAR</span>
+      </p>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Telegram Configuration Card
+// ---------------------------------------------------------------------------
+
+function TelegramCard({
+  config,
+  onSaved,
+}: {
+  config:  ConfigMap | undefined;
+  onSaved: () => void;
+}) {
+  const [token,    setToken]    = useState("");
+  const [chatId,   setChatId]   = useState("");
+  const [showToken, setShowToken] = useState(false);
+  const [saved,    setSaved]    = useState(false);
+  const [testing,  setTesting]  = useState(false);
+  const [testResult, setTestResult] = useState<"ok" | "fail" | null>(null);
+  const [testDetail, setTestDetail] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (config) {
+      // Token is masked from server — don't prefill it (security)
+      setChatId(config.telegram_chat_id ?? "");
+    }
+  }, [config]);
+
+  async function handleSave() {
+    const entries = [];
+    if (token.trim())    entries.push({ key: "telegram_bot_token", value: token.trim() });
+    if (chatId.trim())   entries.push({ key: "telegram_chat_id",   value: chatId.trim() });
+    if (entries.length === 0) return;
+
+    try {
+      await saveConfigBatch(entries);
+      setSaved(true);
+      onSaved();
+      setTimeout(() => setSaved(false), 2500);
+    } catch {
+      /* ignore */
+    }
+  }
+
+  async function handleTest() {
+    setTesting(true);
+    setTestResult(null);
+    setTestDetail(null);
+    try {
+      const res = await fetch(`${FASTAPI_BASE}/api/telegram/test`, { method: "POST" });
+      const json = await res.json().catch(() => null);
+      if (res.ok) {
+        setTestResult("ok");
+      } else {
+        setTestResult("fail");
+        setTestDetail(typeof json?.detail === "string" ? json.detail : null);
+      }
+    } catch (e) {
+      setTestResult("fail");
+      setTestDetail(
+        e instanceof TypeError
+          ? "تعذّر الوصول إلى خدمة MT5 المحلية (127.0.0.1:8010) — تأكد من تشغيلها"
+          : null
+      );
+    } finally {
+      setTesting(false);
+    }
+  }
+
+  return (
+    <div className="rounded-xl border border-border bg-card p-5">
+      <SectionHeader
+        icon={Bell}
+        title="إعدادات اتصال تليجرام"
+        sub="يُرسل تنبيهاً تلقائياً عند كل إشارة مقبولة من مجلس الوكلاء"
+      />
+
+      <div className="space-y-4">
+        <div className="flex items-start gap-2 rounded-lg border border-amber-500/20 bg-amber-500/5 px-3 py-2.5">
+          <Shield className="h-4 w-4 text-amber-400 shrink-0 mt-0.5" />
+          <p className="text-xs text-amber-200/80 leading-relaxed">
+            التوكن يُحفظ في قاعدة البيانات المحلية — لا يُرسل خارج الجهاز. الإشارات
+            للأغراض المعلوماتية فقط — Stage 14 مقفل.
           </p>
-        )}
-        {!demoSettings.isConfirmedDemo && (
-          <p className="rounded-md border border-amber-500/20 bg-amber-500/5 px-3 py-2 text-xs text-amber-300">
-            ⚠ يجب تأكيد مراجعة التنفيذ قبل إرسال الأمر لـ MT5 — فعّل هذا الخيار بعد مراجعة إعدادات المنصة.
-          </p>
-        )}
-
-        {/* حدود المخاطرة */}
-        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-          <div className="space-y-1.5">
-            <label className="text-xs font-medium text-muted-foreground">
-              حد المخاطرة لكل صفقة (USD)
-            </label>
-            <input
-              type="number"
-              min={1}
-              max={10000}
-              value={demoSettings.maxRiskUsdPerTrade}
-              onChange={(e) => updateDemoSetting("maxRiskUsdPerTrade", Math.max(1, Number(e.target.value)))}
-              className="w-full rounded-md border border-border bg-background px-3 py-1.5 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-amber-500/50"
-              dir="ltr"
-            />
-          </div>
-
-          <div className="space-y-1.5">
-            <label className="text-xs font-medium text-muted-foreground">
-              حد الصفقات اليومي
-            </label>
-            <input
-              type="number"
-              min={1}
-              max={50}
-              value={demoSettings.maxTradesPerDay}
-              onChange={(e) => updateDemoSetting("maxTradesPerDay", Math.max(1, Number(e.target.value)))}
-              className="w-full rounded-md border border-border bg-background px-3 py-1.5 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-amber-500/50"
-              dir="ltr"
-            />
-          </div>
-
-          <div className="space-y-1.5">
-            <label className="text-xs font-medium text-muted-foreground">
-              حد الصفقات المفتوحة
-            </label>
-            <input
-              type="number"
-              min={1}
-              max={20}
-              value={demoSettings.maxOpenPositions}
-              onChange={(e) => updateDemoSetting("maxOpenPositions", Math.max(1, Number(e.target.value)))}
-              className="w-full rounded-md border border-border bg-background px-3 py-1.5 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-amber-500/50"
-              dir="ltr"
-            />
-          </div>
-
-          <div className="space-y-1.5">
-            <label className="text-xs font-medium text-muted-foreground">
-              الحد الأدنى لنسبة RR
-            </label>
-            <input
-              type="number"
-              min={0.5}
-              max={10}
-              step={0.1}
-              value={demoSettings.minRewardRiskRatio}
-              onChange={(e) => updateDemoSetting("minRewardRiskRatio", Math.max(0.5, Number(e.target.value)))}
-              className="w-full rounded-md border border-border bg-background px-3 py-1.5 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-amber-500/50"
-              dir="ltr"
-            />
-          </div>
-
-          <div className="space-y-1.5">
-            <label className="text-xs font-medium text-muted-foreground">
-              حد السبريد الأقصى (نقاط)
-            </label>
-            <input
-              type="number"
-              min={1}
-              max={500}
-              value={demoSettings.maxSpreadPoints}
-              onChange={(e) => updateDemoSetting("maxSpreadPoints", Math.max(1, Number(e.target.value)))}
-              className="w-full rounded-md border border-border bg-background px-3 py-1.5 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-amber-500/50"
-              dir="ltr"
-            />
-          </div>
         </div>
 
-        {/* الأزواج المسموحة */}
-        <div className="space-y-1.5">
-          <label className="text-xs font-medium text-muted-foreground">
-            الأزواج المسموحة للتنفيذ (فاصلة بين الرموز — فارغ = كل الأزواج)
+        {/* Bot Token */}
+        <div>
+          <label className="block text-sm font-medium text-foreground mb-1.5">
+            Bot Token
+          </label>
+          <div className="relative">
+            <input
+              type={showToken ? "text" : "password"}
+              value={token}
+              onChange={(e) => setToken(e.target.value)}
+              placeholder="أدخل توكن البوت الجديد..."
+              className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground font-mono placeholder:text-muted-foreground focus:outline-none focus:border-amber-500/50 pr-10"
+              dir="ltr"
+            />
+            <button
+              type="button"
+              onClick={() => setShowToken((p) => !p)}
+              className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+            >
+              {showToken ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+            </button>
+          </div>
+          <FieldHint>
+            احصل على التوكن من @BotFather في تليجرام. اتركه فارغاً إذا لم تريد تغيير التوكن المحفوظ.
+          </FieldHint>
+        </div>
+
+        {/* Chat ID */}
+        <div>
+          <label className="block text-sm font-medium text-foreground mb-1.5">
+            Chat ID
           </label>
           <input
             type="text"
-            placeholder="مثال: EURUSD,GBPUSD,XAUUSD"
-            value={demoSettings.allowedExecutionSymbols}
-            onChange={(e) => updateDemoSetting("allowedExecutionSymbols", e.target.value)}
-            className="w-full rounded-md border border-border bg-background px-3 py-1.5 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-amber-500/50"
+            value={chatId}
+            onChange={(e) => setChatId(e.target.value)}
+            placeholder="مثال: -100123456789"
+            className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground font-mono placeholder:text-muted-foreground focus:outline-none focus:border-amber-500/50"
             dir="ltr"
           />
+          <FieldHint>
+            معرّف القناة أو المجموعة التي سيُرسل إليها النظام التنبيهات.
+          </FieldHint>
         </div>
 
-        {/* سياسة التنفيذ */}
-        <div className="space-y-2">
-          <label className="text-xs font-medium text-muted-foreground">سياسة التنفيذ</label>
-          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-            {(["STRICT", "EXPERIMENTAL"] as ExecutionPolicy[]).map((policy) => (
-              <button
-                key={policy}
-                type="button"
-                onClick={() => updateDemoSetting("executionPolicy", policy)}
-                className={`rounded-lg border px-4 py-3 text-right transition-colors ${
-                  demoSettings.executionPolicy === policy
-                    ? policy === "STRICT"
-                      ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-200"
-                      : "border-violet-500/40 bg-violet-500/10 text-violet-200"
-                    : "border-border/40 bg-card/30 text-muted-foreground hover:border-border/70"
-                }`}
-              >
-                <p className="text-sm font-bold">
-                  {policy === "STRICT" ? "تنفيذ صارم" : "تجارب تنفيذ محكومة"}
-                </p>
-                <p className="text-[10px] mt-0.5 leading-tight opacity-80">
-                  {policy === "STRICT"
-                    ? "أي BLOCK من الحراس يمنع التنفيذ — افتراضي"
-                    : "يسمح بتجاوز Soft Blocks — Hard Blocks محفوظة دائماً"}
-                </p>
-              </button>
-            ))}
-          </div>
-          {demoSettings.executionPolicy === "EXPERIMENTAL" && (
-            <p className="text-[10px] text-violet-300/70 leading-relaxed">
-              ⚠ وضع التجارب: يسمح بتنفيذ إشارات ضعيفة (درجة C، احتمال منخفض، WARN كثيرة) —
-              Hard Blocks (Kill Switch، Spread، Tick، SL، TP، RR &lt; 1.0) لا تُتجاوز أبداً.
-            </p>
+        {/* Actions */}
+        <div className="flex flex-wrap items-center gap-3">
+          <button
+            type="button"
+            onClick={handleSave}
+            className="flex items-center gap-1.5 rounded-lg bg-amber-500/15 border border-amber-500/30 px-4 py-2 text-sm font-medium text-amber-300 hover:bg-amber-500/20 transition-colors"
+          >
+            <Save className="h-4 w-4" />
+            حفظ الإعدادات
+          </button>
+
+          <button
+            type="button"
+            onClick={handleTest}
+            disabled={testing}
+            className="flex items-center gap-1.5 rounded-lg border border-border px-3 py-2 text-sm text-muted-foreground hover:text-foreground transition-colors disabled:opacity-50"
+          >
+            {testing ? (
+              <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <Bell className="h-3.5 w-3.5" />
+            )}
+            اختبار الإشعار
+          </button>
+
+          <SaveToast visible={saved} />
+
+          {testResult === "ok" && (
+            <span className="flex items-center gap-1 text-xs text-emerald-400">
+              <CheckCircle2 className="h-3.5 w-3.5" />
+              تم الإرسال
+            </span>
+          )}
+          {testResult === "fail" && (
+            <span className="flex items-center gap-1 text-xs text-rose-400">
+              <XCircle className="h-3.5 w-3.5" />
+              فشل في التحقق من الإعدادات
+            </span>
           )}
         </div>
 
-        {/* ملخص الإعدادات */}
-        <div className="rounded-lg border border-border bg-muted/5 px-4 py-3 text-xs text-muted-foreground space-y-1">
-          <p className="font-semibold text-foreground/80 mb-1.5">ملخص الإعدادات الحالية</p>
-          <p>الوضع: <span className="text-amber-300">{EXECUTION_MODE_LABELS[demoSettings.executionMode]}</span></p>
-          <p>Kill Switch: <span className={demoSettings.killSwitchEnabled ? "text-red-300" : "text-emerald-300"}>{demoSettings.killSwitchEnabled ? "مفعّل" : "معطّل"}</span></p>
-          <p>مراجعة التنفيذ مؤكدة: <span className={demoSettings.isConfirmedDemo ? "text-emerald-300" : "text-amber-300"}>{demoSettings.isConfirmedDemo ? "نعم ✓" : "لا ✗"}</span></p>
-          <p>حد المخاطرة: <span className="text-foreground">${demoSettings.maxRiskUsdPerTrade} — RR ≥ {demoSettings.minRewardRiskRatio} — سبريد ≤ {demoSettings.maxSpreadPoints} pts</span></p>
-          <p>سياسة التنفيذ: <span className={demoSettings.executionPolicy === "EXPERIMENTAL" ? "text-violet-300" : "text-emerald-300/80"}>{demoSettings.executionPolicy === "EXPERIMENTAL" ? "تجارب محكومة" : "صارم"}</span></p>
-          <p className="text-[10px] text-muted-foreground/50 pt-1">الإعدادات تُخزَّن محلياً فقط — لا ترسل لأي سيرفر — لا تنفيذ في A25</p>
-        </div>
-      </Section>
-
-      <Section title="إعدادات التنبيهات (Notifications Settings)">
-        <p className="rounded-xl border border-amber-500/20 bg-amber-500/5 px-3 py-2 text-amber-100/90 text-xs leading-relaxed mb-4">
-          إعدادات الإشعارات (Telegram, Email, Push). (للعرض فقط).
-        </p>
-        <div className="grid gap-4 md:grid-cols-2">
-          <Field label="Telegram ID" placeholder="@username أو معرف" />
-          <div className="space-y-2">
-            <span className="text-sm font-medium leading-none">تفعيل التنبيهات الصوتية / المنبثقة</span>
-            <div className="flex items-center gap-3 rounded-xl border border-border/60 px-3 py-2">
-              <span className="text-muted-foreground text-xs">معطّل (قيد التطوير)</span>
-              <Badge variant="secondary">معطّل</Badge>
-            </div>
-          </div>
-        </div>
-      </Section>
-
-      <Section title="إعدادات الاشتراك والباقة (Subscription / Plan)">
-        <p className="rounded-xl border border-amber-500/20 bg-amber-500/5 px-3 py-2 text-amber-100/90 text-xs leading-relaxed mb-4">
-          سيتم ربط نظام Clerk والفوترة (Billing) لإدارة اشتراكك لاحقاً.
-        </p>
-        <div className="grid gap-4 md:grid-cols-2">
-          <Field label="الباقة الحالية" value="لا يوجد (نسخة تجريبية)" />
-          <Field label="حالة الاشتراك" value="غير مفعل" />
-        </div>
-        <div className="flex flex-wrap items-center gap-3 mt-4">
-          <Button type="button" variant="outline" disabled>
-            ترقية الباقة (قريباً)
-          </Button>
-          <Button type="button" variant="ghost" disabled>
-            إدارة الفواتير
-          </Button>
-        </div>
-      </Section>
-
-      <Section title="إعدادات الأمان وسجل النظام (Security)">
-        <p className="text-muted-foreground text-xs leading-relaxed mb-4">
-          سجل التدقيق (Audit Log) يوضح عمليات النظام والإعدادات لأغراض الأمان والمراقبة.
-        </p>
-        {!canUseConvex && !isConvexAuthLoading ? (
-          <p className="text-muted-foreground text-sm">سجّل الدخول لعرض سجل التدقيق.</p>
-        ) : !showAuditLog ? (
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            className="border-amber-500/25 bg-amber-500/5 text-amber-100 hover:bg-amber-500/10"
-            onClick={() => setShowAuditLog(true)}
-          >
-            تحميل سجل التدقيق
-          </Button>
-        ) : isConvexAuthLoading || auditEvents === undefined ? (
-          <p className="text-muted-foreground text-sm">جاري تحميل سجل التدقيق…</p>
-        ) : auditEvents.length === 0 ? (
-          <p className="text-muted-foreground text-sm">لا توجد أحداث تدقيق بعد.</p>
-        ) : (
-          <div className="overflow-x-auto rounded-xl border border-amber-500/10 mb-4">
-            <Table>
-              <TableHeader>
-                <TableRow className="border-amber-500/10 hover:bg-transparent">
-                  <TableHead className="text-foreground">الوقت</TableHead>
-                  <TableHead className="text-foreground">الإجراء</TableHead>
-                  <TableHead className="text-foreground">الكيان</TableHead>
-                  <TableHead className="text-foreground">الرسالة</TableHead>
-                  <TableHead className="text-foreground">المصدر</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {auditEvents.slice(0, 20).map((row) => (
-                  <TableRow key={row._id} className="border-border/60">
-                    <TableCell className="whitespace-nowrap text-muted-foreground text-xs tabular-nums">
-                      {new Date(row.createdAt).toLocaleString("ar-SA", { hour12: false })}
-                    </TableCell>
-                    <TableCell className="font-medium text-xs">{row.action}</TableCell>
-                    <TableCell className="text-xs">{row.entity}</TableCell>
-                    <TableCell className="max-w-[280px] text-muted-foreground text-xs leading-snug">
-                      {row.message}
-                    </TableCell>
-                    <TableCell className="text-muted-foreground text-xs">{row.source}</TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
+        {testResult === "fail" && (
+          <div className="rounded-lg border border-rose-500/20 bg-rose-500/5 px-3 py-2.5 text-xs text-rose-200/90 leading-relaxed" dir="rtl">
+            <p className="font-medium text-rose-300">سبب الفشل:</p>
+            <p className="mt-1 font-mono break-words" dir="ltr">
+              {testDetail ?? "تعذّر التحقق من إعدادات تليجرام — تحقق من Token وChat ID والاتصال بالإنترنت"}
+            </p>
+            <ul className="mt-2 list-disc pr-4 space-y-0.5 text-rose-200/70">
+              <li>تأكد من نسخ التوكن كاملاً من @BotFather (يبدأ برقم ثم نقطتين).</li>
+              <li>تأكد من أنك أرسلت /start للبوت أو أضفته إلى القناة/المجموعة.</li>
+              <li>تأكد من اتصال الجهاز الذي يشغّل الخدمة المحلية بالإنترنت.</li>
+            </ul>
           </div>
         )}
-        
-        <div className="grid gap-4 md:grid-cols-2 pt-2">
-          <div className="space-y-2">
-            <span className="text-sm font-medium leading-none">إدارة الجلسات</span>
-            <div className="flex items-center gap-3 rounded-xl border border-border/60 px-3 py-2">
-              <span className="text-muted-foreground text-xs">الجلسة الحالية آمنة</span>
-              <Badge variant="outline" className="border-emerald-500/30 text-emerald-200">
-                مشفرة
-              </Badge>
-            </div>
-          </div>
-        </div>
-      </Section>
-
-      <Section title="جاهزية مرحلة العقول واللجان">
-        <p className="text-muted-foreground text-xs leading-relaxed mb-4">
-          قائمة التحقق قبل تشغيل مرحلة العقول واللجان.
-        </p>
-        <div className="grid gap-2 text-sm">
-          <CheckItem label="اتصال MT5 للتحليل" ok={mt5Summary?.hasRealMt5LocalData === true} />
-          <CheckItem label="مزامنة الحساب" ok={Boolean(mt5Summary?.latestAccountSnapshot)} />
-          <CheckItem label="مزامنة الأسعار" ok={(mt5Summary?.lastSyncAt ?? 0) > 0} />
-          <CheckItem label="مزامنة الصفقات النشطة" ok={(mt5Summary?.openPositionsCount ?? 0) >= 0} />
-          <CheckItem label="مزامنة سجل الصفقات" ok={(auditEvents?.some((e) => e.action.includes("trade_history")) ?? false)} />
-          <CheckItem label="الرموز الظاهرة من MT5" ok={(mt5Symbols?.length ?? 0) > 0} />
-          <CheckItem label="إعدادات الأزواج للمختبر" ok={(mt5Symbols?.some((s) => s.showInLab) ?? false)} />
-          <CheckItem label="الحوكمة readOnly" ok={governance?.readOnly === true} />
-          <CheckItem label="منع تنفيذ التداول" ok={governance?.tradingEnabled === false} />
-        </div>
-      </Section>
+      </div>
     </div>
   );
 }
+
+// ---------------------------------------------------------------------------
+// Engine Settings Card
+// ---------------------------------------------------------------------------
+
+interface EngineField {
+  key:   string;
+  label: string;
+  hint:  string;
+  step:  number;
+  min:   number;
+  max:   number;
+  isInt: boolean;
+}
+
+const ENGINE_FIELDS: EngineField[] = [
+  {
+    key:   "ema_length",
+    label: "فترة EMA للاتجاه",
+    hint:  "المتوسط الأسي الذي يحدد الاتجاه الرئيسي. زيادته تجعل المحرك أكثر تحفظاً ويتجاهل الحركات قصيرة الأمد. الافتراضي 200 مناسب للأطر الزمنية اليومية وH4.",
+    step:  1,
+    min:   20,
+    max:   500,
+    isInt: true,
+  },
+  {
+    key:   "rsi_length",
+    label: "فترة RSI للزخم",
+    hint:  "فترة مؤشر قوة الاتجاه النسبية. القيم الأصغر (مثل 7) أكثر حساسية وتعطي إشارات أكثر. القيم الأكبر (مثل 21) أقل إشارات لكن أكثر دقة. الافتراضي 14 هو المعيار العالمي.",
+    step:  1,
+    min:   5,
+    max:   50,
+    isInt: true,
+  },
+  {
+    key:   "atr_sl_mult",
+    label: "مضاعف ATR لوقف الخسارة",
+    hint:  "بُعد وقف الخسارة = ATR × هذا المضاعف. تقليله يضيّق الوقف مما يزيد المخاطرة. تكبيره يوسّع الوقف ويقلل الإشارات الزائفة. الافتراضي 1.5 يوفر توازناً جيداً.",
+    step:  0.1,
+    min:   0.5,
+    max:   5.0,
+    isInt: false,
+  },
+  {
+    key:   "atr_tp_mult",
+    label: "مضاعف ATR للهدف",
+    hint:  "بُعد الهدف = ATR × هذا المضاعف. القسمة على مضاعف SL تعطي نسبة المخاطرة/المكافأة. الافتراضي 3.0 مع SL 1.5 يعطي نسبة 1:2. ابقِ هذا القيمة دائماً أكبر من مضاعف SL.",
+    step:  0.1,
+    min:   1.0,
+    max:   10.0,
+    isInt: false,
+  },
+  {
+    key:   "min_rr",
+    label: "الحد الأدنى لنسبة المخاطرة/المكافأة",
+    hint:  "المحرك يرفض الإشارات إذا كانت نسبة RR أقل من هذه القيمة. الافتراضي 2.0 يعني أن الهدف يجب أن يكون ضعف المخاطرة على الأقل. قيم أعلى تعني إشارات أقل لكن أجودة.",
+    step:  0.1,
+    min:   1.0,
+    max:   5.0,
+    isInt: false,
+  },
+];
+
+function EngineSettingsCard({
+  config,
+  onSaved,
+}: {
+  config:  ConfigMap | undefined;
+  onSaved: () => void;
+}) {
+  const [values, setValues]   = useState<Record<string, string>>({});
+  const [saved,  setSaved]    = useState(false);
+  const [resetting, setReset] = useState(false);
+
+  useEffect(() => {
+    if (config) {
+      const init: Record<string, string> = {};
+      ENGINE_FIELDS.forEach(({ key }) => {
+        init[key] = config[key] ?? ENGINE_DEFAULTS[key];
+      });
+      setValues(init);
+    }
+  }, [config]);
+
+  async function handleSave() {
+    const entries = ENGINE_FIELDS.map(({ key }) => ({
+      key,
+      value: values[key] ?? ENGINE_DEFAULTS[key],
+    }));
+    try {
+      await saveConfigBatch(entries);
+      setSaved(true);
+      onSaved();
+      setTimeout(() => setSaved(false), 2500);
+    } catch {
+      /* ignore */
+    }
+  }
+
+  async function handleReset() {
+    setReset(true);
+    try {
+      for (const { key } of ENGINE_FIELDS) {
+        await deleteConfigKey(key);
+      }
+      // Revert local state to defaults
+      const defaults: Record<string, string> = {};
+      ENGINE_FIELDS.forEach(({ key }) => { defaults[key] = ENGINE_DEFAULTS[key]; });
+      setValues(defaults);
+      onSaved();
+    } catch {
+      /* ignore */
+    } finally {
+      setReset(false);
+    }
+  }
+
+  return (
+    <div className="rounded-xl border border-border bg-card p-5">
+      <SectionHeader
+        icon={FlaskConical}
+        title="إعدادات محرك التحليل"
+        sub="معاملات المؤشرات الفنية — تؤثر فوراً على دقة الوكلاء"
+      />
+
+      <div className="space-y-5">
+        {ENGINE_FIELDS.map(({ key, label, hint, step, min, max, isInt }) => (
+          <div key={key}>
+            <label className="block text-sm font-medium text-foreground mb-1.5">
+              {label}
+              <span className="mr-2 tabular-nums text-xs text-muted-foreground font-mono font-normal">
+                (الافتراضي: {ENGINE_DEFAULTS[key]})
+              </span>
+            </label>
+            <input
+              type="number"
+              value={values[key] ?? ENGINE_DEFAULTS[key]}
+              onChange={(e) =>
+                setValues((p) => ({ ...p, [key]: e.target.value }))
+              }
+              step={step}
+              min={min}
+              max={max}
+              className="w-36 rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-foreground tabular-nums focus:outline-none focus:border-amber-500/50"
+              dir="ltr"
+            />
+            <FieldHint>{hint}</FieldHint>
+          </div>
+        ))}
+
+        {/* Actions */}
+        <div className="flex flex-wrap items-center gap-3 pt-2 border-t border-border/50">
+          <button
+            type="button"
+            onClick={handleSave}
+            className="flex items-center gap-1.5 rounded-lg bg-amber-500/15 border border-amber-500/30 px-4 py-2 text-sm font-medium text-amber-300 hover:bg-amber-500/20 transition-colors"
+          >
+            <Save className="h-4 w-4" />
+            حفظ الإعدادات
+          </button>
+
+          <button
+            type="button"
+            onClick={handleReset}
+            disabled={resetting}
+            className="flex items-center gap-1.5 rounded-lg border border-border px-3 py-2 text-sm text-muted-foreground hover:text-foreground hover:border-rose-500/30 transition-colors disabled:opacity-50"
+          >
+            {resetting ? (
+              <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <RotateCcw className="h-3.5 w-3.5" />
+            )}
+            استعادة الإعدادات الافتراضية
+          </button>
+
+          <SaveToast visible={saved} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Demo Analysis Settings Card (localStorage only)
+// ---------------------------------------------------------------------------
+
+function DemoSettingsCard() {
+  const [mounted, setMounted] = useState(false);
+  const [lot,     setLot]     = useState(0.01);
+  const [alert,   setAlert]   = useState(true);
+  const [saved,   setSaved]   = useState(false);
+
+  useEffect(() => {
+    const s = loadDemoSettings();
+    setLot(s.lot);
+    setAlert(s.alert);
+    setMounted(true);
+  }, []);
+
+  function handleSave() {
+    saveDemoSettings(lot, alert);
+    setSaved(true);
+    setTimeout(() => setSaved(false), 2000);
+  }
+
+  if (!mounted) return null;
+
+  return (
+    <div className="rounded-xl border border-border bg-card p-5">
+      <SectionHeader
+        icon={Shield}
+        title="إعدادات التحليل التجريبي"
+        sub="محفوظة في المتصفح — للعرض التحليلي فقط"
+      />
+
+      <div className="space-y-4">
+        <div className="flex items-center gap-2 rounded-lg border border-amber-500/20 bg-amber-500/5 px-3 py-2">
+          <Shield className="h-3.5 w-3.5 text-amber-400 shrink-0" />
+          <span className="text-xs text-amber-200/80">
+            Stage 14 مقفل — لا تنفيذ آلي — لأغراض العرض المعلوماتي فقط
+          </span>
+        </div>
+
+        <div>
+          <label className="block text-sm font-medium text-foreground mb-1.5">
+            حجم اللوت الافتراضي (للعرض)
+          </label>
+          <div className="flex items-center gap-2">
+            <input
+              type="number"
+              value={lot}
+              onChange={(e) => setLot(parseFloat(e.target.value) || 0.01)}
+              step={0.01}
+              min={0.01}
+              max={100}
+              className="w-32 rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-foreground tabular-nums focus:outline-none focus:border-amber-500/50"
+              dir="ltr"
+            />
+            <span className="text-xs text-muted-foreground">لوت (معلوماتي فقط)</span>
+          </div>
+          <FieldHint>
+            يُستخدم في عرض السيناريوهات التحليلية فقط — لا يُرسل لأي منصة تداول.
+          </FieldHint>
+        </div>
+
+        <div className="flex items-center justify-between">
+          <div>
+            <p className="text-sm font-medium text-foreground">تنبيهات صوتية</p>
+            <p className="text-xs text-muted-foreground">صوت عند ظهور إشارة جديدة في الواجهة</p>
+          </div>
+          <button
+            type="button"
+            onClick={() => setAlert((p) => !p)}
+            className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
+              alert ? "bg-amber-500" : "bg-muted"
+            }`}
+          >
+            <span
+              className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${
+                alert ? "translate-x-6" : "translate-x-1"
+              }`}
+            />
+          </button>
+        </div>
+
+        <button
+          type="button"
+          onClick={handleSave}
+          className="flex items-center gap-1.5 rounded-lg bg-amber-500/15 border border-amber-500/30 px-4 py-2 text-sm font-medium text-amber-300 hover:bg-amber-500/20 transition-colors"
+        >
+          {saved ? <CheckCircle2 className="h-4 w-4" /> : <Save className="h-4 w-4" />}
+          {saved ? "تم الحفظ" : "حفظ الإعدادات"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Main Page
+// ---------------------------------------------------------------------------
 
 export default function SettingsPage() {
-  return (
-    <ConvexSafeWrapper>
-      <SettingsPageContent />
-    </ConvexSafeWrapper>
-  );
-}
+  const qc = useQueryClient();
 
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
-  return (
-    <Card className={institutionalCardClass("p-4 md:p-5")}>
-      <CardHeader className="border-b border-amber-500/10 p-0 pb-3">
-        <CardTitle className="card-title-inst">{title}</CardTitle>
-      </CardHeader>
-      <CardContent className="space-y-4 p-0 pt-4">{children}</CardContent>
-    </Card>
-  );
-}
+  const { data: configData } = useQuery({
+    queryKey:        ["system-config"],
+    queryFn:         fetchConfig,
+    refetchInterval: false,
+    retry:           false,
+    staleTime:       Infinity,
+  });
 
-function Field({
-  label,
-  value,
-  placeholder,
-}: {
-  label: string;
-  value?: string;
-  placeholder?: string;
-}) {
-  return (
-    <div className="space-y-2">
-      <label className="text-sm font-medium leading-none">{label}</label>
-      <Input
-        disabled
-        defaultValue={value ?? ""}
-        placeholder={placeholder}
-        className="bg-muted/30"
-      />
-    </div>
-  );
-}
+  const config = configData?.config;
 
-function CheckItem({ label, ok }: { label: string; ok: boolean }) {
+  function invalidateConfig() {
+    void qc.invalidateQueries({ queryKey: ["system-config"] });
+  }
+
   return (
-    <div className="flex items-center justify-between rounded-lg border border-amber-500/10 bg-muted/20 px-3 py-2">
-      <span>{label}</span>
-      <Badge variant={ok ? "outline" : "secondary"} className={ok ? "border-emerald-500/30 text-emerald-200" : ""}>
-        {ok ? "جاهز" : "غير جاهز"}
-      </Badge>
+    <div className="min-h-screen bg-background" dir="rtl">
+      <div className="mx-auto max-w-2xl px-4 py-6 space-y-6">
+
+        {/* Page header */}
+        <div className="flex items-center gap-3">
+          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-amber-500/15 border border-amber-500/25">
+            <Settings className="h-5 w-5 text-amber-400" />
+          </div>
+          <div>
+            <h1 className="text-xl font-bold text-foreground">الإعدادات المحلية</h1>
+            <p className="text-xs text-muted-foreground">
+              نظام محكوم بالقواعد — بيانات محلية فقط
+            </p>
+          </div>
+        </div>
+
+        {/* Local-mode notice */}
+        <div className="flex items-start gap-2 rounded-xl border border-amber-500/20 bg-amber-500/5 px-4 py-3">
+          <Server className="h-4 w-4 shrink-0 text-amber-400 mt-0.5" />
+          <p className="text-xs text-amber-200/80 leading-relaxed">
+            جميع الإعدادات محفوظة في قاعدة البيانات المحلية{" "}
+            <span className="font-mono">local_quant.db</span> — لا اتصال بخوادم
+            خارجية — التغييرات تُطبَّق فوراً على دورة المسح القادمة.
+          </p>
+        </div>
+
+        <Mt5ConnectionCard />
+        <AgentScanCard />
+        <TelegramCard    config={config} onSaved={invalidateConfig} />
+        <EngineSettingsCard config={config} onSaved={invalidateConfig} />
+        <DemoSettingsCard />
+
+        <p className="text-center text-xs text-muted-foreground/60 pb-4">
+          نظام الملك الهندسي للتداول العالمي — محكوم بالقواعد — Stage 14 مقفل
+        </p>
+      </div>
     </div>
   );
 }

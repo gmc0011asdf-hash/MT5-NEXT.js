@@ -1,14 +1,11 @@
 // src/app/api/lab/gold-pro/execute-trade/route.ts
-// POST — Clerk auth → proxy to port 8011 → log to Convex
+// POST — Clerk auth → proxy to port 8011
 // حد صارم ثانٍ على حجم الصفقة (MAX_LOT=0.10) إضافةً لحماية Python
 
 import { NextResponse } from "next/server";
 import { auth } from "@clerk/nextjs/server";
-import { ConvexHttpClient } from "convex/browser";
-import { api } from "../../../../../../convex/_generated/api";
 
 const EXEC = process.env.MT5_EXECUTION_URL ?? "http://127.0.0.1:8011";
-const convex = new ConvexHttpClient(process.env.NEXT_PUBLIC_CONVEX_URL!);
 
 const MAX_LOT = 0.10; // hard cap — لا تغيير
 
@@ -35,7 +32,7 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "طلب غير صالح" }, { status: 400 });
   }
 
-  const { symbol, order_type, lot, sl, tp, comment, confluenceScore, setupLabel } = body;
+  const { symbol, order_type, lot, sl, tp, comment } = body;
 
   if (!symbol || !order_type || !lot || !sl || !tp) {
     return NextResponse.json({ error: "بيانات ناقصة" }, { status: 400 });
@@ -67,24 +64,6 @@ export async function POST(req: Request) {
     }
 
     const result = await execRes.json();
-
-    // Log to Convex audit trail (non-blocking — لا نوقف العملية إذا فشل Convex)
-    try {
-      await convex.mutation(api.tradeExecutions.logExecution, {
-        userId,
-        symbol,
-        orderType: order_type,
-        lot: safeLot,
-        entryPrice: result.price,
-        sl,
-        tp,
-        ticket: result.ticket,
-        confluenceScore: confluenceScore ?? 0,
-        setupLabel: setupLabel ?? "Manual",
-      });
-    } catch (convexErr) {
-      console.error("[execute-trade] Convex log failed:", convexErr);
-    }
 
     return NextResponse.json(result);
   } catch (err) {

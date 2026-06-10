@@ -7,7 +7,7 @@
 
 import type { OHLCCandle, MarketStructureAnalysis } from "./market-structure";
 
-// ─── Types ────────────────────────────────────────────────────────────────────
+// --- Types --------------------------------------------------------------------
 
 export type CandlePatternType =
   | "BULLISH_ENGULFING"
@@ -63,7 +63,7 @@ export type CandlestickAnalysis = {
   warnings:               string[];
 };
 
-// ─── Internal candle metrics ──────────────────────────────────────────────────
+// --- Internal candle metrics --------------------------------------------------
 
 type CandleMetrics = {
   isBullish:        boolean;
@@ -92,7 +92,7 @@ function getCandleMetrics(c: OHLCCandle): CandleMetrics {
   return { isBullish, bodyTop, bodyBot, bodySize, upperWick, lowerWick, candleRange, midpoint, bodyToRangeRatio, wickToBodyRatio };
 }
 
-// ─── ATR14 ────────────────────────────────────────────────────────────────────
+// --- ATR14 --------------------------------------------------------------------
 
 function computeATR14(candles: OHLCCandle[]): number {
   if (candles.length < 2) return 0;
@@ -110,7 +110,7 @@ function computeATR14(candles: OHLCCandle[]): number {
   return sum / period;
 }
 
-// ─── Single-candle pattern detection ─────────────────────────────────────────
+// --- Single-candle pattern detection -----------------------------------------
 
 function detectSingleCandlePatterns(
   c: OHLCCandle,
@@ -121,7 +121,7 @@ function detectSingleCandlePatterns(
   const patterns: CandlePattern[] = [];
   if (m.candleRange < atr * 0.1) return patterns; // ignore micro candles
 
-  // ── Pin Bar Bullish ─────────────────────────────────────────────────────────
+  // -- Pin Bar Bullish ---------------------------------------------------------
   // Long lower wick (≥2.5× body), small upper wick (<1× body), close above midpoint
   if (
     m.lowerWick >= 2.5 * Math.max(m.bodySize, atr * 0.005) &&
@@ -136,7 +136,7 @@ function detectSingleCandlePatterns(
     });
   }
 
-  // ── Pin Bar Bearish ─────────────────────────────────────────────────────────
+  // -- Pin Bar Bearish ---------------------------------------------------------
   if (
     m.upperWick >= 2.5 * Math.max(m.bodySize, atr * 0.005) &&
     m.lowerWick < m.bodySize * 1.2 &&
@@ -150,7 +150,7 @@ function detectSingleCandlePatterns(
     });
   }
 
-  // ── Doji ────────────────────────────────────────────────────────────────────
+  // -- Doji --------------------------------------------------------------------
   if (m.bodyToRangeRatio < 0.08 && m.candleRange >= atr * 0.3) {
     patterns.push({
       type: "DOJI", direction: "NEUTRAL", strength: 35,
@@ -159,7 +159,7 @@ function detectSingleCandlePatterns(
     });
   }
 
-  // ── Strong Bullish Close ────────────────────────────────────────────────────
+  // -- Strong Bullish Close ----------------------------------------------------
   if (
     m.isBullish &&
     m.bodyToRangeRatio >= 0.60 &&
@@ -174,7 +174,7 @@ function detectSingleCandlePatterns(
     });
   }
 
-  // ── Strong Bearish Close ────────────────────────────────────────────────────
+  // -- Strong Bearish Close ----------------------------------------------------
   if (
     !m.isBullish &&
     m.bodyToRangeRatio >= 0.60 &&
@@ -192,7 +192,7 @@ function detectSingleCandlePatterns(
   return patterns;
 }
 
-// ─── Two-candle pattern detection ────────────────────────────────────────────
+// --- Two-candle pattern detection --------------------------------------------
 
 function detectTwoCandlePatterns(
   prev: OHLCCandle,
@@ -208,7 +208,7 @@ function detectTwoCandlePatterns(
   const prevBodyTop = prevM.bodyTop;
   const prevBodyBot = prevM.bodyBot;
 
-  // ── Bullish Engulfing ───────────────────────────────────────────────────────
+  // -- Bullish Engulfing -------------------------------------------------------
   // Previous bearish, current bullish, current body fully engulfs previous body
   if (
     !prevM.isBullish &&
@@ -226,7 +226,7 @@ function detectTwoCandlePatterns(
     });
   }
 
-  // ── Bearish Engulfing ───────────────────────────────────────────────────────
+  // -- Bearish Engulfing -------------------------------------------------------
   if (
     prevM.isBullish &&
     !currM.isBullish &&
@@ -243,7 +243,7 @@ function detectTwoCandlePatterns(
     });
   }
 
-  // ── Inside Bar ──────────────────────────────────────────────────────────────
+  // -- Inside Bar --------------------------------------------------------------
   if (curr.high < prev.high && curr.low > prev.low) {
     patterns.push({
       type: "INSIDE_BAR", direction: "NEUTRAL", strength: 42,
@@ -255,7 +255,7 @@ function detectTwoCandlePatterns(
   return patterns;
 }
 
-// ─── Liquidity sweep + fake breakout ─────────────────────────────────────────
+// --- Liquidity sweep + fake breakout -----------------------------------------
 
 function detectSweepAndFakeout(
   c: OHLCCandle,
@@ -267,7 +267,7 @@ function detectSweepAndFakeout(
 
   const { lastSwingHigh, lastSwingLow, rangeDetected, rangeHigh, rangeLow } = ms;
 
-  // ── Liquidity Sweep High ────────────────────────────────────────────────────
+  // -- Liquidity Sweep High ----------------------------------------------------
   if (lastSwingHigh && c.high > lastSwingHigh.price && c.close < lastSwingHigh.price) {
     patterns.push({
       type: "LIQUIDITY_SWEEP_HIGH", direction: "SELL", strength: 85,
@@ -276,7 +276,7 @@ function detectSweepAndFakeout(
     });
   }
 
-  // ── Liquidity Sweep Low ─────────────────────────────────────────────────────
+  // -- Liquidity Sweep Low -----------------------------------------------------
   if (lastSwingLow && c.low < lastSwingLow.price && c.close > lastSwingLow.price) {
     patterns.push({
       type: "LIQUIDITY_SWEEP_LOW", direction: "BUY", strength: 85,
@@ -285,7 +285,7 @@ function detectSweepAndFakeout(
     });
   }
 
-  // ── Fake Breakout Up (range boundary or swing) ─────────────────────────────
+  // -- Fake Breakout Up (range boundary or swing) -----------------------------
   const breakRef = rangeDetected && rangeHigh != null
     ? rangeHigh
     : lastSwingHigh?.price;
@@ -304,7 +304,7 @@ function detectSweepAndFakeout(
     });
   }
 
-  // ── Fake Breakout Down ──────────────────────────────────────────────────────
+  // -- Fake Breakout Down ------------------------------------------------------
   const breakRefLow = rangeDetected && rangeLow != null
     ? rangeLow
     : lastSwingLow?.price;
@@ -325,7 +325,7 @@ function detectSweepAndFakeout(
   return patterns;
 }
 
-// ─── Bias derivation ──────────────────────────────────────────────────────────
+// --- Bias derivation ----------------------------------------------------------
 
 function deriveBias(
   patterns: CandlePattern[],
@@ -355,7 +355,7 @@ function deriveBias(
   return { bias: "SELL", reasons };
 }
 
-// ─── Quality of the latest candle ─────────────────────────────────────────────
+// --- Quality of the latest candle ---------------------------------------------
 
 function assessQuality(
   m: CandleMetrics,
@@ -368,7 +368,7 @@ function assessQuality(
   return "WEAK";
 }
 
-// ─── Wick rejection ───────────────────────────────────────────────────────────
+// --- Wick rejection -----------------------------------------------------------
 
 function assessWickRejection(m: CandleMetrics): WickRejection {
   const MIN_RATIO = 2.0; // wick must be at least 2x the body
@@ -399,7 +399,7 @@ function assessWickRejection(m: CandleMetrics): WickRejection {
   return { detected: false, direction: null, ratio: 0, reason: "لا رفض واضح" };
 }
 
-// ─── Confidence ───────────────────────────────────────────────────────────────
+// --- Confidence ---------------------------------------------------------------
 
 function computeConfidence(
   patterns: CandlePattern[],
@@ -418,7 +418,7 @@ function computeConfidence(
   return Math.max(10, Math.min(90, score));
 }
 
-// ─── Main entry point ─────────────────────────────────────────────────────────
+// --- Main entry point ---------------------------------------------------------
 
 export function analyzeCandlestick(
   candles: OHLCCandle[],
@@ -461,7 +461,7 @@ export function analyzeCandlestick(
     }
   }
 
-  // ── Latest candle metrics ─────────────────────────────────────────────────
+  // -- Latest candle metrics -------------------------------------------------
   const lastC = candles[n - 1]!;
   const lastM = getCandleMetrics(lastC);
 
@@ -475,22 +475,22 @@ export function analyzeCandlestick(
     isBullish:        lastM.isBullish,
   };
 
-  // ── Sweep / fakeout flags ─────────────────────────────────────────────────
+  // -- Sweep / fakeout flags -------------------------------------------------
   const fakeoutDetected =
     allPatterns.some((p) => p.type === "FAKE_BREAKOUT_UP" || p.type === "FAKE_BREAKOUT_DOWN");
   const liquiditySweepDetected =
     allPatterns.some((p) => p.type === "LIQUIDITY_SWEEP_HIGH" || p.type === "LIQUIDITY_SWEEP_LOW");
 
-  // ── Wick rejection ────────────────────────────────────────────────────────
+  // -- Wick rejection --------------------------------------------------------
   const wickRejection = assessWickRejection(lastM);
 
-  // ── Quality ───────────────────────────────────────────────────────────────
+  // -- Quality ---------------------------------------------------------------
   const quality = assessQuality(lastM, fakeoutDetected, liquiditySweepDetected);
 
-  // ── Bias ──────────────────────────────────────────────────────────────────
+  // -- Bias ------------------------------------------------------------------
   const { bias, reasons: biasReasons } = deriveBias(allPatterns, n);
 
-  // ── Reasons ───────────────────────────────────────────────────────────────
+  // -- Reasons ---------------------------------------------------------------
   const reasons: string[] = [...biasReasons];
   const significant = allPatterns
     .filter((p) => p.strength >= 65)
@@ -501,7 +501,7 @@ export function analyzeCandlestick(
   if (wickRejection.detected) reasons.push(wickRejection.reason);
   if (allPatterns.length === 0) reasons.push("لا أنماط شموع واضحة في آخر 5 شموع");
 
-  // ── Warnings ──────────────────────────────────────────────────────────────
+  // -- Warnings --------------------------------------------------------------
   if (fakeoutDetected)        warnings.push("⚠ كسر وهمي محتمل — السعر اخترق مستوى ثم تراجع");
   if (liquiditySweepDetected) warnings.push("⚠ سحب سيولة محتمل — تحقق من اتجاه الإغلاق");
   if (quality === "SUSPICIOUS") warnings.push("⚠ شمعة مريبة — حركة غير اعتيادية");
@@ -509,7 +509,7 @@ export function analyzeCandlestick(
     warnings.push("شمعة ضعيفة — لا إشارة اتجاهية واضحة");
   }
 
-  // ── Confidence ────────────────────────────────────────────────────────────
+  // -- Confidence ------------------------------------------------------------
   const confidence = computeConfidence(allPatterns, fakeoutDetected, liquiditySweepDetected);
 
   return {

@@ -2,14 +2,14 @@
  * Stage 5A: Read-only Lab Analysis Preview
  *
  * قراءة فقط — لا يتم تنفيذ أي صفقة.
- * This route computes a trade setup PREVIEW from persisted Convex candles and
- * MT5 symbol properties.  It never calls order_send, order_close, or any trading
- * function.  The response always carries  readOnly: true.
+ * This route computes a trade setup PREVIEW from live MT5 candles (via the
+ * local Python bridge) and MT5 symbol properties.  It never calls order_send,
+ * order_close, or any trading function.  The response always carries readOnly: true.
  *
  * Flow:
  *   1. Validate request body.
  *   2. Fetch symbol properties from MT5 local service (for lot calculation).
- *   3. Query Convex for latest candles & compute indicators (via HTTP client).
+ *   3. Fetch latest candles from the local MT5 bridge & compute indicators.
  *   4. If timeframeMode = "auto", score candidate timeframes and pick the best.
  *   5. Compute entry / SL / TP from latest close + stopPoints / targetPoints.
  *   6. Calculate estimated lot using tick_value / tick_size formula.
@@ -17,9 +17,6 @@
  */
 
 import { NextRequest, NextResponse } from "next/server";
-import { auth } from "@clerk/nextjs/server";
-import { ConvexHttpClient } from "convex/browser";
-import { api } from "../../../../../convex/_generated/api";
 import {
   analyzeMarketStructure,
   type MarketStructureAnalysis,
@@ -45,9 +42,7 @@ import {
   type MultiTimeframeConsensus,
 } from "@/lib/trading/mt5/multi-timeframe-consensus";
 import {
-  analyzeNewsProtectionCommittee,
   type NewsCommitteeResult,
-  type NewsCommitteeItem,
 } from "@/lib/trading/mt5/news-protection-committee";
 
 export const dynamic = "force-dynamic";
@@ -402,7 +397,7 @@ async function fetchSymbolProps(symbol: string): Promise<SymbolProps | null> {
 // ---------------------------------------------------------------------------
 
 export async function POST(request: NextRequest): Promise<NextResponse> {
-  // ── parse & validate body ─────────────────────────────────────────────────
+  // -- parse & validate body -------------------------------------------------
   let body: Record<string, unknown>;
   try {
     body = (await request.json()) as Record<string, unknown>;
@@ -445,52 +440,27 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     return NextResponse.json({ ok: false, error: "timeframe required for manual mode" }, { status: 400 });
   }
 
-  // ── Convex auth — optional: local analysis works without sign-in ────────────
-  const convexUrl = process.env.NEXT_PUBLIC_CONVEX_URL;
-  const session   = await auth();
-  const token     = convexUrl
-    ? await session.getToken({ template: "convex" }).catch(() => null)
-    : null;
-  const localMode = !token;  // true = no Convex — use Python candles directly
+  // -- local mode: candles & indicators come from the local MT5 bridge -------
+  const localMode = true;
 
-  let client: ConvexHttpClient | null = null;
-  if (convexUrl && token) {
-    client = new ConvexHttpClient(convexUrl);
-    client.setAuth(token);
-  }
-
-  // ── fetch symbol properties (best-effort, non-blocking) ──────────────────
+  // -- fetch symbol properties (best-effort, non-blocking) ------------------
   const [symbolProps] = await Promise.all([fetchSymbolProps(symbol)]);
   const symbolPropsAvailable = symbolProps !== null;
 
-  // ── determine timeframes to evaluate ─────────────────────────────────────
+  // -- determine timeframes to evaluate -------------------------------------
   const timeframesToEval =
     timeframeMode === "manual" && manualTimeframe ? [manualTimeframe] : candidateTimeframes;
 
-  // ── fetch indicators for each candidate timeframe ────────────────────────
+  // -- fetch indicators for each candidate timeframe ------------------------
   const indicatorResults: Record<string, IndicatorResult> = {};
   await Promise.all(
     timeframesToEval.map(async (tf) => {
-      if (client) {
-        try {
-          const res = await client.query(api.technicalIndicators.computeIndicatorsForSymbol, {
-            symbol,
-            timeframe: tf,
-            candleCount,
-          });
-          indicatorResults[tf] = res as IndicatorResult;
-        } catch {
-          indicatorResults[tf] = { status: "error" };
-        }
-      } else {
-        // Local mode: compute from Python candles directly
-        const candles = await fetchCandlesFromPython(symbol, tf, candleCount);
-        indicatorResults[tf] = computeMinimalIndicators(candles, tf);
-      }
+      const candles = await fetchCandlesFromPython(symbol, tf, candleCount);
+      indicatorResults[tf] = computeMinimalIndicators(candles, tf);
     }),
   );
 
-  // ── select timeframe ──────────────────────────────────────────────────────
+  // -- select timeframe ------------------------------------------------------
   const now = Date.now();
   let selectedTimeframe: string | null = null;
   let bestScore = -Infinity;
@@ -512,7 +482,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     }
   }
 
-  // ── B3.2/B1/B2/B3: fetch raw candles → state guard → closed candles → analysis ──
+  // -- B3.2/B1/B2/B3: fetch raw candles → state guard → closed candles → analysis --
   let marketStateAnalysis: MarketStateAnalysis | undefined;
   let marketStructure:     MarketStructureAnalysis | undefined;
   let candlestickAnalysis:      CandlestickAnalysis      | undefined;
@@ -523,22 +493,13 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   if (selectedTimeframe) {
     let rawCandles: { time: number; open: number; high: number; low: number; close: number }[] = [];
     try {
-      if (client) {
-        rawCandles = await client.query(api.mt5CandlesQuery.getCandlesForStructure, {
-          symbol,
-          timeframe: selectedTimeframe,
-          limit: candleCount,
-        });
-      } else {
-        // Local mode: fetch candles directly from Python
-        rawCandles = await fetchCandlesFromPython(symbol, selectedTimeframe, candleCount);
-      }
+      rawCandles = await fetchCandlesFromPython(symbol, selectedTimeframe, candleCount);
     } catch {
       // non-blocking — if fetch fails, all analysis is skipped
     }
 
     if (rawCandles.length >= 3) {
-      // ── B3.2: Market state — runs FIRST, provides closedCandles ──────────
+      // -- B3.2: Market state — runs FIRST, provides closedCandles ----------
       let closedCandles: typeof rawCandles = rawCandles;
       try {
         const msa = analyzeMarketState(rawCandles, selectedTimeframe, {
@@ -554,14 +515,14 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
         // non-blocking — use rawCandles as fallback
       }
 
-      // ── B1: Market Structure (uses closedCandles) ─────────────────────────
+      // -- B1: Market Structure (uses closedCandles) -------------------------
       try {
         marketStructure = analyzeMarketStructure(closedCandles);
       } catch {
         // non-blocking
       }
 
-      // ── B2: Candlestick (uses closedCandles) ──────────────────────────────
+      // -- B2: Candlestick (uses closedCandles) ------------------------------
       if (closedCandles.length >= 2) {
         try {
           candlestickAnalysis = analyzeCandlestick(closedCandles, marketStructure);
@@ -570,7 +531,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
         }
       }
 
-      // ── B3: Zones (uses closedCandles) ────────────────────────────────────
+      // -- B3: Zones (uses closedCandles) ------------------------------------
       if (closedCandles.length >= 5) {
         try {
           zonesAnalysis = analyzeZones(closedCandles, marketStructure);
@@ -579,7 +540,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
         }
       }
 
-      // ── B4: Fibonacci (uses closedCandles + B1/B3 data) ───────────────────
+      // -- B4: Fibonacci (uses closedCandles + B1/B3 data) -------------------
       if (closedCandles.length >= 5) {
         try {
           fibonacciAnalysis = analyzeFibonacci(closedCandles, marketStructure, zonesAnalysis, {
@@ -592,7 +553,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     }
   }
 
-  // ── B5: Multi-Timeframe Consensus ────────────────────────────────────────
+  // -- B5: Multi-Timeframe Consensus ----------------------------------------
   // Fetch any MTF timeframes not already in indicatorResults, then run consensus.
   try {
     const MTF_TFS = ["M15", "M30", "H1", "H4", "D1"] as const;
@@ -603,20 +564,9 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     if (missing.length > 0) {
       await Promise.all(
         missing.map(async (tf) => {
-          if (client) {
-            try {
-              const res = await client.query(api.technicalIndicators.computeIndicatorsForSymbol, {
-                symbol, timeframe: tf, candleCount: 200,
-              });
-              const r = res as { status: string; trendBias?: string; candleCount?: number };
-              if (r.status === "ok") mtfIndicators[tf] = r;
-            } catch { /* non-blocking */ }
-          } else {
-            // Local mode: compute from Python
-            const candles = await fetchCandlesFromPython(symbol, tf, 200);
-            const ind = computeMinimalIndicators(candles, tf);
-            if (ind.status === "ok") mtfIndicators[tf] = ind;
-          }
+          const candles = await fetchCandlesFromPython(symbol, tf, 200);
+          const ind = computeMinimalIndicators(candles, tf);
+          if (ind.status === "ok") mtfIndicators[tf] = ind;
         }),
       );
     }
@@ -628,39 +578,10 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     // non-blocking
   }
 
-  // ── B6.2: News Protection Committee (requires Convex auth) ───────────────
-  if (client) try {
-    const COMMITTEE_WINDOW_MS = 24 * 60 * 60 * 1000; // last 24 hours
-    const recentNewsData = await client.query(api.newsReviews.getRecentNewsForCommittee, {
-      sinceMs: Date.now() - COMMITTEE_WINDOW_MS,
-    });
+  // -- B6.2: News Protection Committee — لا مصدر أخبار محلي بعد، تُترك undefined
+  // (الحقل اختياري في AnalysisResult — لا يؤثر على بقية التحليل)
 
-    if (recentNewsData.length > 0) {
-      const committeeItems: NewsCommitteeItem[] = recentNewsData.map((n) => ({
-        headline:              n.headline,
-        source:                n.source,
-        category:              n.category,
-        publishedAt:           n.publishedAt,
-        autoImpact:            n.autoImpact,
-        autoAffectedSymbols:   n.autoAffectedSymbols,
-        finalImpact:           n.finalImpact,
-        finalDecision:         n.finalDecision,
-        finalAffectedSymbols:  n.finalAffectedSymbols,
-        userImpactOverride:    n.userImpactOverride,
-        userAffectedSymbolsOverride: n.userAffectedSymbolsOverride,
-        relationshipType:      n.relationshipType,
-        userDirectionBias:     n.userDirectionBias,
-        userNote:              n.userNote,
-        hasHumanReview:        n.hasHumanReview,
-      }));
-
-      newsProtectionCommittee = analyzeNewsProtectionCommittee(committeeItems, symbol, Date.now());
-    }
-  } catch {
-    // non-blocking — news data is enrichment only
-  }
-
-  // ── build reasons and warnings ────────────────────────────────────────────
+  // -- build reasons and warnings --------------------------------------------
   const reasons: string[] = [];
   const warnings: string[] = [];
 
@@ -726,7 +647,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
 
   const ind = indicatorResults[selectedTimeframe]!;
 
-  // ── freshness check ───────────────────────────────────────────────────────
+  // -- freshness check -------------------------------------------------------
   const staleThreshold = STALE_THRESHOLD_MS[selectedTimeframe] ?? 60 * 60 * 1000;
   const candleAgeMs = ind.candleAgeMs ?? Infinity;
   const isStale = candleAgeMs > staleThreshold;
@@ -734,7 +655,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     warnings.push(`بيانات الشموع قديمة للإطار ${selectedTimeframe} — آخر شمعة منذ ${Math.round(candleAgeMs / 60000)} دقيقة`);
   }
 
-  // ── determine direction ───────────────────────────────────────────────────
+  // -- determine direction ---------------------------------------------------
   const direction: "bullish" | "bearish" | null =
     ind.trendBias === "bullish" ? "bullish" :
     ind.trendBias === "bearish" ? "bearish" :
@@ -760,7 +681,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     return NextResponse.json(result);
   }
 
-  // ── stops_level check ─────────────────────────────────────────────────────
+  // -- stops_level check -----------------------------------------------------
   if (symbolProps && symbolProps.stops_level > 0) {
     const minStopPoints = symbolProps.stops_level;
     if (stopPoints < minStopPoints) {
@@ -768,7 +689,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     }
   }
 
-  // ── entry / SL / TP ───────────────────────────────────────────────────────
+  // -- entry / SL / TP -------------------------------------------------------
   const entry = ind.lastClose;
   if (entry === undefined || entry <= 0) {
     reasons.push("تعذّر تحديد سعر الدخول — لا توجد شمعة أخيرة");
@@ -807,7 +728,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     takeProfit = entry - targetPoints * point;
   }
 
-  // ── lot calculation (prefer ATR-based to match plans engine) ────────────
+  // -- lot calculation (prefer ATR-based to match plans engine) ------------
   let estimatedLot: number | undefined;
   let lotValidation: LotValidation | undefined;
   let lotSource: "atr" | "stopPoints" = "stopPoints";
@@ -838,17 +759,17 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     warnings.push("خصائص الزوج غير متوفرة — لا يمكن حساب اللوت");
   }
 
-  // ── spread warning ────────────────────────────────────────────────────────
+  // -- spread warning --------------------------------------------------------
   if (symbolProps && symbolProps.spread > 0 && symbolProps.spread > stopPoints * 0.2) {
     warnings.push(`السبريد ${symbolProps.spread} نقطة كبير نسبياً مقارنة بالوقف — انتبه للتكلفة`);
   }
 
-  // ── momentum warning ──────────────────────────────────────────────────────
+  // -- momentum warning ------------------------------------------------------
   if (ind.momentumBias !== "strong") {
     warnings.push("الزخم ضعيف — الفرصة ممكنة لكن الحركة قد تكون بطيئة");
   }
 
-  // ── RSI extremes ──────────────────────────────────────────────────────────
+  // -- RSI extremes ----------------------------------------------------------
   if (ind.rsi14 !== undefined) {
     if (direction === "bullish" && ind.rsi14 > 75) {
       warnings.push(`RSI14 = ${ind.rsi14.toFixed(1)} — منطقة تشبع شرائي، تحقق من التأكيد`);
@@ -866,11 +787,11 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     reasons.push("الزخم قوي (RSI + MACD متوافقان)");
   }
 
-  // ── build final result ────────────────────────────────────────────────────
+  // -- build final result ----------------------------------------------------
   const digits = symbolProps?.digits ?? 5;
   const round = (n: number) => parseFloat(n.toFixed(digits));
 
-  // risk % of equity — only if riskPercentInput is given (we don't query Convex for equity here)
+  // risk % of equity — only if riskPercentInput is given (equity is not queried here)
   const riskPercentOfEquity =
     riskPercentInput !== null ? riskPercentInput : undefined;
 

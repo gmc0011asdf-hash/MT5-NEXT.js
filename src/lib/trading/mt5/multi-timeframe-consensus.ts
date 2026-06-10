@@ -6,7 +6,7 @@
  * Hierarchy: D1 (توجه يومي) > H4 (سياق) > H1 (هيكل) > M30 (تأكيد) > M15 (توقيت)
  */
 
-// ─── Types ────────────────────────────────────────────────────────────────────
+// --- Types --------------------------------------------------------------------
 
 export type TFBias = "bullish" | "bearish" | "neutral" | "unknown";
 
@@ -31,7 +31,7 @@ export type MultiTimeframeConsensus = {
   blockers:              string[];
 };
 
-// ─── Minimal indicator input (decoupled from route type) ──────────────────────
+// --- Minimal indicator input (decoupled from route type) ----------------------
 
 type TFIndicator = {
   status:       string;          // "ok" | "insufficient_data" | "error"
@@ -39,7 +39,7 @@ type TFIndicator = {
   candleCount?: number;
 };
 
-// ─── Constants ────────────────────────────────────────────────────────────────
+// --- Constants ----------------------------------------------------------------
 
 // Weights: higher timeframe = more weight in alignment score
 const TF_WEIGHTS: Record<string, number> = {
@@ -53,7 +53,7 @@ const TF_WEIGHTS: Record<string, number> = {
 const HIGHER_TFS  = ["D1", "H4", "H1"] as const;   // توجه يومي + سياق + هيكل
 const CONTEXT_TFS = ["D1", "H4", "H1", "M30", "M15"] as const;
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
+// --- Helpers ------------------------------------------------------------------
 
 function extractBias(ind: TFIndicator | undefined): TFBias {
   if (!ind || ind.status !== "ok") return "unknown";
@@ -80,7 +80,7 @@ function biasConfirmsEntry(tfBias: TFBias, entryBias: TFBias): boolean {
   return tfBias !== "unknown" && tfBias !== "neutral" && tfBias === entryBias;
 }
 
-// ─── Main entry point ─────────────────────────────────────────────────────────
+// --- Main entry point ---------------------------------------------------------
 
 export function analyzeMultiTimeframeConsensus(
   indicators:      Record<string, TFIndicator>,
@@ -90,7 +90,7 @@ export function analyzeMultiTimeframeConsensus(
   const warnings: string[] = [];
   const blockers: string[] = [];
 
-  // ── 1. Build timeframe summaries ─────────────────────────────────────────
+  // -- 1. Build timeframe summaries -----------------------------------------
   const timeframeSummaries: TimeframeSummary[] = CONTEXT_TFS.map((tf) => {
     const ind  = indicators[tf];
     const bias = extractBias(ind);
@@ -103,10 +103,10 @@ export function analyzeMultiTimeframeConsensus(
     };
   });
 
-  // ── 2. Entry TF bias ──────────────────────────────────────────────────────
+  // -- 2. Entry TF bias ------------------------------------------------------
   const entryTFBias: TFBias = extractBias(indicators[entryTimeframe]);
 
-  // ── 3. Higher TF bias (D1 dominates, then H4, then H1) ──────────────────
+  // -- 3. Higher TF bias (D1 dominates, then H4, then H1) ------------------
   const d1Bias = extractBias(indicators["D1"]);
   const h4Bias = extractBias(indicators["H4"]);
   const h1Bias = extractBias(indicators["H1"]);
@@ -134,7 +134,7 @@ export function analyzeMultiTimeframeConsensus(
     higherTimeframeBias = avail as "bullish" | "bearish" | "neutral";
   }
 
-  // ── 4. Dominant timeframe ─────────────────────────────────────────────────
+  // -- 4. Dominant timeframe -------------------------------------------------
   let dominantTimeframe: string | null = null;
   for (const tf of CONTEXT_TFS) {
     const b = extractBias(indicators[tf]);
@@ -144,7 +144,7 @@ export function analyzeMultiTimeframeConsensus(
     }
   }
 
-  // ── 5. Alignment score (weighted) ────────────────────────────────────────
+  // -- 5. Alignment score (weighted) ----------------------------------------
   let agreeWeight    = 0;
   let totalAvailable = 0;
 
@@ -162,7 +162,7 @@ export function analyzeMultiTimeframeConsensus(
     ? Math.round(agreeWeight / totalAvailable * 100)
     : 0;
 
-  // ── 6. Verdict ────────────────────────────────────────────────────────────
+  // -- 6. Verdict ------------------------------------------------------------
   const d1Opposes  = d1Available && biasOpposesEntry(d1Bias, entryTFBias);
   const d1Confirms = d1Available && biasConfirmsEntry(d1Bias, entryTFBias);
   const h4Opposes  = h4Available && biasOpposesEntry(h4Bias, entryTFBias);
@@ -230,7 +230,7 @@ export function analyzeMultiTimeframeConsensus(
     warnings.push("الفريمات العليا لا تؤكد ولا تعارض — توافق غير كافٍ");
   }
 
-  // ── 7. Additional reasons ─────────────────────────────────────────────────
+  // -- 7. Additional reasons -------------------------------------------------
   const m30Bias = extractBias(indicators["M30"]);
   if (m30Bias !== "unknown") {
     if (biasConfirmsEntry(m30Bias, entryTFBias)) {
@@ -244,7 +244,7 @@ export function analyzeMultiTimeframeConsensus(
     `درجة التوافق: ${alignmentScore}% | الفريم المتحكم: ${dominantTimeframe ?? "غير محدد"}`,
   );
 
-  // ── 8. Overall bias ───────────────────────────────────────────────────────
+  // -- 8. Overall bias -------------------------------------------------------
   let bias: MultiTimeframeConsensus["bias"];
   if (higherTimeframeBias === "bullish") bias = "BULLISH";
   else if (higherTimeframeBias === "bearish") bias = "BEARISH";

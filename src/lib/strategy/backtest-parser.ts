@@ -18,7 +18,7 @@ export type BacktestSummary = {
   raw: Record<string, string>;
 };
 
-// ─── HTML parser ─────────────────────────────────────────────────────────────
+// --- HTML parser -------------------------------------------------------------
 
 /**
  * Tries to extract a numeric value from HTML table rows whose first cell
@@ -114,7 +114,7 @@ export function parseHtmlBacktest(html: string): BacktestSummary {
   };
 }
 
-// ─── CSV parser ───────────────────────────────────────────────────────────────
+// --- CSV parser ---------------------------------------------------------------
 
 export function parseCsvBacktest(csv: string): BacktestSummary {
   const lines = csv.split(/\r?\n/).filter(Boolean);

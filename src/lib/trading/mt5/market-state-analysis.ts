@@ -6,14 +6,14 @@
 
 import type { OHLCCandle } from "./market-structure";
 
-// ─── Timeframe period map (minutes) ───────────────────────────────────────────
+// --- Timeframe period map (minutes) -------------------------------------------
 
 export const TIMEFRAME_MINUTES: Record<string, number> = {
   M1:   1, M5:   5, M15: 15, M30:  30,
   H1:  60, H4:  240, D1: 1440,
 };
 
-// ─── Types ────────────────────────────────────────────────────────────────────
+// --- Types --------------------------------------------------------------------
 
 export type SpreadStatus = "NORMAL" | "HIGH" | "EXTREME" | "UNKNOWN";
 
@@ -73,7 +73,7 @@ export type MarketStateAnalysisFull = MarketStateAnalysis & {
   closedCandles: OHLCCandle[];
 };
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
+// --- Helpers ------------------------------------------------------------------
 
 function atr14(candles: OHLCCandle[]): number {
   if (candles.length < 2) return 0;
@@ -91,7 +91,7 @@ function atr14(candles: OHLCCandle[]): number {
   return sum / period;
 }
 
-// ─── Closed candle filter ─────────────────────────────────────────────────────
+// --- Closed candle filter -----------------------------------------------------
 
 function getClosedCandles(
   candles:   OHLCCandle[],
@@ -113,7 +113,7 @@ function getClosedCandles(
   return { closedCandles: candles, latestCandleClosed: true };
 }
 
-// ─── Suspicious candle detection ─────────────────────────────────────────────
+// --- Suspicious candle detection ---------------------------------------------
 
 function detectSuspiciousCandles(
   candles: OHLCCandle[],
@@ -194,7 +194,7 @@ function detectSuspiciousCandles(
   return suspicious;
 }
 
-// ─── Spread classification ────────────────────────────────────────────────────
+// --- Spread classification ----------------------------------------------------
 
 function classifySpread(spread: number | null, symbol: string): SpreadStatus {
   if (spread == null || spread <= 0) return "UNKNOWN";
@@ -209,7 +209,7 @@ function classifySpread(spread: number | null, symbol: string): SpreadStatus {
   return "EXTREME";
 }
 
-// ─── Session status (without tick) ───────────────────────────────────────────
+// --- Session status (without tick) -------------------------------------------
 
 function classifySession(candleAgeMs: number, timeframe: string): MarketSessionStatus {
   const period  = (TIMEFRAME_MINUTES[timeframe] ?? 15) * 60 * 1000;
@@ -219,7 +219,7 @@ function classifySession(candleAgeMs: number, timeframe: string): MarketSessionS
   return "CLOSED";
 }
 
-// ─── Main entry point ─────────────────────────────────────────────────────────
+// --- Main entry point ---------------------------------------------------------
 
 export function analyzeMarketState(
   candles:   OHLCCandle[],
@@ -232,7 +232,7 @@ export function analyzeMarketState(
   const now      = opts?.currentTime ?? Date.now();
   const symbol   = opts?.symbolName  ?? "";
 
-  // ── 1. Not enough data ─────────────────────────────────────────────────────
+  // -- 1. Not enough data -----------------------------------------------------
   if (candles.length < 3) {
     return {
       marketOpen: false, symbolTradable: false, dataFresh: false,
@@ -253,7 +253,7 @@ export function analyzeMarketState(
     };
   }
 
-  // ── 2. Separate forming vs closed candles ──────────────────────────────────
+  // -- 2. Separate forming vs closed candles ----------------------------------
   const { closedCandles, latestCandleClosed } = getClosedCandles(candles, timeframe, now);
   const usingClosedCandleOnly = !latestCandleClosed && closedCandles.length > 0;
 
@@ -264,13 +264,13 @@ export function analyzeMarketState(
   const effectiveCandles = closedCandles.length > 0 ? closedCandles : candles;
   const atr = atr14(effectiveCandles);
 
-  // ── 3. Candle age ─────────────────────────────────────────────────────────
+  // -- 3. Candle age ---------------------------------------------------------
   const lastClosed      = effectiveCandles.at(-1);
   const latestCandleTime       = candles.at(-1)?.time ?? null;
   const latestClosedCandleTime = lastClosed?.time ?? null;
   const candleAgeMs = latestClosedCandleTime != null ? now - latestClosedCandleTime : null;
 
-  // ── 4. Broker clock skew ──────────────────────────────────────────────────
+  // -- 4. Broker clock skew --------------------------------------------------
   const SKEW_THRESHOLD   = 5 * 60 * 1000;
   const brokerClockSkewDetected = candleAgeMs != null && candleAgeMs < -SKEW_THRESHOLD;
   const brokerClockSkewMs       = brokerClockSkewDetected && candleAgeMs != null
@@ -279,7 +279,7 @@ export function analyzeMarketState(
     warnings.push(`توقيت الوسيط متقدم بـ ${Math.round(brokerClockSkewMs / 60000)} دقيقة — clock skew`);
   }
 
-  // ── 5. Data freshness ─────────────────────────────────────────────────────
+  // -- 5. Data freshness -----------------------------------------------------
   const periodMs   = (TIMEFRAME_MINUTES[timeframe] ?? 15) * 60 * 1000;
   const freshLimit = periodMs * 2;
   const dataFresh  =
@@ -295,7 +295,7 @@ export function analyzeMarketState(
     }
   }
 
-  // ── 6. Market session (without tick) ──────────────────────────────────────
+  // -- 6. Market session (without tick) --------------------------------------
   const marketSessionStatus = candleAgeMs != null
     ? classifySession(candleAgeMs, timeframe)
     : "UNKNOWN";
@@ -310,7 +310,7 @@ export function analyzeMarketState(
     warnings.push("سيولة منخفضة — ابتعد عن أوامر Market في هذا الوقت");
   }
 
-  // ── 7. Spread ─────────────────────────────────────────────────────────────
+  // -- 7. Spread -------------------------------------------------------------
   const spreadPoints = opts?.spreadPoints ?? null;
   const spreadStatus = classifySpread(spreadPoints, symbol);
 
@@ -322,7 +322,7 @@ export function analyzeMarketState(
     reasons.push(`السبريد طبيعي (${spreadPoints} نقطة) ✓`);
   }
 
-  // ── 8. Suspicious candles ─────────────────────────────────────────────────
+  // -- 8. Suspicious candles -------------------------------------------------
   const suspiciousCandles = detectSuspiciousCandles(effectiveCandles, atr, now);
   const suspiciousCandlesCount = suspiciousCandles.length;
 
@@ -342,7 +342,7 @@ export function analyzeMarketState(
     warnings.push(`شموع مشبوهة محتملة (${suspiciousCandlesCount}) — تحقق من جودة البيانات`);
   }
 
-  // ── 9. Decision ───────────────────────────────────────────────────────────
+  // -- 9. Decision -----------------------------------------------------------
   let decision: MarketStateDecision;
 
   if (effectiveCandles.length < 3 || suspiciousCandles.filter((s) => s.severity === "BLOCK" && s.index >= effectiveCandles.length - 1).length > 0) {
@@ -365,7 +365,7 @@ export function analyzeMarketState(
     decision = "ALLOW_ANALYSIS";
   }
 
-  // ── 10. Reasons ───────────────────────────────────────────────────────────
+  // -- 10. Reasons -----------------------------------------------------------
   if (dataFresh && candleAgeMs != null) {
     const ageMins = Math.round(candleAgeMs / 60000);
     reasons.push(`بيانات حديثة — آخر شمعة مغلقة منذ ${ageMins} دقيقة ✓`);
@@ -377,7 +377,7 @@ export function analyzeMarketState(
     reasons.push("التحليل B1/B2/B3 يستخدم الشموع المغلقة فقط ✓");
   }
 
-  // ── 11. Confidence ────────────────────────────────────────────────────────
+  // -- 11. Confidence --------------------------------------------------------
   const confidence = Math.max(10, Math.min(90,
     40 +
     (dataFresh         ? 20 : -15) +

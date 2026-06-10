@@ -1,6 +1,6 @@
 /**
  * /api/mt5-demo/order-send — A26.2 (MT5 Platform Execution Gate)
- * ─────────────────────────────────────────────────────────────────────────────
+ * -----------------------------------------------------------------------------
  * Proxy آمن إلى خدمة MT5 المحلية: POST http://127.0.0.1:8010/demo/order-send
  *
  * ⚠️ هذا Route لا يحتوي على order_send — التنفيذ داخل خدمة Python فقط.
@@ -12,7 +12,7 @@
  *  • لا secrets تُخزَّن
  *  • لا Convex mutations
  *  • التحقق من manualConfirmation و accountMode داخل الخدمة المحلية
- * ─────────────────────────────────────────────────────────────────────────────
+ * -----------------------------------------------------------------------------
  */
 
 import { NextRequest, NextResponse } from "next/server";
@@ -33,7 +33,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     });
   }
 
-  // ── Guard: demo execution is disabled by default ───────────────────────────
+  // -- Guard: demo execution is disabled by default ---------------------------
   if (!DEMO_EXECUTION_ENABLED) {
     return NextResponse.json(
       {
@@ -49,7 +49,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     );
   }
 
-  // ── Parse body ────────────────────────────────────────────────────────────
+  // -- Parse body ------------------------------------------------------------
   let body: Record<string, unknown>;
   try {
     body = (await request.json()) as Record<string, unknown>;
@@ -73,7 +73,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     });
   }
 
-  // ── Guard: must include manualConfirmation and accountMode ─────────────────
+  // -- Guard: must include manualConfirmation and accountMode -----------------
   if (body.manualConfirmation !== true) {
     return NextResponse.json(
       { ok: false, accepted: false, errorCode: "MISSING_MANUAL_CONFIRMATION", layer: "next-route", error: "manualConfirmation مطلوب", demoOnly: true },
@@ -87,7 +87,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     );
   }
 
-  // ── Proxy to local MT5 service ────────────────────────────────────────────
+  // -- Proxy to local MT5 service --------------------------------------------
   const controller = new AbortController();
   const timeoutId  = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
 

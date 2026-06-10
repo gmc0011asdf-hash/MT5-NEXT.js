@@ -7,7 +7,7 @@
 import type { OHLCCandle, MarketStructureAnalysis } from "./market-structure";
 import type { ZonesAnalysis } from "./zones-analysis";
 
-// ─── Constants ────────────────────────────────────────────────────────────────
+// --- Constants ----------------------------------------------------------------
 
 const RETRACEMENT_RATIOS = [0.236, 0.382, 0.5, 0.618, 0.786] as const;
 const EXTENSION_RATIOS   = [1.272, 1.618, 2.0]                as const;
@@ -15,7 +15,7 @@ const EXTENSION_RATIOS   = [1.272, 1.618, 2.0]                as const;
 const GOLDEN_LOW  = 0.5;    // 50%
 const GOLDEN_HIGH = 0.618;  // 61.8%
 
-// ─── Types ────────────────────────────────────────────────────────────────────
+// --- Types --------------------------------------------------------------------
 
 export type FibonacciLevel = {
   level:                 number;   // ratio e.g. 0.618
@@ -64,7 +64,7 @@ export type FibonacciAnalysis = {
   warnings:                    string[];
 };
 
-// ─── ATR ──────────────────────────────────────────────────────────────────────
+// --- ATR ----------------------------------------------------------------------
 
 function atr14(candles: OHLCCandle[]): number {
   if (candles.length < 2) return 0;
@@ -78,7 +78,7 @@ function atr14(candles: OHLCCandle[]): number {
   return sum / period;
 }
 
-// ─── Proximity check (UI marker — strict) ────────────────────────────────────
+// --- Proximity check (UI marker — strict) ------------------------------------
 // nearCurrent is only true for the tightest proximity.
 // Use level.distanceFromCurrentPct directly for wider confluence checks.
 
@@ -99,7 +99,7 @@ function isNearCurrent(
   return { near: distancePct <= pctLimit || distanceAbs <= atrLimit, distancePct };
 }
 
-// ─── Swing selection ──────────────────────────────────────────────────────────
+// --- Swing selection ----------------------------------------------------------
 
 function selectSwing(
   candles: OHLCCandle[],
@@ -109,7 +109,7 @@ function selectSwing(
   const firstTime = candles.at(0)?.time ?? 0;
   const lastTime  = candles.at(-1)?.time ?? 0;
 
-  // ── From market structure (preferred) ────────────────────────────────────
+  // -- From market structure (preferred) ------------------------------------
   if (ms?.lastSwingHigh && ms.lastSwingLow) {
     const sh = ms.lastSwingHigh;
     const sl = ms.lastSwingLow;
@@ -138,7 +138,7 @@ function selectSwing(
     }
   }
 
-  // ── Range mode fallback ───────────────────────────────────────────────────
+  // -- Range mode fallback ---------------------------------------------------
   if (ms?.rangeDetected && ms.rangeHigh != null && ms.rangeLow != null) {
     const range = ms.rangeHigh - ms.rangeLow;
     return {
@@ -153,7 +153,7 @@ function selectSwing(
     };
   }
 
-  // ── Candle-based fallback (last 50 candles) ───────────────────────────────
+  // -- Candle-based fallback (last 50 candles) -------------------------------
   const recent    = candles.slice(-50);
   const swingHigh = Math.max(...recent.map((c) => c.high));
   const swingLow  = Math.min(...recent.map((c) => c.low));
@@ -171,7 +171,7 @@ function selectSwing(
   };
 }
 
-// ─── Retracement levels ───────────────────────────────────────────────────────
+// --- Retracement levels -------------------------------------------------------
 
 function computeRetracementLevels(
   swing:        FibonacciSwing,
@@ -206,7 +206,7 @@ function computeRetracementLevels(
   });
 }
 
-// ─── Extension levels ─────────────────────────────────────────────────────────
+// --- Extension levels ---------------------------------------------------------
 
 function computeExtensionLevels(
   swing:        FibonacciSwing,
@@ -239,7 +239,7 @@ function computeExtensionLevels(
   });
 }
 
-// ─── Golden zone ──────────────────────────────────────────────────────────────
+// --- Golden zone --------------------------------------------------------------
 
 function computeGoldenZone(
   swing:        FibonacciSwing,
@@ -274,7 +274,7 @@ function computeGoldenZone(
   return { low: gzLow, high: gzHigh, active: inZone, direction: gzDir, distanceFromCurrentPct: distancePct };
 }
 
-// ─── Zone confluence check ────────────────────────────────────────────────────
+// --- Zone confluence check ----------------------------------------------------
 
 // Zone confluence uses a wider proximity than the strict UI marker:
 // Fib level is "near enough for confluence" if within 0.3% of current price.
@@ -302,7 +302,7 @@ function checkZoneConfluence(
   });
 }
 
-// ─── Main entry point ─────────────────────────────────────────────────────────
+// --- Main entry point ---------------------------------------------------------
 
 export function analyzeFibonacci(
   candles:   OHLCCandle[],
@@ -317,7 +317,7 @@ export function analyzeFibonacci(
 
   const currentPrice = candles.at(-1)?.close ?? 0;
 
-  // ── Min candles check ──────────────────────────────────────────────────────
+  // -- Min candles check ------------------------------------------------------
   if (candles.length < 5 || currentPrice <= 0) {
     const empty: FibonacciAnalysis = {
       bias: "NEUTRAL",
@@ -344,17 +344,17 @@ export function analyzeFibonacci(
   }
   reasons.push(swing.reason);
 
-  // ── Levels ────────────────────────────────────────────────────────────────
+  // -- Levels ----------------------------------------------------------------
   const retracementLevels = computeRetracementLevels(swing, currentPrice, atr, symbol);
   const extensionLevels   = computeExtensionLevels(swing, currentPrice, atr, symbol);
 
-  // ── Nearest levels ────────────────────────────────────────────────────────
+  // -- Nearest levels --------------------------------------------------------
   const sortedRetracement = [...retracementLevels]
     .sort((a, b) => a.distanceFromCurrentPct - b.distanceFromCurrentPct);
   const nearestLevel               = sortedRetracement[0] ?? null;
   const nearestRetracementLevels   = sortedRetracement.slice(0, 2);
 
-  // ── Golden zone ───────────────────────────────────────────────────────────
+  // -- Golden zone -----------------------------------------------------------
   const goldenZone = computeGoldenZone(swing, currentPrice);
   const inGoldenZone = goldenZone.active;
 
@@ -364,7 +364,7 @@ export function analyzeFibonacci(
     reasons.push(`السعر قريب من Golden Zone (${goldenZone.distanceFromCurrentPct.toFixed(2)}%)`);
   }
 
-  // ── Confluences ───────────────────────────────────────────────────────────
+  // -- Confluences -----------------------------------------------------------
   const confluenceWithZones = za
     ? checkZoneConfluence(retracementLevels, za, inputDir)
     : false;
@@ -378,13 +378,13 @@ export function analyzeFibonacci(
   if (confluenceWithZones)         reasons.push("توافق مع منطقة B3 قريبة ✓");
   if (confluenceWithMarketStructure) reasons.push(`هيكل السوق (${ms?.trendState}) يدعم الاتجاه ✓`);
 
-  // ── Nearest level summary ────────────────────────────────────────────────
+  // -- Nearest level summary ------------------------------------------------
   if (nearestLevel) {
     const prefix = nearestLevel.nearCurrent ? "السعر عند" : "أقرب مستوى";
     reasons.push(`${prefix} Fib ${nearestLevel.label} (${nearestLevel.price.toFixed(5)}) — بُعد: ${nearestLevel.distanceFromCurrentPct.toFixed(2)}%`);
   }
 
-  // ── Warnings ──────────────────────────────────────────────────────────────
+  // -- Warnings --------------------------------------------------------------
   if (!inGoldenZone && !retracementLevels.some((l) => l.nearCurrent)) {
     warnings.push("السعر ليس عند مستوى Fibonacci واضح — لا توافق قوي");
   }
@@ -395,7 +395,7 @@ export function analyzeFibonacci(
     warnings.push("السوق في نطاق — Fibonacci وحده لا يكفي بدون Zone داعمة");
   }
 
-  // ── Confluence score ──────────────────────────────────────────────────────
+  // -- Confluence score ------------------------------------------------------
   let confluenceScore = 25;
   if (inGoldenZone)                       confluenceScore += 25;
   else if (goldenZone.distanceFromCurrentPct < 0.3) confluenceScore += 12;
@@ -405,7 +405,7 @@ export function analyzeFibonacci(
   if (swing.valid && swing.direction !== "UNKNOWN") confluenceScore += 5;
   confluenceScore = Math.max(5, Math.min(90, confluenceScore));
 
-  // ── Bias ─────────────────────────────────────────────────────────────────
+  // -- Bias -----------------------------------------------------------------
   let bias: FibonacciAnalysis["bias"] = "NEUTRAL";
   if (inGoldenZone) {
     bias = goldenZone.direction === "BUY"  ? "BUY"  :
@@ -416,7 +416,7 @@ export function analyzeFibonacci(
     bias = "SELL";
   }
 
-  // ── Confidence ────────────────────────────────────────────────────────────
+  // -- Confidence ------------------------------------------------------------
   const confidence = Math.min(85, Math.max(15,
     30 +
     (swing.valid && swing.direction !== "UNKNOWN" ? 20 : 5) +

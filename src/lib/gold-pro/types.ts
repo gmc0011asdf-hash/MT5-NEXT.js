@@ -1,5 +1,5 @@
 // src/lib/gold-pro/types.ts
-// ─── Raw Data from MT5 Bridge ─────────────────────────────────────────────────
+// --- Raw Data from MT5 Bridge -------------------------------------------------
 
 export interface RawCandle {
   symbol: string;
@@ -35,7 +35,7 @@ export interface MT5BridgeAnalysisData {
   equity: number;
 }
 
-// ─── Indicator Results ────────────────────────────────────────────────────────
+// --- Indicator Results --------------------------------------------------------
 
 export interface MACDResult {
   value: number;      // MACD line
@@ -87,7 +87,7 @@ export interface SupportResistanceLevels {
   resistances: number[];  // أقرب 3 مستويات مقاومة فوق السعر
 }
 
-// ─── Full Indicator Set ───────────────────────────────────────────────────────
+// --- Full Indicator Set -------------------------------------------------------
 
 export interface GoldIndicators {
   // Trend
@@ -108,7 +108,7 @@ export interface GoldIndicators {
   supportResistance: SupportResistanceLevels;
 }
 
-// ─── MTF ─────────────────────────────────────────────────────────────────────
+// --- MTF ---------------------------------------------------------------------
 
 export type TFBias = "bullish" | "bearish" | "neutral";
 
@@ -129,7 +129,7 @@ export interface MTFResult {
   alignment: number;     // 0-100
 }
 
-// ─── Signal & Confluence ──────────────────────────────────────────────────────
+// --- Signal & Confluence ------------------------------------------------------
 
 export type GoldSignal = "BUY" | "SELL" | "WAIT";
 
@@ -148,7 +148,7 @@ export interface ConfluenceResult {
   totalSignals: number;
 }
 
-// ─── Position Sizing ──────────────────────────────────────────────────────────
+// --- Position Sizing ----------------------------------------------------------
 
 export interface SLTPResult {
   entryPrice: number;
@@ -173,7 +173,7 @@ export interface PositionSizingResult {
   tickValue: number;          // $0.1 per point per 0.01 lot for XAUUSD
 }
 
-// ─── Full Analysis Result ─────────────────────────────────────────────────────
+// --- Full Analysis Result -----------------------------------------------------
 
 export interface GoldProAnalysis {
   timestamp: number;
@@ -194,7 +194,7 @@ export interface GoldProAnalysis {
   candleCount: { H1: number; H4: number; D1: number; M15: number };
 }
 
-// ─── Multi-Timeframe Trade Setup ─────────────────────────────────────────────
+// --- Multi-Timeframe Trade Setup ---------------------------------------------
 
 export type TradeSetupId = "H4_SWING" | "H1_INTRADAY" | "M15_SCALP";
 
@@ -221,7 +221,7 @@ export interface TradeSetup {
   sessionWarning?: string;
 }
 
-// ─── Stage 14 — Execution Types ──────────────────────────────────────────────
+// --- Stage 14 — Execution Types ----------------------------------------------
 
 export interface ExecutionRequest {
   symbol: string;
@@ -259,7 +259,7 @@ export interface OpenPosition {
   time: number;
 }
 
-// ─── Convex Snapshot ─────────────────────────────────────────────────────────
+// --- Convex Snapshot ---------------------------------------------------------
 
 export interface GoldProSnapshot {
   symbol: string;

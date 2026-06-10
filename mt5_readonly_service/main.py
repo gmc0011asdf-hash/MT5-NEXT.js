@@ -12,15 +12,28 @@ READ-ONLY CONTRACT — يُمنع أي تنفيذ أو أوامر من هذه ا
 
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
 import os
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from fastapi import FastAPI, Query
+from fastapi import Depends, FastAPI, Query, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
+from sqlalchemy.orm import Session
+
+from agents import CouncilEngine, CouncilVerdict, calculate_position_size, candles_to_dataframe, get_market_session
+from database import DecisionJournal, GoldProAnalysis, SessionLocal, StrategySignal, SystemConfig, TripleFirewallSignal, get_db, init_db
+from okx_bridge import (
+    DEFAULT_OKX_SYMBOLS,
+    fetch_okx_candles,
+    fetch_okx_tickers,
+    okx_candles_to_dataframe,
+)
 
 
 class Utf8JsonResponse(JSONResponse):
@@ -72,6 +85,11 @@ FORBIDDEN_MT5_FUNCTION_NAMES: tuple[str, ...] = (
 # Service identity — increment build_version on every release.
 _BUILD_VERSION: str = "0.2.0"
 _SERVICE_START_TIME: float = time.monotonic()
+
+logger = logging.getLogger(__name__)
+
+# Active WebSocket connections -- used to broadcast agent council signals.
+_ws_clients: set[WebSocket] = set()
 
 # Tracks the wall-clock time of the last call that returned real MT5 data.
 _last_successful_mt5_call_at: datetime | None = None
@@ -147,10 +165,38 @@ def _symbols_from_env() -> list[str]:
     return parts or list(_DEFAULT_SYMBOLS)
 
 
+def _get_visible_mt5_symbols(limit: int = 30) -> list[str]:
+    """
+    Returns the symbol names currently visible in the connected terminal's
+    Market Watch (any account type — demo or real). Caller must already
+    have a successful _safe_mt5_init() for this terminal session.
+    Returns [] if MT5 has no visible symbols or the call fails.
+    """
+    try:
+        rows = mt5.symbols_get()
+    except Exception:
+        return []
+    if not rows:
+        return []
+    names = [s.name for s in rows if getattr(s, "visible", False) and getattr(s, "name", None)]
+    return names[:limit]
+
+
 def _parse_csv_param(raw: str | None) -> list[str]:
     if raw is None:
         return []
     return [p.strip().upper() for p in raw.split(",") if p.strip()]
+
+
+def _parse_symbols_param(raw: str | None) -> list[str]:
+    """
+    Like _parse_csv_param but preserves the original casing of symbol names.
+    Broker symbol names are case-sensitive (e.g. "XAUUSDm", "EURUSD.r"),
+    so uppercasing them breaks mt5.symbol_select().
+    """
+    if raw is None:
+        return []
+    return [p.strip() for p in raw.split(",") if p.strip()]
 
 
 def _iso_from_mt5_time(ts: int | float | None) -> str | None:
@@ -373,6 +419,254 @@ def _positions_payload() -> dict[str, Any]:
 
 
 # -----------------------------------------------------------------------------
+# Agent Council -- background scan helpers
+# -----------------------------------------------------------------------------
+
+_AGENT_SCAN_INTERVAL: int = int(os.environ.get("AGENT_SCAN_INTERVAL_SECONDS", "300"))
+_AGENT_SCAN_TIMEFRAME: str = os.environ.get("AGENT_SCAN_TIMEFRAME", "H1")
+_AGENT_SCAN_CANDLE_COUNT: int = 250  # EMA(200) requires at least 210
+
+# OKX public market data scan settings (no auth required).
+_OKX_SCAN_SYMBOLS: list[str] = DEFAULT_OKX_SYMBOLS
+_OKX_SCAN_BAR:     str       = os.environ.get("OKX_SCAN_BAR", "1H")
+
+
+def _fetch_candles_for_agent(symbol: str, timeframe: str, count: int) -> list[dict]:
+    """
+    Fetch OHLCV candles directly from MT5 for agent council analysis.
+    Must be called after a successful _safe_mt5_init().
+    Returns an empty list on any per-symbol error -- never raises.
+    """
+    try:
+        tf_const = _TIMEFRAME_MAP.get(timeframe)
+        if tf_const is None:
+            return []
+        if not mt5.symbol_select(symbol, True):
+            return []
+        rates = mt5.copy_rates_from_pos(symbol, tf_const, 0, count)
+        if rates is None:
+            return []
+        result: list[dict] = []
+        for rate in rates:
+            broker_ts = int(rate["time"])
+            utc_ts    = broker_ts - _BROKER_TIME_OFFSET_SECS
+            result.append({
+                "symbol":      symbol,
+                "timeframe":   timeframe,
+                "time":        utc_ts * 1000,
+                "open":        float(rate["open"]),
+                "high":        float(rate["high"]),
+                "low":         float(rate["low"]),
+                "close":       float(rate["close"]),
+                "tick_volume": int(rate["tick_volume"]),
+            })
+        return result
+    except Exception as exc:
+        logger.warning("_fetch_candles_for_agent: %s/%s -- %s", symbol, timeframe, exc)
+        return []
+
+
+async def _broadcast_signal(payload: dict) -> None:
+    """
+    Broadcast a JSON payload to all connected WebSocket clients.
+    Dead connections are silently removed from _ws_clients.
+    """
+    dead: set[WebSocket] = set()
+    for ws in list(_ws_clients):
+        try:
+            await ws.send_json(payload)
+        except Exception:
+            dead.add(ws)
+    _ws_clients.difference_update(dead)
+
+
+def _sync_scan_cycle(
+    engine: CouncilEngine,
+    symbols: list[str],
+    timeframe: str,
+    candle_count: int,
+) -> list[CouncilVerdict]:
+    """
+    Synchronous scan cycle: MT5 candle fetch + agent analysis + SQLite save.
+    Returns the list of approved CouncilVerdict objects for broadcast.
+    Runs in a thread pool (via asyncio.to_thread) so MT5 blocking calls
+    do not stall the asyncio event loop.
+    """
+    approved: list[CouncilVerdict] = []
+
+    ok, err = _safe_mt5_init()
+    if not ok:
+        logger.warning("agent_scan: MT5 unavailable -- %s", err)
+        return approved
+
+    try:
+        scan_symbols = _get_visible_mt5_symbols() or symbols
+        for symbol in scan_symbols:
+            try:
+                raw = _fetch_candles_for_agent(symbol, timeframe, candle_count)
+                if not raw:
+                    logger.debug("agent_scan: no candles for %s", symbol)
+                    continue
+
+                df = candles_to_dataframe(raw)
+                if df.empty:
+                    continue
+
+                db = SessionLocal()
+                try:
+                    verdict = engine.analyze_market(symbol, df, db)
+                    db.commit()
+                except Exception as db_exc:
+                    db.rollback()
+                    logger.error("agent_scan: DB error for %s -- %s", symbol, db_exc)
+                    continue
+                finally:
+                    db.close()
+
+                if verdict.approved and verdict.direction is not None:
+                    approved.append(verdict)
+
+            except Exception as sym_exc:
+                logger.warning("agent_scan: error on %s -- %s", symbol, sym_exc)
+
+    finally:
+        try:
+            mt5.shutdown()
+        except Exception:
+            pass
+
+    return approved
+
+
+def _sync_scan_okx_cycle(
+    engine:  CouncilEngine,
+    symbols: list[str],
+    bar:     str,
+    limit:   int,
+) -> list[CouncilVerdict]:
+    """
+    OKX scan cycle: fetch public candles -> agent council analysis -> SQLite save.
+
+    Runs in a thread pool (via asyncio.to_thread) -- no event loop needed.
+    No MT5 connection required; uses OKX public REST API only.
+    No trading execution -- informational analysis and storage only.
+    """
+    approved: list[CouncilVerdict] = []
+
+    for inst_id in symbols:
+        try:
+            raw = fetch_okx_candles(inst_id, bar, limit)
+            if not raw:
+                logger.debug("okx_scan: no candles for %s", inst_id)
+                continue
+
+            df = okx_candles_to_dataframe(raw)
+            if df.empty:
+                continue
+
+            db = SessionLocal()
+            try:
+                verdict = engine.analyze_market(inst_id, df, db)
+                db.commit()
+            except Exception as db_exc:
+                db.rollback()
+                logger.error("okx_scan: DB error for %s -- %s", inst_id, db_exc)
+                continue
+            finally:
+                db.close()
+
+            if verdict.approved and verdict.direction is not None:
+                approved.append(verdict)
+
+        except Exception as exc:
+            logger.warning("okx_scan: error on %s -- %s", inst_id, exc)
+
+    return approved
+
+
+async def run_live_agent_council_scan() -> None:
+    """
+    Background asyncio loop: runs the agent council on MT5 and OKX symbols.
+
+    Cycle (every AGENT_SCAN_INTERVAL_SECONDS, default 300 = 5 minutes):
+        1. Run MT5 scan + OKX scan concurrently in separate thread-pool workers.
+        2. Broadcast all approved signals to connected WebSocket clients.
+
+    READ_ONLY_MODE is preserved -- analysis and storage only, no execution.
+    Errors are caught per-cycle; the loop never crashes the service.
+    """
+    engine      = CouncilEngine()
+    mt5_symbols = _symbols_from_env()
+    okx_symbols = _OKX_SCAN_SYMBOLS
+
+    logger.info(
+        "agent_scan: loop started -- interval=%ds mt5=%s okx=%s bar=%s",
+        _AGENT_SCAN_INTERVAL, mt5_symbols, okx_symbols, _AGENT_SCAN_TIMEFRAME,
+    )
+
+    while True:
+        await asyncio.sleep(_AGENT_SCAN_INTERVAL)
+
+        # Run MT5 and OKX scans concurrently in separate thread-pool workers.
+        results = await asyncio.gather(
+            asyncio.to_thread(
+                _sync_scan_cycle,
+                engine,
+                mt5_symbols,
+                _AGENT_SCAN_TIMEFRAME,
+                _AGENT_SCAN_CANDLE_COUNT,
+            ),
+            asyncio.to_thread(
+                _sync_scan_okx_cycle,
+                engine,
+                okx_symbols,
+                _OKX_SCAN_BAR,
+                _AGENT_SCAN_CANDLE_COUNT,
+            ),
+            return_exceptions=True,
+        )
+
+        # Collect approved verdicts from both scans; log any exceptions.
+        approved: list[CouncilVerdict] = []
+        scan_names = ("mt5", "okx")
+        for name, result in zip(scan_names, results):
+            if isinstance(result, list):
+                approved.extend(result)
+            elif isinstance(result, Exception):
+                logger.error("agent_scan: %s cycle failed -- %s", name, result)
+
+        # Broadcast each approved signal; tag with data_source for the UI.
+        for verdict in approved:
+            data_source = "okx" if "-" in verdict.symbol else "mt5"
+            await _broadcast_signal({
+                "type":            "agent_signal",
+                "symbol":          verdict.symbol,
+                "direction":       verdict.direction,
+                "signal_strength": round(verdict.signal_strength, 4),
+                "sl":              verdict.sl,
+                "tp":              verdict.tp,
+                "atr":             round(verdict.atr, 5) if verdict.atr else None,
+                "votes": [
+                    {
+                        "agent":      v.agent,
+                        "approved":   v.approved,
+                        "confidence": round(v.confidence, 4),
+                        "reason":     v.reason,
+                    }
+                    for v in verdict.votes
+                ],
+                "ts":          verdict.timestamp.isoformat(),
+                "read_only":   True,
+                "data_source": data_source,
+            })
+            logger.info(
+                "agent_scan: broadcast -- %s %s strength=%.0f%% source=%s",
+                verdict.symbol, verdict.direction,
+                verdict.signal_strength * 100, data_source,
+            )
+
+
+# -----------------------------------------------------------------------------
 # FastAPI application
 # -----------------------------------------------------------------------------
 
@@ -381,6 +675,28 @@ app = FastAPI(
     description="Read-only REST facade beside MetaTrader 5 terminal (Windows). No trading endpoints.",
     version=_BUILD_VERSION,
 )
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+# ---------------------------------------------------------------------------
+# Startup lifecycle
+# ---------------------------------------------------------------------------
+
+@app.on_event("startup")
+async def _startup() -> None:
+    """
+    Initialise the local SQLite database and start the background agent scan loop.
+    Tables are created if they do not exist; existing data is never dropped.
+    """
+    init_db()
+    asyncio.create_task(run_live_agent_council_scan())
 
 
 @app.post("/connect")
@@ -581,7 +897,7 @@ def readonly_snapshot() -> JSONResponse:
             },
         )
     try:
-        symbols = _symbols_from_env()
+        symbols = _get_visible_mt5_symbols() or _symbols_from_env()
         account = _account_payload()
         ticks_block = _ticks_payload(symbols)
         pos_block = _positions_payload()
@@ -794,7 +1110,7 @@ def readonly_candles(
             },
         )
     try:
-        symbols_list = _parse_csv_param(symbols) or _symbols_from_env()
+        symbols_list = _parse_symbols_param(symbols) or _symbols_from_env()
         requested_timeframes = _parse_csv_param(timeframes) or list(_DEFAULT_CANDLE_TIMEFRAMES)
         valid_timeframes = [tf for tf in requested_timeframes if tf in _TIMEFRAME_MAP]
         invalid_timeframes = [tf for tf in requested_timeframes if tf not in _TIMEFRAME_MAP]
@@ -1391,6 +1707,641 @@ def demo_order_send(payload: DemoOrderRequest) -> JSONResponse:
         mt5.shutdown()
 
 
+# ---------------------------------------------------------------------------
+# SQLite API endpoints (Phase 1 migration -- replaces Convex queries)
+# ---------------------------------------------------------------------------
+
+@app.get("/api/signals")
+def api_get_signals(
+    limit:  int          = Query(default=50,   ge=1, le=500),
+    symbol: str | None   = Query(default=None, max_length=20),
+    status: str | None   = Query(default=None, max_length=20),
+    db:     Session      = Depends(get_db),
+) -> JSONResponse:
+    """
+    Returns the most recent analytical signals from the agent council.
+
+    Query parameters:
+        limit  - max rows returned (default 50, max 500)
+        symbol - filter by trading symbol, e.g. XAUUSD (optional)
+        status - filter by status: PENDING | ACTIVE | EXPIRED (optional)
+
+    Replaces: Convex query api.strategies.listSignals
+    Read-only: no writes performed here.
+    """
+    q = db.query(StrategySignal)
+
+    if symbol and symbol.strip():
+        q = q.filter(StrategySignal.symbol == symbol.strip().upper())
+
+    if status and status.strip():
+        q = q.filter(StrategySignal.status == status.strip().upper())
+
+    rows = q.order_by(StrategySignal.timestamp.desc()).limit(limit).all()
+
+    return Utf8JsonResponse(
+        content={
+            "ok":      True,
+            "count":   len(rows),
+            "signals": [r.to_dict() for r in rows],
+        }
+    )
+
+
+@app.get("/api/journal")
+def api_get_journal(
+    limit:  int        = Query(default=50,   ge=1, le=500),
+    result: str | None = Query(default=None, max_length=20),
+    symbol: str | None = Query(default=None, max_length=20),
+    db:     Session    = Depends(get_db),
+) -> JSONResponse:
+    """
+    Returns agent-council DecisionJournal entries (approved + rejected history).
+
+    Query parameters:
+        limit  - max rows returned (default 50, max 500)
+        result - filter by APPROVED | REJECTED (optional)
+        symbol - filter by symbol via context JSON field (optional, best-effort)
+
+    Read-only: no writes performed here.
+    """
+    q = db.query(DecisionJournal)
+
+    if result and result.strip():
+        q = q.filter(DecisionJournal.result == result.strip().upper())
+
+    rows = q.order_by(DecisionJournal.timestamp.desc()).limit(limit).all()
+
+    entries: list[dict] = []
+    for r in rows:
+        row_dict = r.to_dict()
+        # Parse context JSON for symbol filtering
+        if symbol and symbol.strip():
+            try:
+                ctx = json.loads(row_dict.get("context", "{}"))
+                if ctx.get("symbol", "").upper() != symbol.strip().upper():
+                    continue
+            except Exception:
+                pass
+        # Parse context and agents_votes into proper objects for easy frontend use
+        try:
+            row_dict["context"]      = json.loads(row_dict.get("context", "{}"))
+            row_dict["agents_votes"] = json.loads(row_dict.get("agents_votes", "{}"))
+        except Exception:
+            row_dict["context"]      = {}
+            row_dict["agents_votes"] = {}
+        entries.append(row_dict)
+
+    return Utf8JsonResponse(
+        content={
+            "ok":      True,
+            "count":   len(entries),
+            "entries": entries,
+        }
+    )
+
+
+class GoldProSnapshotRequest(BaseModel):
+    """Gold Pro Lab — analysis snapshot saved from the UI. Read-only record, no trading."""
+    symbol:           str
+    timestamp:        int | None = None
+    price:            float | None = None
+    signal:           str | None = None
+    confluenceScore:  float | None = None
+    entryPrice:       float | None = None
+    stopLoss:         float | None = None
+    takeProfit1:      float | None = None
+    takeProfit2:      float | None = None
+    rrRatio:          float | None = None
+    lotSize:          float | None = None
+    atr:              float | None = None
+    mtfAlignment:     int | None = None
+    indicators:       dict | None = None
+
+
+@app.post("/api/gold-pro/snapshots")
+def api_save_gold_pro_snapshot(
+    body: GoldProSnapshotRequest,
+    db: Session = Depends(get_db),
+) -> JSONResponse:
+    """
+    Saves a Gold Pro Lab analysis snapshot locally (SQLite).
+    Replaces: Convex mutation api.goldProAnalysis.saveAnalysis.
+    Read-only analytical record — no trading performed.
+    """
+    row = GoldProAnalysis(
+        symbol=body.symbol.strip().upper(),
+        analysis_ts=datetime.fromtimestamp(body.timestamp / 1000, tz=timezone.utc) if body.timestamp else None,
+        price=body.price,
+        signal=body.signal,
+        confluence_score=body.confluenceScore,
+        entry_price=body.entryPrice,
+        stop_loss=body.stopLoss,
+        take_profit_1=body.takeProfit1,
+        take_profit_2=body.takeProfit2,
+        rr_ratio=body.rrRatio,
+        lot_size=body.lotSize,
+        atr=body.atr,
+        mtf_alignment=body.mtfAlignment,
+        indicators=json.dumps(body.indicators or {}),
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+
+    return Utf8JsonResponse(content={"ok": True, "id": row.id})
+
+
+@app.get("/api/gold-pro/snapshots")
+def api_get_gold_pro_snapshots(
+    limit:  int        = Query(default=50, ge=1, le=500),
+    symbol: str | None = Query(default=None, max_length=20),
+    db:     Session    = Depends(get_db),
+) -> JSONResponse:
+    """
+    Returns the most recent Gold Pro Lab analysis snapshots.
+    Replaces: Convex query api.goldProAnalysis.getMyAnalyses.
+    Read-only — no writes performed here.
+    """
+    q = db.query(GoldProAnalysis)
+
+    if symbol and symbol.strip():
+        q = q.filter(GoldProAnalysis.symbol == symbol.strip().upper())
+
+    rows = q.order_by(GoldProAnalysis.timestamp.desc()).limit(limit).all()
+
+    return Utf8JsonResponse(
+        content={
+            "ok":      True,
+            "count":   len(rows),
+            "history": [r.to_dict() for r in rows],
+        }
+    )
+
+
+@app.get("/api/gold-pro/accuracy-stats")
+def api_get_gold_pro_accuracy_stats(
+    symbol: str | None = Query(default=None, max_length=20),
+    db:     Session    = Depends(get_db),
+) -> JSONResponse:
+    """
+    Returns aggregate accuracy stats over saved Gold Pro Lab snapshots.
+    Replaces: Convex query api.goldProAnalysis.getAccuracyStats.
+    Read-only — no writes performed here.
+    """
+    q = db.query(GoldProAnalysis)
+
+    if symbol and symbol.strip():
+        q = q.filter(GoldProAnalysis.symbol == symbol.strip().upper())
+
+    rows = q.all()
+
+    total   = len(rows)
+    wins    = sum(1 for r in rows if r.outcome == "win")
+    losses  = sum(1 for r in rows if r.outcome == "loss")
+    pending = sum(1 for r in rows if r.outcome == "pending")
+    decided = wins + losses
+    accuracy = round((wins / decided) * 100, 1) if decided > 0 else 0.0
+
+    return Utf8JsonResponse(
+        content={
+            "ok": True,
+            "stats": {
+                "total":    total,
+                "wins":     wins,
+                "losses":   losses,
+                "pending":  pending,
+                "accuracy": accuracy,
+            },
+        }
+    )
+
+
+@app.post("/api/telegram/test")
+def api_telegram_test(db: Session = Depends(get_db)) -> JSONResponse:
+    """
+    Send a test message to the configured Telegram bot.
+    Reads credentials from DB (SystemConfig) first, falls back to env vars.
+    Returns 200 OK if delivered, 503 otherwise.
+    Read-only — no trades executed.
+    """
+    import requests as _req
+
+    # Read from DB first, then env
+    def _get_cred(key: str, env_key: str) -> str | None:
+        row = db.query(SystemConfig).filter(SystemConfig.key == key).first()
+        if row and row.value:
+            return row.value
+        return os.environ.get(env_key)
+
+    token   = _get_cred("telegram_bot_token", "TELEGRAM_BOT_TOKEN")
+    chat_id = _get_cred("telegram_chat_id",   "TELEGRAM_CHAT_ID")
+    proxy_url = _get_cred("telegram_proxy_url", "TELEGRAM_PROXY_URL")
+
+    if not token or not chat_id:
+        return Utf8JsonResponse(
+            status_code=503,
+            content={"ok": False, "detail": "Telegram credentials not configured"},
+        )
+
+    proxies = {"https": proxy_url, "http": proxy_url} if proxy_url else None
+
+    try:
+        resp = _req.post(
+            f"https://api.telegram.org/bot{token}/sendMessage",
+            json={
+                "chat_id":    chat_id,
+                "text":       "اختبار اتصال — نظام الملك الهندسي للتداول العالمي",
+                "parse_mode": "HTML",
+            },
+            timeout=15.0,
+            proxies=proxies,
+        )
+        if resp.ok:
+            return Utf8JsonResponse(content={"ok": True})
+        # Telegram error responses are JSON: {"ok":false,"error_code":...,"description":"..."}
+        try:
+            err_json = resp.json()
+            detail = err_json.get("description") or resp.text[:200]
+        except ValueError:
+            detail = resp.text[:200]
+        if resp.status_code == 401:
+            detail = f"رمز البوت (Token) غير صحيح: {detail}"
+        elif resp.status_code == 400 and "chat not found" in detail.lower():
+            detail = f"معرف المحادثة (Chat ID) غير صحيح أو لم يبدأ المستخدم محادثة مع البوت بعد (أرسل /start للبوت): {detail}"
+        return Utf8JsonResponse(
+            status_code=503,
+            content={"ok": False, "detail": detail},
+        )
+    except _req.exceptions.Timeout:
+        dns_hint = _diagnose_telegram_dns()
+        return Utf8JsonResponse(
+            status_code=503,
+            content={
+                "ok": False,
+                "detail": (
+                    "انتهت مهلة الاتصال بخوادم Telegram — تحقق من اتصال الإنترنت أو الجدار الناري"
+                    + (f" — {dns_hint}" if dns_hint else "")
+                ),
+            },
+        )
+    except _req.exceptions.ConnectionError as exc:
+        dns_hint = _diagnose_telegram_dns()
+        return Utf8JsonResponse(
+            status_code=503,
+            content={
+                "ok": False,
+                "detail": (
+                    f"تعذّر الاتصال بخوادم Telegram (api.telegram.org) — تحقق من اتصال الإنترنت: {exc}"
+                    + (f" — {dns_hint}" if dns_hint else "")
+                ),
+            },
+        )
+    except Exception as exc:
+        return Utf8JsonResponse(
+            status_code=503,
+            content={"ok": False, "detail": str(exc)},
+        )
+
+
+# ---------------------------------------------------------------------------
+# System Configuration endpoints (GET/POST /api/config)
+# ---------------------------------------------------------------------------
+
+_ALLOWED_CONFIG_KEYS: frozenset[str] = frozenset({
+    "ema_length",
+    "rsi_length",
+    "atr_length",
+    "bb_length",
+    "bb_std",
+    "atr_sl_mult",
+    "atr_tp_mult",
+    "min_rr",
+    "telegram_bot_token",
+    "telegram_chat_id",
+})
+
+_CONFIG_DEFAULTS: dict[str, str] = {
+    "ema_length":  "200",
+    "rsi_length":  "14",
+    "atr_length":  "14",
+    "bb_length":   "20",
+    "bb_std":      "2.0",
+    "atr_sl_mult": "1.5",
+    "atr_tp_mult": "3.0",
+    "min_rr":      "2.0",
+}
+
+
+@app.get("/api/config")
+def api_get_config(db: Session = Depends(get_db)) -> JSONResponse:
+    """
+    Return the current engine configuration merged with defaults.
+    Telegram tokens are masked in the response (first 10 chars only).
+    Read-only: no writes.
+    """
+    rows = db.query(SystemConfig).all()
+    stored: dict[str, str] = {r.key: r.value for r in rows}
+
+    # Merge defaults with stored (stored wins)
+    merged: dict[str, str] = {**_CONFIG_DEFAULTS, **stored}
+
+    # Mask sensitive values
+    masked = {}
+    for k, v in merged.items():
+        if k == "telegram_bot_token" and v:
+            masked[k] = v[:10] + "..." if len(v) > 10 else "***"
+        else:
+            masked[k] = v
+
+    return Utf8JsonResponse(content={"ok": True, "config": masked})
+
+
+class _ConfigEntry(BaseModel):
+    key:   str
+    value: str
+
+
+class _ConfigBatch(BaseModel):
+    entries: list[_ConfigEntry]
+
+
+@app.post("/api/config")
+def api_set_config(body: _ConfigEntry, db: Session = Depends(get_db)) -> JSONResponse:
+    """
+    Save or update a single config key.
+    Only keys in _ALLOWED_CONFIG_KEYS are accepted.
+    """
+    if body.key not in _ALLOWED_CONFIG_KEYS:
+        return Utf8JsonResponse(
+            status_code=422,
+            content={"ok": False, "detail": f"Key '{body.key}' is not configurable"},
+        )
+    existing = db.query(SystemConfig).filter(SystemConfig.key == body.key).first()
+    if existing:
+        existing.value      = body.value
+        existing.updated_at = datetime.now(timezone.utc)
+    else:
+        db.add(SystemConfig(key=body.key, value=body.value))
+    db.commit()
+    return Utf8JsonResponse(content={"ok": True, "key": body.key})
+
+
+@app.post("/api/config/batch")
+def api_set_config_batch(
+    body: _ConfigBatch,
+    db:   Session = Depends(get_db),
+) -> JSONResponse:
+    """
+    Save multiple config entries in a single transaction.
+    Only keys in _ALLOWED_CONFIG_KEYS are accepted; unknown keys are skipped.
+    """
+    saved: list[str] = []
+    skipped: list[str] = []
+    for entry in body.entries:
+        if entry.key not in _ALLOWED_CONFIG_KEYS:
+            skipped.append(entry.key)
+            continue
+        existing = db.query(SystemConfig).filter(SystemConfig.key == entry.key).first()
+        if existing:
+            existing.value      = entry.value
+            existing.updated_at = datetime.now(timezone.utc)
+        else:
+            db.add(SystemConfig(key=entry.key, value=entry.value))
+        saved.append(entry.key)
+    db.commit()
+    return Utf8JsonResponse(content={"ok": True, "saved": saved, "skipped": skipped})
+
+
+@app.delete("/api/config/{key}")
+def api_delete_config(key: str, db: Session = Depends(get_db)) -> JSONResponse:
+    """
+    Delete a config key to revert it to the built-in default.
+    Useful for the 'Reset to Defaults' button on individual settings.
+    """
+    row = db.query(SystemConfig).filter(SystemConfig.key == key).first()
+    if row:
+        db.delete(row)
+        db.commit()
+    return Utf8JsonResponse(content={"ok": True, "key": key, "reverted_to_default": True})
+
+
+# ---------------------------------------------------------------------------
+# Triple Firewall — confluence history, market session clock, position sizing
+# (Read-only / stateless analytics -- no trading execution of any kind)
+# ---------------------------------------------------------------------------
+
+@app.get("/api/triple-firewall/signals")
+def api_triple_firewall_signals(
+    limit:      int        = Query(default=50,   ge=1, le=500),
+    symbol:     str | None = Query(default=None, max_length=20),
+    confluence: str | None = Query(default=None, max_length=10),
+    db:         Session    = Depends(get_db),
+) -> JSONResponse:
+    """
+    Returns recent Triple Firewall confluence analysis history.
+
+    Query parameters:
+        limit      - max rows returned (default 50, max 500)
+        symbol     - filter by trading symbol, e.g. XAUUSD (optional)
+        confluence - filter by confluence level: NONE | WEAK | MEDIUM | STRONG (optional)
+
+    Read-only: no writes performed here.
+    """
+    q = db.query(TripleFirewallSignal)
+
+    if symbol and symbol.strip():
+        q = q.filter(TripleFirewallSignal.symbol == symbol.strip().upper())
+
+    if confluence and confluence.strip():
+        q = q.filter(TripleFirewallSignal.confluence_level == confluence.strip().upper())
+
+    rows = q.order_by(TripleFirewallSignal.timestamp.desc()).limit(limit).all()
+
+    return Utf8JsonResponse(
+        content={
+            "ok":      True,
+            "count":   len(rows),
+            "signals": [r.to_dict() for r in rows],
+        }
+    )
+
+
+@app.get("/api/triple-firewall/session")
+def api_triple_firewall_session() -> JSONResponse:
+    """
+    Returns the current FX market session clock (Baghdad UTC+3).
+    Pure informational data -- no DB access, no trading.
+    """
+    return Utf8JsonResponse(content={"ok": True, "session": get_market_session()})
+
+
+class PositionSizeRequest(BaseModel):
+    """Stateless risk-percent position sizing request. Informational only -- no trading."""
+    accountEquity:  float
+    riskPercent:    float
+    entryPrice:     float
+    stopLoss:       float
+    tradeTickValue: float
+    tradeTickSize:  float
+    point:          float
+    volumeMin:      float = 0.01
+    volumeMax:      float = 1000.0
+    volumeStep:     float = 0.01
+
+
+@app.post("/api/triple-firewall/position-size")
+def api_triple_firewall_position_size(body: PositionSizeRequest) -> JSONResponse:
+    """
+    Calculates a normalized lot size from a risk-percent-of-equity model.
+    Stateless, read-only -- does not place or modify any order.
+    """
+    result = calculate_position_size(
+        account_equity=body.accountEquity,
+        risk_percent=body.riskPercent,
+        entry_price=body.entryPrice,
+        stop_loss=body.stopLoss,
+        trade_tick_value=body.tradeTickValue,
+        trade_tick_size=body.tradeTickSize,
+        point=body.point,
+        volume_min=body.volumeMin,
+        volume_max=body.volumeMax,
+        volume_step=body.volumeStep,
+    )
+    return Utf8JsonResponse(content={"ok": True, **result})
+
+
+# ---------------------------------------------------------------------------
+# OKX Public Market Data endpoints (Read-Only -- no auth required)
+# ---------------------------------------------------------------------------
+
+@app.get("/readonly/okx/candles")
+def readonly_okx_candles(
+    instId: str = Query(default="BTC-USDT", max_length=30, alias="instId"),
+    bar:    str = Query(default="1H",        max_length=5),
+    limit:  int = Query(default=250,         ge=1, le=300),
+) -> JSONResponse:
+    """
+    Fetch OHLCV candles from OKX public REST API.
+    No authentication required. Read-only market data only.
+    No trading execution of any kind.
+    """
+    try:
+        candles = fetch_okx_candles(instId.strip(), bar.strip(), limit)
+    except Exception as exc:
+        logger.error("readonly_okx_candles: unexpected error -- %s", exc)
+        return Utf8JsonResponse(
+            status_code=503,
+            content={"ok": False, "error": str(exc), "candles": []},
+        )
+
+    return Utf8JsonResponse(content={
+        "ok":      True,
+        "source":  "okx-public",
+        "instId":  instId,
+        "bar":     bar,
+        "count":   len(candles),
+        "candles": candles,
+    })
+
+
+@app.get("/readonly/okx/tickers")
+def readonly_okx_tickers(
+    symbols: str = Query(default="BTC-USDT,ETH-USDT", max_length=200),
+) -> JSONResponse:
+    """
+    Fetch live ticker snapshot for one or more OKX instruments.
+    No authentication required. Read-only market data only.
+    Pass comma-separated instrument IDs, e.g. symbols=BTC-USDT,ETH-USDT
+    """
+    inst_ids = [s.strip().upper() for s in symbols.split(",") if s.strip()]
+    if not inst_ids:
+        return Utf8JsonResponse(
+            status_code=400,
+            content={"ok": False, "error": "لم يتم تحديد أي رمز", "tickers": []},
+        )
+
+    try:
+        tickers = fetch_okx_tickers(inst_ids)
+    except Exception as exc:
+        logger.error("readonly_okx_tickers: unexpected error -- %s", exc)
+        return Utf8JsonResponse(
+            status_code=503,
+            content={"ok": False, "error": str(exc), "tickers": []},
+        )
+
+    return Utf8JsonResponse(content={
+        "ok":      True,
+        "source":  "okx-public",
+        "count":   len(tickers),
+        "tickers": tickers,
+    })
+
+
+# ---------------------------------------------------------------------------
+# WebSocket: live market stream (Phase 2 -- framework ready, stream TBD)
+# ---------------------------------------------------------------------------
+
+@app.websocket("/ws/live-market")
+async def ws_live_market(websocket: WebSocket) -> None:
+    """
+    WebSocket endpoint for live market data streaming.
+
+    Protocol (current -- ping/pong handshake):
+        server -> client : {"type": "connected", "version": <build>}
+        client -> server : {"type": "ping"}
+        server -> client : {"type": "pong", "ts": <utc_iso>}
+        client -> server : {"type": "subscribe", "symbols": ["XAUUSD"]}
+        server -> client : {"type": "ack", "subscribed": ["XAUUSD"]}
+
+    Live tick streaming is implemented in Phase 2 once MT5 polling
+    is wired to the broadcast loop.  The connection stays open and
+    the server responds to all messages until the client disconnects.
+
+    No trading operations are performed here.
+    """
+    await websocket.accept()
+    _ws_clients.add(websocket)
+
+    await websocket.send_json({
+        "type":        "connected",
+        "version":     _BUILD_VERSION,
+        "read_only":   True,
+        "ts":          datetime.now(timezone.utc).isoformat(),
+    })
+
+    try:
+        while True:
+            data = await websocket.receive_json()
+            msg_type = data.get("type", "")
+
+            if msg_type == "ping":
+                await websocket.send_json({
+                    "type": "pong",
+                    "ts":   datetime.now(timezone.utc).isoformat(),
+                })
+
+            elif msg_type == "subscribe":
+                symbols = data.get("symbols", [])
+                await websocket.send_json({
+                    "type":       "ack",
+                    "subscribed": symbols,
+                    "note":       "agent council active -- signals broadcast on approval",
+                })
+
+            else:
+                await websocket.send_json({
+                    "type":  "error",
+                    "error": f"unknown message type: {msg_type!r}",
+                })
+
+    except WebSocketDisconnect:
+        pass  # clean client disconnect -- no action needed
+    finally:
+        _ws_clients.discard(websocket)
+
+
+# ---------------------------------------------------------------------------
 # Read-only endpoints reminder + demo endpoint authorisation note:
 # - FORBIDDEN_MT5_FUNCTION_NAMES applies to ALL endpoints ABOVE /demo/order-send.
 # - order_send is ONLY used inside /demo/order-send, gated by MT5_DEMO_EXECUTION_ENABLED.

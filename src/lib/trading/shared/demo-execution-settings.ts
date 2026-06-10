@@ -1,14 +1,14 @@
 /**
  * demo-execution-settings.ts — A25
- * ─────────────────────────────────────────────────────────────────────────────
+ * -----------------------------------------------------------------------------
  * إعدادات وضع التنفيذ التجريبي لـ MT5 Demo Guard.
  *
  * ⚠️ لا تنفيذ تداول — لا order_send — لا secrets في هذا الملف.
  * هذه الإعدادات تُخزَّن في localStorage فقط — لا Convex — لا schema change.
- * ─────────────────────────────────────────────────────────────────────────────
+ * -----------------------------------------------------------------------------
  */
 
-// ─── Execution Mode ───────────────────────────────────────────────────────────
+// --- Execution Mode -----------------------------------------------------------
 
 export type ExecutionMode = "READ_ONLY" | "DEMO_PREVIEW" | "DEMO_ARMED";
 
@@ -24,7 +24,7 @@ export const EXECUTION_BUTTON_TEXT: Record<ExecutionMode, string> = {
   DEMO_ARMED:   "تنفيذ عبر MT5 — بانتظار المراجعة النهائية",
 };
 
-// ─── System Execution Mode — يعكس وضع النظام الحاكم لا نوع الحساب ────────────
+// --- System Execution Mode — يعكس وضع النظام الحاكم لا نوع الحساب ------------
 
 export type SystemExecutionMode =
   | "READ_ONLY"
@@ -50,7 +50,7 @@ export function resolveSystemExecutionMode(
   return "READY_FOR_REVIEW";
 }
 
-// ─── Execution Policy ─────────────────────────────────────────────────────────
+// --- Execution Policy ---------------------------------------------------------
 
 export type ExecutionPolicy = "STRICT" | "EXPERIMENTAL";
 
@@ -59,7 +59,7 @@ export const EXECUTION_POLICY_LABELS: Record<ExecutionPolicy, string> = {
   EXPERIMENTAL: "تجارب تنفيذ محكومة — Hard Blocks محفوظة",
 };
 
-// ─── Settings Type ────────────────────────────────────────────────────────────
+// --- Settings Type ------------------------------------------------------------
 
 export type DemoExecutionSettings = {
   executionMode:           ExecutionMode;
@@ -87,7 +87,7 @@ export const DEFAULT_DEMO_SETTINGS: DemoExecutionSettings = {
   executionPolicy:         "STRICT",
 };
 
-// ─── Eligibility Result ───────────────────────────────────────────────────────
+// --- Eligibility Result -------------------------------------------------------
 
 export type ExecutionEligibility = {
   eligible:        boolean;
@@ -102,7 +102,7 @@ export type ExecutionEligibility = {
   buttonText:      string;
 };
 
-// ─── Execution Request Contract — A26.1 ──────────────────────────────────────
+// --- Execution Request Contract — A26.1 --------------------------------------
 // عقد طلب التنفيذ التجريبي — Preview فقط — لا order_send — لا تنفيذ تداول
 
 export type ExecutionRequestPreview = {
@@ -127,7 +127,7 @@ export type ExecutionRequestPreview = {
   executionEnabled:           false;
 };
 
-// ─── localStorage helpers ─────────────────────────────────────────────────────
+// --- localStorage helpers -----------------------------------------------------
 
 export const DEMO_SETTINGS_KEY = "mt5-demo-exec-settings-v1";
 

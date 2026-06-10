@@ -5,7 +5,7 @@
  * Works server-side and client-side (no Next.js / Convex imports).
  */
 
-// ─── Input type ───────────────────────────────────────────────────────────────
+// --- Input type ---------------------------------------------------------------
 
 export type OHLCCandle = {
   time:  number;
@@ -15,7 +15,7 @@ export type OHLCCandle = {
   close: number;
 };
 
-// ─── Output types ─────────────────────────────────────────────────────────────
+// --- Output types -------------------------------------------------------------
 
 export type MarketSwing = {
   index:    number;    // position in candles array
@@ -49,7 +49,7 @@ export type MarketStructureAnalysis = {
   warnings:       string[];
 };
 
-// ─── ATR14 ────────────────────────────────────────────────────────────────────
+// --- ATR14 --------------------------------------------------------------------
 
 function computeATR14(candles: OHLCCandle[]): number {
   if (candles.length < 2) return 0;
@@ -68,7 +68,7 @@ function computeATR14(candles: OHLCCandle[]): number {
   return sum / period;
 }
 
-// ─── Swing detection ─────────────────────────────────────────────────────────
+// --- Swing detection ---------------------------------------------------------
 
 function detectSwings(candles: OHLCCandle[], lookback: number): MarketSwing[] {
   const swings: MarketSwing[] = [];
@@ -79,7 +79,7 @@ function detectSwings(candles: OHLCCandle[], lookback: number): MarketSwing[] {
   for (let i = lookback; i < n - lookback; i++) {
     const c = candles[i]!;
 
-    // ── swing HIGH: c.high strictly greater than all neighbours ──────────────
+    // -- swing HIGH: c.high strictly greater than all neighbours --------------
     let isHigh = true;
     for (let j = i - lookback; j <= i + lookback && isHigh; j++) {
       if (j !== i && candles[j]!.high >= c.high) isHigh = false;
@@ -97,7 +97,7 @@ function detectSwings(candles: OHLCCandle[], lookback: number): MarketSwing[] {
       }
     }
 
-    // ── swing LOW: c.low strictly less than all neighbours ───────────────────
+    // -- swing LOW: c.low strictly less than all neighbours -------------------
     let isLow = true;
     for (let j = i - lookback; j <= i + lookback && isLow; j++) {
       if (j !== i && candles[j]!.low <= c.low) isLow = false;
@@ -118,7 +118,7 @@ function detectSwings(candles: OHLCCandle[], lookback: number): MarketSwing[] {
   return swings; // already chronological (candles oldest-first)
 }
 
-// ─── Structure classification (HH / HL / LH / LL) ────────────────────────────
+// --- Structure classification (HH / HL / LH / LL) ----------------------------
 
 function classifyStructure(swings: MarketSwing[]): StructurePoint[] {
   const highs = swings.filter((s) => s.type === "HIGH");
@@ -144,7 +144,7 @@ function classifyStructure(swings: MarketSwing[]): StructurePoint[] {
   return points.sort((a, b) => a.time - b.time);
 }
 
-// ─── Trend determination ──────────────────────────────────────────────────────
+// --- Trend determination ------------------------------------------------------
 
 function determineTrend(points: StructurePoint[]): {
   trendState: "BULLISH" | "BEARISH" | "RANGE";
@@ -216,7 +216,7 @@ function determineTrend(points: StructurePoint[]): {
   return { trendState: "RANGE", reasons };
 }
 
-// ─── BOS and CHoCH detection ──────────────────────────────────────────────────
+// --- BOS and CHoCH detection --------------------------------------------------
 
 function detectBOSAndCHoCH(
   lastClose: number,
@@ -257,7 +257,7 @@ function detectBOSAndCHoCH(
   return { bosDirection, chochDirection };
 }
 
-// ─── Range detection ──────────────────────────────────────────────────────────
+// --- Range detection ----------------------------------------------------------
 
 function detectRange(swings: MarketSwing[]): {
   rangeDetected: boolean;
@@ -291,7 +291,7 @@ function detectRange(swings: MarketSwing[]): {
   };
 }
 
-// ─── Confidence score ─────────────────────────────────────────────────────────
+// --- Confidence score ---------------------------------------------------------
 
 function computeConfidence(
   swingsCount: number,
@@ -312,7 +312,7 @@ function computeConfidence(
   return Math.max(10, Math.min(95, score));
 }
 
-// ─── Main entry point ─────────────────────────────────────────────────────────
+// --- Main entry point ---------------------------------------------------------
 
 export function analyzeMarketStructure(
   candles: OHLCCandle[],
@@ -335,27 +335,27 @@ export function analyzeMarketStructure(
     };
   }
 
-  // ── 1. Detect swings ──────────────────────────────────────────────────────
+  // -- 1. Detect swings ------------------------------------------------------
   const swings = detectSwings(candles, lookback);
 
   if (swings.length < 4) {
     warnings.push(`عدد pivots قليل (${swings.length}) — قد تحتاج مزيداً من الشموع أو حركة سعرية أوسع`);
   }
 
-  // ── 2. Classify structure ─────────────────────────────────────────────────
+  // -- 2. Classify structure -------------------------------------------------
   const structurePoints = classifyStructure(swings);
 
-  // ── 3. Last swings ────────────────────────────────────────────────────────
+  // -- 3. Last swings --------------------------------------------------------
   const highs       = swings.filter((s) => s.type === "HIGH");
   const lows        = swings.filter((s) => s.type === "LOW");
   const lastSwingHigh: MarketSwing | null = highs.at(-1) ?? null;
   const lastSwingLow:  MarketSwing | null = lows.at(-1)  ?? null;
 
-  // ── 4. Trend ──────────────────────────────────────────────────────────────
+  // -- 4. Trend --------------------------------------------------------------
   const { trendState: rawTrend, reasons: trendReasons } = determineTrend(structurePoints);
   reasons.push(...trendReasons);
 
-  // ── 5. BOS / CHoCH ────────────────────────────────────────────────────────
+  // -- 5. BOS / CHoCH --------------------------------------------------------
   const lastClose = candles.at(-1)!.close;
   const { bosDirection, chochDirection } = detectBOSAndCHoCH(lastClose, swings, rawTrend);
 
@@ -364,17 +364,17 @@ export function analyzeMarketStructure(
   if (chochDirection === "UP")   reasons.push("CHoCH UP — تحوّل محتمل من هابط إلى صاعد");
   if (chochDirection === "DOWN") reasons.push("CHoCH DOWN — تحوّل محتمل من صاعد إلى هابط");
 
-  // ── 6. Range ──────────────────────────────────────────────────────────────
+  // -- 6. Range --------------------------------------------------------------
   const { rangeDetected, rangeHigh, rangeLow } = detectRange(swings);
   if (rangeDetected) {
     warnings.push(`السوق في نطاق — مقاومة: ${rangeHigh?.toFixed(5)} | دعم: ${rangeLow?.toFixed(5)}`);
   }
 
-  // ── 7. Transition ─────────────────────────────────────────────────────────
+  // -- 7. Transition ---------------------------------------------------------
   const trendState: MarketStructureAnalysis["trendState"] =
     chochDirection ? "TRANSITION" : rawTrend;
 
-  // ── 8. Bias ───────────────────────────────────────────────────────────────
+  // -- 8. Bias ---------------------------------------------------------------
   let bias: MarketStructureAnalysis["bias"];
   if      (chochDirection === "UP"   || (rawTrend === "BULLISH" && bosDirection === "UP"))   bias = "BUY";
   else if (chochDirection === "DOWN" || (rawTrend === "BEARISH" && bosDirection === "DOWN")) bias = "SELL";
@@ -382,12 +382,12 @@ export function analyzeMarketStructure(
   else if (rawTrend === "BEARISH") bias = "SELL";
   else                             bias = "NEUTRAL";
 
-  // ── 9. Confidence ─────────────────────────────────────────────────────────
+  // -- 9. Confidence ---------------------------------------------------------
   const confidence = computeConfidence(
     swings.length, structurePoints.length, rawTrend, bosDirection, chochDirection,
   );
 
-  // ── 10. Summary reasons ───────────────────────────────────────────────────
+  // -- 10. Summary reasons ---------------------------------------------------
   if (lastSwingHigh) reasons.push(`آخر قمة (SH): ${lastSwingHigh.price.toFixed(5)}`);
   if (lastSwingLow)  reasons.push(`آخر قاع (SL): ${lastSwingLow.price.toFixed(5)}`);
   reasons.push(`pivots: ${swings.length} | نقاط هيكل: ${structurePoints.length}`);

@@ -1,13 +1,19 @@
 // src/components/gold-pro/AnalysisHistory.tsx
-import type { Doc } from "../../../convex/_generated/dataModel";
-
 interface Stats { total: number; wins: number; losses: number; pending: number; accuracy: number; }
+
+interface AnalysisRecord {
+  _id: number;
+  timestamp: number | null;
+  signal: string | null;
+  confluenceScore: number | null;
+  outcome: string;
+}
 
 export function AnalysisHistory({
   history,
   stats,
 }: {
-  history: Doc<"goldProAnalysis">[];
+  history: AnalysisRecord[];
   stats: Stats;
 }) {
   return (
@@ -20,7 +26,7 @@ export function AnalysisHistory({
           <div className="space-y-2">
             {history.slice(0, 5).map((h) => (
               <div key={h._id} className="flex items-center justify-between text-xs">
-                <span className="text-slate-500">{new Date(h.timestamp).toLocaleDateString("ar")}</span>
+                <span className="text-slate-500">{h.timestamp ? new Date(h.timestamp).toLocaleDateString("ar") : "—"}</span>
                 <span className={`rounded-full px-2 py-0.5 font-bold ${h.signal === "BUY" ? "bg-green-950 text-green-400" : h.signal === "SELL" ? "bg-red-950 text-red-400" : "bg-yellow-950 text-yellow-400"}`}>{h.signal}</span>
                 <span className="text-slate-400">{h.confluenceScore}%</span>
                 <span className={`rounded-full px-2 py-0.5 ${h.outcome === "win" ? "bg-green-950 text-green-400" : h.outcome === "loss" ? "bg-red-950 text-red-400" : "bg-slate-800 text-slate-500"}`}>

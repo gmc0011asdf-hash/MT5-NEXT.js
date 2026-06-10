@@ -7,7 +7,7 @@
  * PASS / WATCH / WARN / BLOCK
  */
 
-// ─── Types ────────────────────────────────────────────────────────────────────
+// --- Types --------------------------------------------------------------------
 
 export type NewsMatchType =
   | "DIRECT"                  // symbol is literally in finalAffectedSymbols
@@ -68,13 +68,13 @@ export type NewsCommitteeResult = {
   matchedEvents:     MatchedNewsEvent[];
 };
 
-// ─── Major forex pairs for FOREX_GENERAL matching ────────────────────────────
+// --- Major forex pairs for FOREX_GENERAL matching ----------------------------
 
 const MAJOR_FOREX_PAIRS = new Set([
   "EURUSD", "GBPUSD", "USDJPY", "USDCHF", "AUDUSD", "USDCAD", "NZDUSD", "XAUUSD",
 ]);
 
-// ─── B6.2.1: Equity / Sentiment keyword sets ─────────────────────────────────
+// --- B6.2.1: Equity / Sentiment keyword sets ---------------------------------
 
 const TECH_AI_KEYWORDS = [
   "apple", "microsoft", "nvidia", "amazon", "meta ", "tesla", "openai",
@@ -111,7 +111,7 @@ function headlineMatches(headline: string, keywords: string[]): boolean {
   return keywords.some((kw) => text.includes(kw));
 }
 
-// ─── Symbol matching ──────────────────────────────────────────────────────────
+// --- Symbol matching ----------------------------------------------------------
 
 function matchSymbol(
   symbol: string,
@@ -156,7 +156,7 @@ function matchSymbol(
     return { matches: true, matchType: "FOREX_GENERAL" };
   }
 
-  // ── B6.2.1: Equity / Sentiment matching ──────────────────────────────────
+  // -- B6.2.1: Equity / Sentiment matching ----------------------------------
   // Only applies to Crypto (and limited XAUUSD) — NOT FOREX pairs without user override.
 
   // 6. TECH_AI_SENTIMENT: big-tech / AI news → Crypto + weak signal on XAUUSD
@@ -183,7 +183,7 @@ function matchSymbol(
   return { matches: false, matchType: "DIRECT" };
 }
 
-// ─── Per-item verdict (time + impact + match type) ────────────────────────────
+// --- Per-item verdict (time + impact + match type) ----------------------------
 
 function getItemVerdict(
   item:       NewsCommitteeItem,
@@ -208,7 +208,7 @@ function getItemVerdict(
     return "PASS";
   }
 
-  // ── B6.2.1: Equity/Sentiment caps ────────────────────────────────────────
+  // -- B6.2.1: Equity/Sentiment caps ----------------------------------------
 
   // TECH_AI_SENTIMENT: big-tech/AI → Crypto max WARN, XAUUSD max WATCH
   if (matchType === "TECH_AI_SENTIMENT") {
@@ -276,7 +276,7 @@ function getItemVerdict(
   return "PASS";
 }
 
-// ─── Main entry point ─────────────────────────────────────────────────────────
+// --- Main entry point ---------------------------------------------------------
 
 export function analyzeNewsProtectionCommittee(
   items:  NewsCommitteeItem[],
@@ -337,7 +337,7 @@ export function analyzeNewsProtectionCommittee(
     }
   }
 
-  // ── Overall verdict ────────────────────────────────────────────────────────
+  // -- Overall verdict --------------------------------------------------------
   let verdict: NewsCommitteeResult["verdict"];
   if (blockers.length > 0) verdict = "BLOCK";
   else if (warnings.length > 0) verdict = "WARN";
@@ -348,7 +348,7 @@ export function analyzeNewsProtectionCommittee(
     reasons.unshift(`لا أخبار مؤثرة على ${symbol} في آخر 24 ساعة ✓`);
   }
 
-  // ── Score ──────────────────────────────────────────────────────────────────
+  // -- Score ------------------------------------------------------------------
   let score = 90;
   score -= blockers.length * 30;
   score -= warnings.length * 15;

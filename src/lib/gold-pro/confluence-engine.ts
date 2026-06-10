@@ -16,7 +16,7 @@ export function calculateConfluence(input: ConfluenceInput): ConfluenceResult {
   const { indicators, mtf, currentPrice, sessionOk, newsRisk } = input;
   const components: ConfluenceComponent[] = [];
 
-  // ─── 1. EMA21 > EMA50 (وزن 10) ──────────────────────────────────────────
+  // --- 1. EMA21 > EMA50 (وزن 10) ------------------------------------------
   const ema21AboveEma50 = indicators.ema21 > indicators.ema50;
   components.push({
     name: "EMA21 فوق EMA50",
@@ -25,7 +25,7 @@ export function calculateConfluence(input: ConfluenceInput): ConfluenceResult {
     reason: ema21AboveEma50 ? "الاتجاه قصير المدى صاعد" : "الاتجاه قصير المدى هابط",
   });
 
-  // ─── 2. EMA50 > EMA200 (وزن 10) ─────────────────────────────────────────
+  // --- 2. EMA50 > EMA200 (وزن 10) -----------------------------------------
   const ema50AboveEma200 = indicators.ema50 > indicators.ema200;
   components.push({
     name: "EMA50 فوق EMA200",
@@ -34,7 +34,7 @@ export function calculateConfluence(input: ConfluenceInput): ConfluenceResult {
     reason: ema50AboveEma200 ? "الاتجاه متوسط المدى صاعد" : "الاتجاه متوسط المدى هابط",
   });
 
-  // ─── 3. MACD Histogram > 0 (وزن 15) ────────────────────────────────────
+  // --- 3. MACD Histogram > 0 (وزن 15) ------------------------------------
   const macdBullish = indicators.macd.histogram > 0;
   components.push({
     name: "MACD Histogram",
@@ -43,7 +43,7 @@ export function calculateConfluence(input: ConfluenceInput): ConfluenceResult {
     reason: macdBullish ? `MACD +${indicators.macd.histogram.toFixed(2)} — زخم صاعد` : `MACD ${indicators.macd.histogram.toFixed(2)} — زخم هابط`,
   });
 
-  // ─── 4. RSI في منطقة آمنة 40-70 (وزن 10) ───────────────────────────────
+  // --- 4. RSI في منطقة آمنة 40-70 (وزن 10) -------------------------------
   const rsiSafe = indicators.rsi >= 40 && indicators.rsi <= 70;
   components.push({
     name: "RSI منطقة آمنة (40-70)",
@@ -53,7 +53,7 @@ export function calculateConfluence(input: ConfluenceInput): ConfluenceResult {
       indicators.rsi > 70 ? `RSI ${indicators.rsi} — تشبع شراء` : `RSI ${indicators.rsi} — تشبع بيع`,
   });
 
-  // ─── 5. RSI > 50 للاتجاه الصاعد (وزن 10) ───────────────────────────────
+  // --- 5. RSI > 50 للاتجاه الصاعد (وزن 10) -------------------------------
   const rsiAbove50 = indicators.rsi > 50;
   components.push({
     name: "RSI فوق 50",
@@ -62,7 +62,7 @@ export function calculateConfluence(input: ConfluenceInput): ConfluenceResult {
     reason: rsiAbove50 ? "الزخم صاعد" : "الزخم هابط",
   });
 
-  // ─── 6. ADX > 25 اتجاه قوي (وزن 10) ────────────────────────────────────
+  // --- 6. ADX > 25 اتجاه قوي (وزن 10) ------------------------------------
   const adxStrong = indicators.adx.adx >= 25;
   components.push({
     name: "ADX قوة الاتجاه",
@@ -71,7 +71,7 @@ export function calculateConfluence(input: ConfluenceInput): ConfluenceResult {
     reason: adxStrong ? `ADX ${indicators.adx.adx} — اتجاه قوي` : `ADX ${indicators.adx.adx} — سوق جانبي`,
   });
 
-  // ─── 7. السعر فوق BB Middle (وزن 10) ────────────────────────────────────
+  // --- 7. السعر فوق BB Middle (وزن 10) ------------------------------------
   const aboveBBMiddle = currentPrice > indicators.bollingerBands.middle;
   components.push({
     name: "السعر فوق BB Middle",
@@ -80,7 +80,7 @@ export function calculateConfluence(input: ConfluenceInput): ConfluenceResult {
     reason: aboveBBMiddle ? "السعر في النصف العلوي للـ BB" : "السعر في النصف السفلي للـ BB",
   });
 
-  // ─── 8. توافق MTF 3/4 (وزن 15) ─────────────────────────────────────────
+  // --- 8. توافق MTF 3/4 (وزن 15) -----------------------------------------
   const mtfAligned = mtf.bullishCount >= 3;
   components.push({
     name: "توافق MTF",
@@ -89,7 +89,7 @@ export function calculateConfluence(input: ConfluenceInput): ConfluenceResult {
     reason: `${mtf.bullishCount}/4 إطارات صاعدة`,
   });
 
-  // ─── 9. جلسة مناسبة (وزن 5) ─────────────────────────────────────────────
+  // --- 9. جلسة مناسبة (وزن 5) ---------------------------------------------
   components.push({
     name: "جلسة التداول",
     weight: 5,
@@ -97,7 +97,7 @@ export function calculateConfluence(input: ConfluenceInput): ConfluenceResult {
     reason: sessionOk ? "London/NY — سيولة عالية" : "جلسة آسيا — سيولة منخفضة",
   });
 
-  // ─── 10. لا أخبار مؤثرة (وزن 5) ────────────────────────────────────────
+  // --- 10. لا أخبار مؤثرة (وزن 5) ----------------------------------------
   components.push({
     name: "فلتر الأخبار",
     weight: 5,

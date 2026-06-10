@@ -8,7 +8,7 @@ import type {
   SupportResistanceLevels,
 } from "./types";
 
-// ─── EMA ─────────────────────────────────────────────────────────────────────
+// --- EMA ---------------------------------------------------------------------
 
 export function calculateEMA(prices: number[], period: number): number[] {
   if (prices.length < period) return prices.map(() => NaN);
@@ -30,7 +30,7 @@ export function lastEMA(candles: RawCandle[], period: number): number {
   return isNaN(last) ? 0 : last;
 }
 
-// ─── RSI (Wilder) ─────────────────────────────────────────────────────────────
+// --- RSI (Wilder) -------------------------------------------------------------
 
 export function calculateRSI(closes: number[], period = 14): number[] {
   if (closes.length < period + 1) return closes.map(() => NaN);
@@ -58,7 +58,7 @@ export function lastRSI(candles: RawCandle[], period = 14): number {
   return isNaN(last) ? 50 : Math.round(last * 10) / 10;
 }
 
-// ─── ATR (Wilder) ─────────────────────────────────────────────────────────────
+// --- ATR (Wilder) -------------------------------------------------------------
 
 export function calculateATR(candles: RawCandle[], period = 14): number {
   if (candles.length < period + 1) return 0;
@@ -81,7 +81,7 @@ export function calculateATR(candles: RawCandle[], period = 14): number {
   return Math.round(atr * 100) / 100;
 }
 
-// ─── MACD (12, 26, 9) ────────────────────────────────────────────────────────
+// --- MACD (12, 26, 9) --------------------------------------------------------
 
 export function calculateMACD(candles: RawCandle[]): MACDResult {
   const closes = candles.map(c => c.close);
@@ -99,7 +99,7 @@ export function calculateMACD(candles: RawCandle[]): MACDResult {
   return { value, signal, histogram: Math.round((value - signal) * 100) / 100 };
 }
 
-// ─── Bollinger Bands (20, 2σ) ────────────────────────────────────────────────
+// --- Bollinger Bands (20, 2σ) ------------------------------------------------
 
 export function calculateBollingerBands(candles: RawCandle[], period = 20): BollingerBands {
   if (candles.length < period) {
@@ -126,7 +126,7 @@ export function calculateBollingerBands(candles: RawCandle[], period = 20): Boll
   };
 }
 
-// ─── ADX (14) ────────────────────────────────────────────────────────────────
+// --- ADX (14) ----------------------------------------------------------------
 
 export function calculateADX(candles: RawCandle[], period = 14): ADXResult {
   if (candles.length < period * 2) {
@@ -167,7 +167,7 @@ export function calculateADX(candles: RawCandle[], period = 14): ADXResult {
   return { adx, diPlus, diMinus, strength };
 }
 
-// ─── Stochastic RSI ───────────────────────────────────────────────────────────
+// --- Stochastic RSI -----------------------------------------------------------
 
 export function calculateStochRSI(candles: RawCandle[], rsiPeriod = 14, stochPeriod = 14, kPeriod = 3, dPeriod = 3): StochRSIResult {
   const rsiArr = calculateRSI(candles.map(c => c.close), rsiPeriod).filter(v => !isNaN(v));
@@ -197,7 +197,7 @@ export function calculateStochRSI(candles: RawCandle[], rsiPeriod = 14, stochPer
   return { k, d, zone };
 }
 
-// ─── Pivot Points (Floor Method — Daily) ────────────────────────────────────
+// --- Pivot Points (Floor Method — Daily) ------------------------------------
 
 export function calculatePivotPoints(candles: RawCandle[]): PivotPoints {
   if (candles.length === 0) return { r2: 0, r1: 0, pp: 0, s1: 0, s2: 0 };
@@ -213,7 +213,7 @@ export function calculatePivotPoints(candles: RawCandle[]): PivotPoints {
   };
 }
 
-// ─── Fibonacci (Swing H/L من آخر 20 شمعة H4) ────────────────────────────────
+// --- Fibonacci (Swing H/L من آخر 20 شمعة H4) --------------------------------
 
 export function calculateFibonacci(candlesH4: RawCandle[]): FibonacciLevels {
   if (candlesH4.length === 0) return { swingHigh: 0, swingLow: 0, level236: 0, level382: 0, level500: 0, level618: 0, level786: 0 };
@@ -233,7 +233,7 @@ export function calculateFibonacci(candlesH4: RawCandle[]): FibonacciLevels {
   };
 }
 
-// ─── Support & Resistance (من قمم وقيعان H1) ───────────────────────────────
+// --- Support & Resistance (من قمم وقيعان H1) -------------------------------
 
 export function calculateSupportResistance(candlesH1: RawCandle[], currentPrice: number): SupportResistanceLevels {
   const highs = candlesH1.map(c => c.high);

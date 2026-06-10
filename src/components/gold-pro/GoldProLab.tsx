@@ -44,7 +44,7 @@ export function GoldProLab() {
       const currentPrice = tick.ask as number;
       const balance = account?.balance ?? 3000;
 
-      // ─── حساب المؤشرات على H1 ────────────────────────────────────────────
+      // --- حساب المؤشرات على H1 --------------------------------------------
       const ema21 = lastEMA(candlesH1 as RawCandle[], 21);
       const ema50 = lastEMA(candlesH1 as RawCandle[], 50);
       const ema200 = lastEMA(candlesH1 as RawCandle[], 200);
@@ -61,7 +61,7 @@ export function GoldProLab() {
       const fib = calculateFibonacci(candlesH4 as RawCandle[]);
       const sr = calculateSupportResistance(candlesH1 as RawCandle[], currentPrice);
 
-      // ─── MTF ─────────────────────────────────────────────────────────────
+      // --- MTF -------------------------------------------------------------
       const makeTF = (candles: RawCandle[], tf: "M15" | "H1" | "H4" | "D1") => {
         const e21 = lastEMA(candles, 21);
         const e50 = lastEMA(candles, 50);
@@ -78,11 +78,11 @@ export function GoldProLab() {
       const bullishCount = [mtfM15, mtfH1, mtfH4, mtfD1].filter(t => t.bias === "bullish").length;
       const mtf = { m15: mtfM15, h1: mtfH1, h4: mtfH4, d1: mtfD1, bullishCount, alignment: bullishCount * 25 };
 
-      // ─── Session ─────────────────────────────────────────────────────────
+      // --- Session ---------------------------------------------------------
       const utcHour = new Date().getUTCHours();
       const session = detectSession(utcHour);
 
-      // ─── Confluence ───────────────────────────────────────────────────────
+      // --- Confluence -------------------------------------------------------
       const confluence = calculateConfluence({
         indicators: { ema21, ema50, ema200, macd, adx, rsi, stochRsi, atr, bollingerBands: bb, pivotPoints: pivots, fibonacci: fib, supportResistance: sr },
         mtf,
@@ -91,11 +91,11 @@ export function GoldProLab() {
         newsRisk: false, // مرحلة مستقبلية
       });
 
-      // ─── SL/TP + Position Size ────────────────────────────────────────────
+      // --- SL/TP + Position Size --------------------------------------------
       const sltp = calculateSLTP(currentPrice, atr, confluence.signal);
       const positioning = calculatePositionSize(balance, sltp.slDistance);
 
-      // ─── الصفقات المتعددة (H4 Swing + H1 Intraday + M15 Scalp) ──────────
+      // --- الصفقات المتعددة (H4 Swing + H1 Intraday + M15 Scalp) ----------
       const tradeSetups = generateTradeSetups(
         currentPrice,
         balance,
