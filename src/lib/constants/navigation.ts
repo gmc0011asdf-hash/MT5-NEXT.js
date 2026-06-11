@@ -4,9 +4,11 @@ import {
   FileText,
   FlaskConical,
   Globe,
+  History,
   LayoutDashboard,
   Settings,
   Shield,
+  Users,
 } from "lucide-react";
 
 export type NavItem = {
@@ -57,6 +59,7 @@ export const NAV_GROUPS: NavGroup[] = [
     icon:  BookOpen,
     items: [
       { label: "سجل القرارات",             href: "/decision-journal", icon: BookOpen },
+      { label: "سجل الصفقات",              href: "/trade-history",    icon: History  },
       { label: "رادار الأخبار الاقتصادية", href: "/reports",           icon: FileText },
     ],
   },
@@ -66,6 +69,7 @@ export const NAV_GROUPS: NavGroup[] = [
     icon:  Settings,
     items: [
       { label: "الإعدادات المحلية", href: "/settings", icon: Settings },
+      { label: "مشتركو البوت", href: "/telegram-subscribers", icon: Users },
     ],
   },
 ];
