@@ -30,6 +30,8 @@ from sqlalchemy import (
     UniqueConstraint,
     create_engine,
     event,
+    inspect,
+    text,
 )
 from sqlalchemy.orm import Session, declarative_base, sessionmaker
 
@@ -317,6 +319,206 @@ class TripleFirewallSignal(Base):
         }
 
 
+class MT5TradeHistory(Base):
+    """
+    One row per fully-closed MT5 position (deals from history_deals_get
+    grouped by position_id). Built and upserted by
+    mt5_trade_sync.sync_mt5_trades_once().
+
+    A row is inserted only once a position has at least one IN deal and
+    at least one OUT/OUT_BY deal (i.e. it is fully or partially closed).
+    Subsequent partial closes UPDATE close_price/close_time/close_volume/
+    deals_count/profit/commission/swap on the same row -- open_time and
+    matched_signal_id never change after first insert.
+
+    Read-only contract: this table is populated purely from
+    history_deals_get(); nothing here triggers order_send/order_close.
+    """
+
+    __tablename__ = "mt5_trade_history"
+
+    id                          = Column(Integer, primary_key=True, autoincrement=True)
+    position_id                 = Column(Integer, nullable=False, unique=True)
+    symbol                      = Column(String(20), nullable=False)
+    direction                   = Column(String(10), nullable=False)  # BUY | SELL
+    volume                      = Column(Float, nullable=False)
+    open_price                  = Column(Float, nullable=False)
+    open_time                   = Column(DateTime(timezone=True), nullable=False)
+    open_deal_ticket            = Column(Integer, nullable=False)
+    close_price                 = Column(Float, nullable=False)
+    close_time                  = Column(DateTime(timezone=True), nullable=False)
+    close_deal_ticket           = Column(Integer, nullable=False)
+    close_volume                = Column(Float, nullable=False, default=0.0)
+    deals_count                 = Column(Integer, nullable=False, default=0)
+    profit                      = Column(Float, nullable=False, default=0.0)
+    commission                  = Column(Float, nullable=False, default=0.0)
+    swap                        = Column(Float, nullable=False, default=0.0)
+    comment                     = Column(String(255), nullable=True)
+    magic                       = Column(Integer, nullable=True)
+    matched_signal_id           = Column(Integer, nullable=True)
+    matched_time_delta_seconds  = Column(Integer, nullable=True)
+    created_at                  = Column(DateTime(timezone=True), nullable=False, default=_utcnow)
+    updated_at                  = Column(DateTime(timezone=True), nullable=False, default=_utcnow, onupdate=_utcnow)
+
+    __table_args__ = (
+        Index("ix_mth_position_id", "position_id", unique=True),
+        Index("ix_mth_symbol_open_time", "symbol", "open_time"),
+    )
+
+    def to_dict(self) -> dict:
+        return {
+            "id":                      self.id,
+            "positionId":              self.position_id,
+            "symbol":                  self.symbol,
+            "direction":               self.direction,
+            "volume":                  self.volume,
+            "openPrice":               self.open_price,
+            "openTime":                self.open_time.isoformat() if self.open_time else None,
+            "openDealTicket":          self.open_deal_ticket,
+            "closePrice":              self.close_price,
+            "closeTime":               self.close_time.isoformat() if self.close_time else None,
+            "closeDealTicket":         self.close_deal_ticket,
+            "closeVolume":             self.close_volume,
+            "dealsCount":              self.deals_count,
+            "profit":                  self.profit,
+            "commission":              self.commission,
+            "swap":                    self.swap,
+            "comment":                 self.comment,
+            "magic":                   self.magic,
+            "matchedSignalId":         self.matched_signal_id,
+            "matchedTimeDeltaSeconds": self.matched_time_delta_seconds,
+            "createdAt":               self.created_at.isoformat() if self.created_at else None,
+            "updatedAt":               self.updated_at.isoformat() if self.updated_at else None,
+        }
+
+
+class MT5OpenPosition(Base):
+    """
+    Current snapshot of open MT5 positions (positions_get()).
+    Upserted by ticket every sync cycle; rows for tickets no longer open
+    are deleted (the position has been closed and will appear in
+    mt5_trade_history once history_deals_get reflects it).
+
+    Read-only contract: this table is populated purely from
+    positions_get(); nothing here triggers order_send/order_close/order_modify.
+    """
+
+    __tablename__ = "mt5_open_positions"
+
+    id                          = Column(Integer, primary_key=True, autoincrement=True)
+    ticket                      = Column(Integer, nullable=False, unique=True)
+    symbol                      = Column(String(20), nullable=False)
+    direction                   = Column(String(10), nullable=False)  # BUY | SELL
+    volume                      = Column(Float, nullable=False)
+    open_price                  = Column(Float, nullable=False)
+    open_time                   = Column(DateTime(timezone=True), nullable=False)
+    current_price               = Column(Float, nullable=False)
+    sl                          = Column(Float, nullable=True)
+    tp                          = Column(Float, nullable=True)
+    profit                      = Column(Float, nullable=False, default=0.0)
+    comment                     = Column(String(255), nullable=True)
+    matched_signal_id           = Column(Integer, nullable=True)
+    matched_time_delta_seconds  = Column(Integer, nullable=True)
+    updated_at                  = Column(DateTime(timezone=True), nullable=False, default=_utcnow, onupdate=_utcnow)
+
+    __table_args__ = (
+        Index("ix_mop_ticket", "ticket", unique=True),
+        Index("ix_mop_symbol", "symbol"),
+    )
+
+    def to_dict(self) -> dict:
+        return {
+            "id":                      self.id,
+            "ticket":                  self.ticket,
+            "symbol":                  self.symbol,
+            "direction":               self.direction,
+            "volume":                  self.volume,
+            "openPrice":               self.open_price,
+            "openTime":                self.open_time.isoformat() if self.open_time else None,
+            "currentPrice":            self.current_price,
+            "sl":                      self.sl,
+            "tp":                      self.tp,
+            "profit":                  self.profit,
+            "comment":                 self.comment,
+            "matchedSignalId":         self.matched_signal_id,
+            "matchedTimeDeltaSeconds": self.matched_time_delta_seconds,
+            "updatedAt":               self.updated_at.isoformat() if self.updated_at else None,
+        }
+
+
+class TelegramSubscriber(Base):
+    """
+    A user who has sent /start to the analytical Telegram bot and opted in
+    to receive approved-signal recommendations (additive to the legacy
+    single-chat alert configured via system_config.telegram_chat_id).
+
+    Rows are never deleted: /stop sets is_active=0 so history (and the
+    ability to re-subscribe with /start) is preserved.
+    """
+
+    __tablename__ = "telegram_subscribers"
+
+    id                = Column(Integer, primary_key=True, autoincrement=True)
+    telegram_user_id  = Column(String(32), nullable=False)
+    chat_id           = Column(String(32), nullable=False, unique=True)
+    username          = Column(String(64), nullable=True)
+    first_name        = Column(String(128), nullable=True)
+    last_name         = Column(String(128), nullable=True)
+    is_active         = Column(Integer, nullable=False, default=1)  # 0/1 boolean
+    is_blocked        = Column(Integer, nullable=False, default=0)  # 0/1 boolean
+    created_at        = Column(DateTime(timezone=True), nullable=False, default=_utcnow)
+    updated_at        = Column(DateTime(timezone=True), nullable=False, default=_utcnow, onupdate=_utcnow)
+    last_start_at     = Column(DateTime(timezone=True), nullable=True)
+
+    def to_dict(self) -> dict:
+        return {
+            "id":              self.id,
+            "telegramUserId":  self.telegram_user_id,
+            "chatId":          self.chat_id,
+            "username":        self.username,
+            "firstName":       self.first_name,
+            "lastName":        self.last_name,
+            "isActive":        bool(self.is_active),
+            "isBlocked":       bool(self.is_blocked),
+            "createdAt":       self.created_at.isoformat() if self.created_at else None,
+            "updatedAt":       self.updated_at.isoformat() if self.updated_at else None,
+            "lastStartAt":     self.last_start_at.isoformat() if self.last_start_at else None,
+        }
+
+
+class TelegramRecommendationDelivery(Base):
+    """
+    Audit log of recommendation broadcasts to subscribers.
+
+    One row per (recommendation_id, chat_id) attempt. Used to avoid sending
+    the same recommendation twice to the same subscriber and to record
+    per-subscriber failures without affecting other subscribers.
+    """
+
+    __tablename__ = "telegram_recommendation_deliveries"
+
+    id                 = Column(Integer, primary_key=True, autoincrement=True)
+    recommendation_id  = Column(String(128), nullable=False)
+    chat_id            = Column(String(32), nullable=False)
+    sent_at            = Column(DateTime(timezone=True), nullable=False, default=_utcnow)
+    status             = Column(String(16), nullable=False)  # "sent" | "failed"
+    error_message      = Column(Text, nullable=True)
+
+    __table_args__ = (
+        Index("ix_trd_recommendation_chat", "recommendation_id", "chat_id"),
+    )
+
+    def to_dict(self) -> dict:
+        return {
+            "id":               self.id,
+            "recommendationId": self.recommendation_id,
+            "chatId":           self.chat_id,
+            "sentAt":           self.sent_at.isoformat() if self.sent_at else None,
+            "status":           self.status,
+            "errorMessage":     self.error_message,
+        }
+
+
 class SystemConfig(Base):
     """
     Key-value configuration store for the analytical engine.
@@ -365,6 +567,25 @@ class SystemConfig(Base):
 # Public interface
 # ---------------------------------------------------------------------------
 
+def _ensure_telegram_subscriber_columns() -> None:
+    """
+    Base.metadata.create_all() only creates missing TABLES, not missing
+    COLUMNS on tables that already exist. telegram_subscribers was created
+    by an earlier stage and already has rows, so a new column added to the
+    model needs an explicit ALTER TABLE here. Idempotent and additive --
+    existing rows get the column's DEFAULT value, nothing is dropped.
+    """
+    inspector = inspect(engine)
+    if "telegram_subscribers" not in inspector.get_table_names():
+        return
+    columns = {col["name"] for col in inspector.get_columns("telegram_subscribers")}
+    if "is_blocked" not in columns:
+        with engine.begin() as conn:
+            conn.execute(text(
+                "ALTER TABLE telegram_subscribers ADD COLUMN is_blocked INTEGER NOT NULL DEFAULT 0"
+            ))
+
+
 def init_db() -> None:
     """
     Create all tables that do not yet exist.
@@ -372,6 +593,7 @@ def init_db() -> None:
     Existing data is never dropped or altered.
     """
     Base.metadata.create_all(bind=engine)
+    _ensure_telegram_subscriber_columns()
 
 
 def get_db() -> Generator[Session, None, None]:
