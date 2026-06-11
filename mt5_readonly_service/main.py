@@ -2307,6 +2307,111 @@ def api_trade_history_sync_now(db: Session = Depends(get_db)) -> JSONResponse:
     return Utf8JsonResponse(content={"ok": True, **counters})
 
 
+def _signal_summary(db: Session, signal_id: int | None, time_delta_seconds: int | None) -> dict | None:
+    """Return a small summary of the matched TripleFirewallSignal, or None
+    if there is no match (manual trade)."""
+    if signal_id is None:
+        return None
+    signal = db.query(TripleFirewallSignal).filter(TripleFirewallSignal.id == signal_id).first()
+    if signal is None:
+        return None
+    return {
+        "id": signal.id,
+        "confluenceLevel": signal.confluence_level,
+        "signalStrength": signal.signal_strength,
+        "sl": signal.sl,
+        "tp": signal.tp,
+        "rr": signal.rr,
+        "timestamp": signal.timestamp.isoformat() if signal.timestamp else None,
+        "matchedTimeDeltaSeconds": time_delta_seconds,
+    }
+
+
+def _trade_history_with_signal(db: Session, row: MT5TradeHistory) -> dict:
+    data = row.to_dict()
+    data["matchedSignal"] = _signal_summary(db, row.matched_signal_id, row.matched_time_delta_seconds)
+    return data
+
+
+def _open_position_with_signal(db: Session, row: MT5OpenPosition) -> dict:
+    data = row.to_dict()
+    data["matchedSignal"] = _signal_summary(db, row.matched_signal_id, row.matched_time_delta_seconds)
+    return data
+
+
+@app.get("/api/trade-history/closed")
+def api_trade_history_closed(
+    days: int = Query(default=30, ge=1, le=365),
+    symbol: str | None = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    db: Session = Depends(get_db),
+) -> JSONResponse:
+    """
+    سجل الصفقات المغلقة (مجمّعة حسب position_id) مع بيانات إشارة النظام
+    المطابقة (إن وُجدت). قراءة فقط -- ليست توصية مالية.
+    """
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    query = db.query(MT5TradeHistory).filter(MT5TradeHistory.open_time >= cutoff)
+    if symbol and symbol.strip():
+        query = query.filter(MT5TradeHistory.symbol == symbol.strip())
+
+    total = query.count()
+    rows = (
+        query.order_by(MT5TradeHistory.close_time.desc())
+        .offset(offset)
+        .limit(limit)
+        .all()
+    )
+    trades = [_trade_history_with_signal(db, row) for row in rows]
+    return Utf8JsonResponse(content={"ok": True, "total": total, "trades": trades})
+
+
+@app.get("/api/trade-history/open")
+def api_trade_history_open(db: Session = Depends(get_db)) -> JSONResponse:
+    """
+    لقطة الصفقات المفتوحة حالياً مع بيانات إشارة النظام المطابقة (إن وُجدت).
+    قراءة فقط -- ليست توصية مالية.
+    """
+    rows = db.query(MT5OpenPosition).order_by(MT5OpenPosition.open_time.desc()).all()
+    positions = [_open_position_with_signal(db, row) for row in rows]
+    return Utf8JsonResponse(content={"ok": True, "total": len(positions), "positions": positions})
+
+
+@app.get("/api/trade-history/summary")
+def api_trade_history_summary(
+    days: int = Query(default=30, ge=1, le=365),
+    db: Session = Depends(get_db),
+) -> JSONResponse:
+    """
+    إحصاءات معلوماتية لقياس دقة التوصيات (مرتبط بإشارة مقابل غير مرتبط).
+    قراءة فقط -- ليست توصية مالية، ولا تُستخدم لتعديل الاستراتيجية تلقائياً.
+    """
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    rows = db.query(MT5TradeHistory).filter(MT5TradeHistory.open_time >= cutoff).all()
+
+    matched = [r for r in rows if r.matched_signal_id is not None]
+    unmatched = [r for r in rows if r.matched_signal_id is None]
+
+    def _win_rate(group: list[MT5TradeHistory]) -> float | None:
+        if not group:
+            return None
+        wins = sum(1 for r in group if r.profit > 0)
+        return round(wins / len(group) * 100, 2)
+
+    return Utf8JsonResponse(content={
+        "ok": True,
+        "days": days,
+        "totalTrades": len(rows),
+        "matchedTrades": len(matched),
+        "unmatchedTrades": len(unmatched),
+        "overallWinRatePct": _win_rate(rows),
+        "matchedWinRatePct": _win_rate(matched),
+        "unmatchedWinRatePct": _win_rate(unmatched),
+        "netProfit": round(sum(r.profit for r in rows), 2),
+    })
+
+
 # ---------------------------------------------------------------------------
 # System Configuration endpoints (GET/POST /api/config)
 # ---------------------------------------------------------------------------
