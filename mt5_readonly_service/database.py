@@ -15,6 +15,7 @@ All writes are analytical records (signals, journal entries, market data).
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Generator
@@ -443,6 +444,62 @@ class MT5OpenPosition(Base):
             "matchedSignalId":         self.matched_signal_id,
             "matchedTimeDeltaSeconds": self.matched_time_delta_seconds,
             "updatedAt":               self.updated_at.isoformat() if self.updated_at else None,
+        }
+
+
+class EconomicNewsEvent(Base):
+    """
+    Organized semi-dynamic economic calendar event (News Radar -- Phase 1).
+
+    Rows are generated from static NewsEventTemplate definitions in
+    economic_calendar.py (no external API, no live news feed). `actual`
+    always remains None until a real news source is connected in a future
+    phase -- this is disclosed in the UI.
+
+    Read-only contract: this table is populated purely by
+    economic_calendar.sync_calendar_events(); nothing here triggers
+    order_send/order_close/order_modify.
+    """
+
+    __tablename__ = "economic_news_events"
+
+    id                  = Column(Integer, primary_key=True, autoincrement=True)
+    source              = Column(String(50), nullable=False, default="organized_calendar")
+    event_id            = Column(String(100), nullable=False, unique=True)
+    title               = Column(String(255), nullable=False)
+    currency            = Column(String(10), nullable=False)
+    impact              = Column(String(10), nullable=False)  # high | medium | low
+    event_time_utc      = Column(DateTime(timezone=True), nullable=False)
+    event_time_baghdad  = Column(DateTime(timezone=True), nullable=False)
+    forecast            = Column(String(50), nullable=True)
+    previous            = Column(String(50), nullable=True)
+    actual              = Column(String(50), nullable=True)
+    affected_symbols    = Column(Text, nullable=False, default="[]")  # JSON-encoded list[str]
+    status              = Column(String(20), nullable=False, default="upcoming")
+    created_at          = Column(DateTime(timezone=True), nullable=False, default=_utcnow)
+    updated_at          = Column(DateTime(timezone=True), nullable=False, default=_utcnow, onupdate=_utcnow)
+
+    __table_args__ = (
+        Index("ix_ene_event_id", "event_id", unique=True),
+        Index("ix_ene_event_time_utc", "event_time_utc"),
+        Index("ix_ene_currency", "currency"),
+    )
+
+    def to_dict(self) -> dict:
+        return {
+            "id":               self.id,
+            "source":           self.source,
+            "eventId":          self.event_id,
+            "title":            self.title,
+            "currency":         self.currency,
+            "impact":           self.impact,
+            "eventTimeUtc":     self.event_time_utc.isoformat() if self.event_time_utc else None,
+            "eventTimeBaghdad": self.event_time_baghdad.isoformat() if self.event_time_baghdad else None,
+            "forecast":         self.forecast,
+            "previous":         self.previous,
+            "actual":           self.actual,
+            "affectedSymbols":  json.loads(self.affected_symbols or "[]"),
+            "status":           self.status,
         }
 
 
