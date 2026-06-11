@@ -16,6 +16,7 @@ import asyncio
 import json
 import logging
 import os
+import socket
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -27,9 +28,12 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from agents import CouncilEngine, CouncilVerdict, calculate_position_size, candles_to_dataframe, get_market_session
-from database import DecisionJournal, GoldProAnalysis, SessionLocal, StrategySignal, SystemConfig, TripleFirewallSignal, get_db, init_db
+from database import DecisionJournal, GoldProAnalysis, MT5OpenPosition, MT5TradeHistory, SessionLocal, StrategySignal, SystemConfig, TelegramSubscriber, TripleFirewallSignal, get_db, init_db
+from telegram_subscribers import block_subscriber, run_telegram_bot_polling, unblock_subscriber
+from mt5_trade_sync import run_mt5_trade_sync, sync_mt5_trades_once
 from okx_bridge import (
     DEFAULT_OKX_SYMBOLS,
+    OKX_BAR_DISPLAY,
     fetch_okx_candles,
     fetch_okx_tickers,
     okx_candles_to_dataframe,
@@ -165,7 +169,7 @@ def _symbols_from_env() -> list[str]:
     return parts or list(_DEFAULT_SYMBOLS)
 
 
-def _get_visible_mt5_symbols(limit: int = 30) -> list[str]:
+def _get_visible_mt5_symbols(limit: int = 200) -> list[str]:
     """
     Returns the symbol names currently visible in the connected terminal's
     Market Watch (any account type — demo or real). Caller must already
@@ -485,6 +489,7 @@ def _sync_scan_cycle(
     symbols: list[str],
     timeframe: str,
     candle_count: int,
+    send_alerts: bool = True,
 ) -> list[CouncilVerdict]:
     """
     Synchronous scan cycle: MT5 candle fetch + agent analysis + SQLite save.
@@ -500,7 +505,16 @@ def _sync_scan_cycle(
         return approved
 
     try:
-        scan_symbols = _get_visible_mt5_symbols() or symbols
+        # رصيد الحساب الحي يُستخدم لحساب اللوت/المخاطرة/الربح المتوقع
+        account_balance: float | None = None
+        try:
+            account_info = _account_payload()
+            if account_info.get("connected"):
+                account_balance = account_info.get("balance")
+        except Exception as acc_exc:
+            logger.warning("agent_scan: failed to read account balance -- %s", acc_exc)
+
+        scan_symbols = symbols
         for symbol in scan_symbols:
             try:
                 raw = _fetch_candles_for_agent(symbol, timeframe, candle_count)
@@ -512,9 +526,26 @@ def _sync_scan_cycle(
                 if df.empty:
                     continue
 
+                # خصائص الرمز من MT5 لحساب لوت قياسي صحيح (يأخذ حجم العقد بعين الاعتبار)
+                symbol_info: dict | None = None
+                try:
+                    info = mt5.symbol_info(symbol)
+                    if info is not None:
+                        symbol_info = {
+                            "trade_tick_value": float(info.trade_tick_value),
+                            "trade_tick_size": float(info.trade_tick_size),
+                            "point":           float(info.point),
+                            "volume_min":      float(info.volume_min),
+                            "volume_max":      float(info.volume_max),
+                            "volume_step":     float(info.volume_step),
+                            "digits":          int(info.digits),
+                        }
+                except Exception as info_exc:
+                    logger.warning("agent_scan: failed to read symbol_info for %s -- %s", symbol, info_exc)
+
                 db = SessionLocal()
                 try:
-                    verdict = engine.analyze_market(symbol, df, db)
+                    verdict = engine.analyze_market(symbol, df, db, account_balance, symbol_info, send_alert=send_alerts)
                     db.commit()
                 except Exception as db_exc:
                     db.rollback()
@@ -523,7 +554,7 @@ def _sync_scan_cycle(
                 finally:
                     db.close()
 
-                if verdict.approved and verdict.direction is not None:
+                if verdict.direction is not None or not verdict.approved:
                     approved.append(verdict)
 
             except Exception as sym_exc:
@@ -539,10 +570,12 @@ def _sync_scan_cycle(
 
 
 def _sync_scan_okx_cycle(
-    engine:  CouncilEngine,
-    symbols: list[str],
-    bar:     str,
-    limit:   int,
+    engine:          CouncilEngine,
+    symbols:         list[str],
+    bar:             str,
+    limit:           int,
+    account_balance: float | None = None,
+    send_alerts:     bool = True,
 ) -> list[CouncilVerdict]:
     """
     OKX scan cycle: fetch public candles -> agent council analysis -> SQLite save.
@@ -550,6 +583,10 @@ def _sync_scan_okx_cycle(
     Runs in a thread pool (via asyncio.to_thread) -- no event loop needed.
     No MT5 connection required; uses OKX public REST API only.
     No trading execution -- informational analysis and storage only.
+
+    account_balance : رأس مال OKX المُدخل يدوياً من المستخدم (system_config:
+    okx_account_balance_usd) — يُستخدم لحساب اللوت/المخاطرة/الربح المتوقع
+    بدلاً من القيمة الافتراضية $10,000.
     """
     approved: list[CouncilVerdict] = []
 
@@ -566,7 +603,7 @@ def _sync_scan_okx_cycle(
 
             db = SessionLocal()
             try:
-                verdict = engine.analyze_market(inst_id, df, db)
+                verdict = engine.analyze_market(inst_id, df, db, account_balance, send_alert=send_alerts)
                 db.commit()
             except Exception as db_exc:
                 db.rollback()
@@ -575,7 +612,7 @@ def _sync_scan_okx_cycle(
             finally:
                 db.close()
 
-            if verdict.approved and verdict.direction is not None:
+            if verdict.direction is not None or not verdict.approved:
                 approved.append(verdict)
 
         except Exception as exc:
@@ -599,22 +636,58 @@ async def run_live_agent_council_scan() -> None:
     mt5_symbols = _symbols_from_env()
     okx_symbols = _OKX_SCAN_SYMBOLS
 
+    # Mapping timeframe strings to seconds
+    tf_mapping = {"M1": 60, "M5": 300, "M15": 900, "M30": 1800, "H1": 3600, "H4": 14400, "D1": 86400}
+    tf_sec = tf_mapping.get(_AGENT_SCAN_TIMEFRAME.upper(), _AGENT_SCAN_INTERVAL)
+
     logger.info(
-        "agent_scan: loop started -- interval=%ds mt5=%s okx=%s bar=%s",
-        _AGENT_SCAN_INTERVAL, mt5_symbols, okx_symbols, _AGENT_SCAN_TIMEFRAME,
+        "agent_scan: loop started -- synced to %s (%ds) mt5=%s okx=%s",
+        _AGENT_SCAN_TIMEFRAME, tf_sec, mt5_symbols, okx_symbols,
     )
 
+    import time
     while True:
-        await asyncio.sleep(_AGENT_SCAN_INTERVAL)
+        now = time.time()
+        # Sleep until the exact next boundary of the timeframe + 2 seconds to ensure exchange candle is fully closed
+        sleep_sec = tf_sec - (now % tf_sec) + 2
+        
+        # If the sleep is unusually large (e.g. D1 is 24 hours), we could cap it or just sleep.
+        # It's better to just sleep the correct exact time.
+        logger.debug(f"agent_scan: sleeping for {sleep_sec:.1f}s until next candle close")
+        await asyncio.sleep(sleep_sec)
+
+        mt5_symbols_to_scan = mt5_symbols
+        init_ok, _init_err = _safe_mt5_init()
+        if init_ok:
+            try:
+                mt5_symbols_to_scan = _get_visible_mt5_symbols() or mt5_symbols
+            finally:
+                mt5.shutdown()
+
+        # رأس مال OKX المُدخل يدوياً من الإعدادات (افتراضي $10,000)
+        okx_balance_db = SessionLocal()
+        try:
+            row = okx_balance_db.query(SystemConfig).filter(
+                SystemConfig.key == "okx_account_balance_usd"
+            ).first()
+            okx_account_balance = float(row.value) if row and row.value else float(_CONFIG_DEFAULTS["okx_account_balance_usd"])
+        except Exception:
+            okx_account_balance = float(_CONFIG_DEFAULTS["okx_account_balance_usd"])
+        finally:
+            okx_balance_db.close()
 
         # Run MT5 and OKX scans concurrently in separate thread-pool workers.
+        # send_alerts=False: this broad scan only feeds the ranked-candidates
+        # screener (triple_firewall_signals); Telegram alerts are sent only
+        # by run_watchlist_multi_timeframe_scan for user-selected symbols.
         results = await asyncio.gather(
             asyncio.to_thread(
                 _sync_scan_cycle,
                 engine,
-                mt5_symbols,
+                mt5_symbols_to_scan,
                 _AGENT_SCAN_TIMEFRAME,
                 _AGENT_SCAN_CANDLE_COUNT,
+                False,
             ),
             asyncio.to_thread(
                 _sync_scan_okx_cycle,
@@ -622,6 +695,8 @@ async def run_live_agent_council_scan() -> None:
                 okx_symbols,
                 _OKX_SCAN_BAR,
                 _AGENT_SCAN_CANDLE_COUNT,
+                okx_account_balance,
+                False,
             ),
             return_exceptions=True,
         )
@@ -643,9 +718,14 @@ async def run_live_agent_council_scan() -> None:
                 "symbol":          verdict.symbol,
                 "direction":       verdict.direction,
                 "signal_strength": round(verdict.signal_strength, 4),
+                "entry":           verdict.entry,
                 "sl":              verdict.sl,
                 "tp":              verdict.tp,
                 "atr":             round(verdict.atr, 5) if verdict.atr else None,
+                "risk_amount":     verdict.risk_amount,
+                "profit_amount":   verdict.profit_amount,
+                "lot_size":        verdict.lot_size,
+                "duration":        verdict.duration,
                 "votes": [
                     {
                         "agent":      v.agent,
@@ -697,6 +777,9 @@ async def _startup() -> None:
     """
     init_db()
     asyncio.create_task(run_live_agent_council_scan())
+    asyncio.create_task(run_watchlist_multi_timeframe_scan())
+    asyncio.create_task(run_telegram_bot_polling())
+    asyncio.create_task(run_mt5_trade_sync())
 
 
 @app.post("/connect")
@@ -1917,6 +2000,26 @@ def api_get_gold_pro_accuracy_stats(
     )
 
 
+def _diagnose_telegram_dns(host: str = "api.telegram.org", port: int = 443) -> str | None:
+    """
+    Best-effort connectivity hint for Telegram failures.
+    Returns a short Arabic diagnostic string, or None if everything looks reachable.
+    Never raises — used only to enrich error messages.
+    """
+    try:
+        socket.getaddrinfo(host, port)
+    except OSError:
+        return f"تعذّر تحويل (DNS) العنوان {host} — تحقق من إعدادات DNS/الشبكة"
+
+    try:
+        with socket.create_connection((host, port), timeout=5.0):
+            pass
+    except OSError:
+        return f"تم تحويل (DNS) العنوان {host} لكن الاتصال بالمنفذ {port} محظور — تحقق من جدار الحماية أو مضاد الفيروسات"
+
+    return None
+
+
 @app.post("/api/telegram/test")
 def api_telegram_test(db: Session = Depends(get_db)) -> JSONResponse:
     """
@@ -2004,6 +2107,206 @@ def api_telegram_test(db: Session = Depends(get_db)) -> JSONResponse:
         )
 
 
+@app.post("/api/telegram/test-connections")
+def api_telegram_test_connections(db: Session = Depends(get_db)) -> JSONResponse:
+    """
+    يفحص اتصال MT5 و OKX ثم يرسل عبر Telegram:
+      1) رسالة حالة الاتصال للمنصتين.
+      2) رسالة صفقة نموذجية [تجريبي] بنفس تنسيق التنبيهات الحقيقية.
+    Read-only -- لا يتم فتح أو تعديل أي صفقة.
+    """
+    import requests as _req
+
+    def _get_cred(key: str, env_key: str) -> str | None:
+        row = db.query(SystemConfig).filter(SystemConfig.key == key).first()
+        if row and row.value:
+            return row.value
+        return os.environ.get(env_key)
+
+    token     = _get_cred("telegram_bot_token", "TELEGRAM_BOT_TOKEN")
+    chat_id   = _get_cred("telegram_chat_id",   "TELEGRAM_CHAT_ID")
+    proxy_url = _get_cred("telegram_proxy_url", "TELEGRAM_PROXY_URL")
+
+    if not token or not chat_id:
+        return Utf8JsonResponse(
+            status_code=503,
+            content={"ok": False, "detail": "Telegram credentials not configured"},
+        )
+
+    proxies = {"https": proxy_url, "http": proxy_url} if proxy_url else None
+
+    # -- 1) فحص اتصال MT5 -----------------------------------------------
+    mt5_status: dict[str, Any] = {"connected": False}
+    init_ok, init_err = _safe_mt5_init()
+    if init_ok:
+        try:
+            account = _account_payload()
+            if account.get("connected"):
+                mt5_status = {
+                    "connected": True,
+                    "login":   account.get("login"),
+                    "server":  account.get("server"),
+                    "balance": account.get("balance"),
+                    "currency": account.get("currency"),
+                }
+            else:
+                mt5_status = {"connected": False, "error": account.get("error")}
+        finally:
+            mt5.shutdown()
+    else:
+        mt5_status = {"connected": False, "error": init_err}
+
+    # -- 2) فحص اتصال OKX (بيانات عامة فقط) -------------------------------
+    okx_status: dict[str, Any] = {"connected": False}
+    try:
+        tickers = fetch_okx_tickers(["BTC-USDT"])
+        if tickers:
+            okx_status = {"connected": True, "symbol": tickers[0]["symbol"], "last": tickers[0]["last"]}
+        else:
+            okx_status = {"connected": False, "error": "تعذّر جلب بيانات OKX العامة"}
+    except Exception as exc:
+        okx_status = {"connected": False, "error": str(exc)}
+
+    baghdad_time = datetime.now(timezone.utc) + timedelta(hours=3)
+    time_str = baghdad_time.strftime("%I:%M %p").lstrip("0") + " بتوقيت بغداد"
+
+    mt5_line = (
+        f"🟢 MT5: متصل — الحساب {mt5_status.get('login')} / {mt5_status.get('server')} "
+        f"(الرصيد: {mt5_status.get('balance')} {mt5_status.get('currency')})"
+        if mt5_status.get("connected")
+        else f"🔴 MT5: غير متصل — {mt5_status.get('error') or 'غير معروف'}"
+    )
+    okx_line = (
+        f"🟢 OKX: متصل — {okx_status.get('symbol')} = ${okx_status.get('last')}"
+        if okx_status.get("connected")
+        else f"🔴 OKX: غير متصل — {okx_status.get('error') or 'غير معروف'}"
+    )
+
+    status_text = (
+        f"━━━━━━━━━━━━━━━━━━━\n"
+        f"📡 رسالة اختبار اتصال المنصات\n"
+        f"──────────────────\n"
+        f"{mt5_line}\n"
+        f"{okx_line}\n"
+        f"──────────────────\n"
+        f"⏰ وقت الفحص: {time_str}\n"
+        f"\n"
+        f"تحليل معلوماتي مؤسسي — ليس توصية مالية"
+    )
+
+    demo_text = (
+        f"━━━━━━━━━━━━━━━━━━━\n"
+        f"[تجريبي] نموذج تنسيق إشارة — لا يمثل توصية فعلية\n"
+        f"🪙 الزوج: GBPUSD  —  1h\n"
+        f"🔴 الإشارة: بيع SELL   |   القوة: متوسطة ⚡️⚡️\n"
+        f"──────────────────\n"
+        f"📥 سعر الدخول: <code>1.33956</code>\n"
+        f"🛑 وقف الخسارة (SL): <code>1.34151</code>\n"
+        f"🏆 الهدف الذكي (TP): <code>1.33565</code>\n"
+        f"──────────────────\n"
+        f"💰 حجم اللوت/العقد: <code>0.44</code>\n"
+        f"⚠️ المبلغ المعرض للمخاطرة: 2.0% (≈ $71.89 من رصيد المنصة الحي)\n"
+        f"🎯 الربح المتوقع: $143.78\n"
+        f"⏳ مدة الصفقة المتوقعة: 4 إلى 12 ساعة\n"
+        f"──────────────────\n"
+        f"⏰ وقت صدور الإشارة: {time_str}\n"
+        f"\n"
+        f"[تجريبي] تحليل معلوماتي مؤسسي — ليس توصية مالية"
+    )
+
+    sent: dict[str, bool] = {"status_message": False, "demo_message": False}
+    errors: dict[str, str] = {}
+
+    for label, text in (("status_message", status_text), ("demo_message", demo_text)):
+        try:
+            resp = _req.post(
+                f"https://api.telegram.org/bot{token}/sendMessage",
+                json={"chat_id": chat_id, "text": text, "parse_mode": "HTML"},
+                timeout=15.0,
+                proxies=proxies,
+            )
+            if resp.ok:
+                sent[label] = True
+            else:
+                try:
+                    err_json = resp.json()
+                    errors[label] = err_json.get("description") or resp.text[:200]
+                except ValueError:
+                    errors[label] = resp.text[:200]
+        except Exception as exc:
+            errors[label] = str(exc)
+
+    return Utf8JsonResponse(
+        content={
+            "ok": all(sent.values()),
+            "mt5":  mt5_status,
+            "okx":  okx_status,
+            "sent": sent,
+            "errors": errors,
+        }
+    )
+
+
+@app.get("/api/telegram/subscribers")
+def api_telegram_subscribers(db: Session = Depends(get_db)) -> JSONResponse:
+    """
+    قائمة كل المشتركين في بوت التوصيات (نشط/متوقف/محظور) + عدادات إجمالية.
+    قراءة فقط -- لا تنفيذ تداول، لا إرسال رسائل.
+    """
+    rows = db.query(TelegramSubscriber).order_by(TelegramSubscriber.updated_at.desc()).all()
+    subscribers = [row.to_dict() for row in rows]
+    active = sum(1 for s in subscribers if s["isActive"])
+    blocked = sum(1 for s in subscribers if s["isBlocked"])
+    return Utf8JsonResponse(content={
+        "ok": True,
+        "total": len(subscribers),
+        "active": active,
+        "blocked": blocked,
+        "subscribers": subscribers,
+    })
+
+
+class TelegramSubscriberAction(BaseModel):
+    chatId: str
+
+
+@app.post("/api/telegram/subscribers/block")
+def api_telegram_subscribers_block(body: TelegramSubscriberAction, db: Session = Depends(get_db)) -> JSONResponse:
+    """
+    حظر مشترك: يوقف إرسال التوصيات إليه فوراً (is_active=0) ويمنعه من
+    إعادة الاشتراك عبر /start حتى يُلغى الحظر. قراءة/تحكم فقط.
+    """
+    row = db.query(TelegramSubscriber).filter(TelegramSubscriber.chat_id == body.chatId).first()
+    if row is None:
+        return Utf8JsonResponse(status_code=404, content={"ok": False, "detail": "subscriber not found"})
+    block_subscriber(db, body.chatId)
+    return Utf8JsonResponse(content={"ok": True})
+
+
+@app.post("/api/telegram/subscribers/unblock")
+def api_telegram_subscribers_unblock(body: TelegramSubscriberAction, db: Session = Depends(get_db)) -> JSONResponse:
+    """
+    إلغاء حظر مشترك. لا يعيد التفعيل تلقائياً -- يجب أن يرسل /start من جديد.
+    قراءة/تحكم فقط.
+    """
+    row = db.query(TelegramSubscriber).filter(TelegramSubscriber.chat_id == body.chatId).first()
+    if row is None:
+        return Utf8JsonResponse(status_code=404, content={"ok": False, "detail": "subscriber not found"})
+    unblock_subscriber(db, body.chatId)
+    return Utf8JsonResponse(content={"ok": True})
+
+
+@app.post("/api/trade-history/sync-now")
+def api_trade_history_sync_now(db: Session = Depends(get_db)) -> JSONResponse:
+    """
+    تشغيل دورة مزامنة واحدة فوراً لسجل الصفقات (تشخيص/تجربة) -- نفس منطق
+    الحلقة الخلفية كل 60 ثانية. لا ينفذ أي صفقة، فقط سحب + تخزين + مطابقة.
+    قراءة/تحليل فقط.
+    """
+    counters = sync_mt5_trades_once(db)
+    return Utf8JsonResponse(content={"ok": True, **counters})
+
+
 # ---------------------------------------------------------------------------
 # System Configuration endpoints (GET/POST /api/config)
 # ---------------------------------------------------------------------------
@@ -2019,6 +2322,8 @@ _ALLOWED_CONFIG_KEYS: frozenset[str] = frozenset({
     "min_rr",
     "telegram_bot_token",
     "telegram_chat_id",
+    "telegram_proxy_url",
+    "okx_account_balance_usd",
 })
 
 _CONFIG_DEFAULTS: dict[str, str] = {
@@ -2030,6 +2335,7 @@ _CONFIG_DEFAULTS: dict[str, str] = {
     "atr_sl_mult": "1.5",
     "atr_tp_mult": "3.0",
     "min_rr":      "2.0",
+    "okx_account_balance_usd": "10000",
 }
 
 
@@ -2279,6 +2585,429 @@ def readonly_okx_tickers(
 
 
 # ---------------------------------------------------------------------------
+# Gold + Crypto: Screener + Multi-Timeframe Analysis (Read-Only)
+#
+# يخص هذا القسم الذهب (XAUUSD) والكريبتو (OKX) فقط:
+#   1) GET  /api/lab/gold-crypto-screener        -- قائمة ترشيح الأزواج القابلة للتداول
+#   2) POST /api/lab/multi-timeframe-analysis    -- تحليل الزوج المختار عبر عدة فريمات
+# ---------------------------------------------------------------------------
+
+# الأزواج المسموح بها لهذه الميزة فقط (الذهب + الكريبتو)
+_SCREENER_MT5_SYMBOLS: list[str] = ["XAUUSD"]
+_MTF_MT5_TIMEFRAMES:   list[str] = ["M5", "M15", "H1", "H4", "D1"]
+_MTF_OKX_BARS:         list[str] = ["5m", "15m", "1H", "4H", "1D"]
+
+
+def _get_okx_account_balance() -> float:
+    """رأس مال OKX المُدخل يدوياً من الإعدادات (افتراضي $10,000)."""
+    db = SessionLocal()
+    try:
+        row = db.query(SystemConfig).filter(
+            SystemConfig.key == "okx_account_balance_usd"
+        ).first()
+        return float(row.value) if row and row.value else float(_CONFIG_DEFAULTS["okx_account_balance_usd"])
+    except Exception:
+        return float(_CONFIG_DEFAULTS["okx_account_balance_usd"])
+    finally:
+        db.close()
+
+
+@app.get("/api/lab/gold-crypto-screener")
+async def api_gold_crypto_screener() -> JSONResponse:
+    """
+    شاشة ترشيح الذهب والكريبتو: تعيد قائمة بالأزواج (XAUUSD + رموز OKX)
+    مع حالة السوق الحالية وما إذا كانت قابلة للتحليل الآن.
+    قراءة فقط -- لا تنفيذ تداول من أي نوع.
+    """
+    candidates: list[dict[str, Any]] = []
+
+    # -- XAUUSD عبر MT5 --
+    init_ok, init_err = await asyncio.to_thread(_safe_mt5_init)
+    if init_ok:
+        try:
+            ticks = await asyncio.to_thread(_ticks_payload, _SCREENER_MT5_SYMBOLS)
+        finally:
+            await asyncio.to_thread(mt5.shutdown)
+
+        for t in ticks.get("ticks", []):
+            if t.get("error"):
+                candidates.append({
+                    "symbol": t["symbol"],
+                    "source": "mt5",
+                    "tradable": False,
+                    "reason": t["error"],
+                })
+                continue
+
+            market_closed = bool(t.get("market_closed"))
+            candidates.append({
+                "symbol": t["symbol"],
+                "source": "mt5",
+                "tradable": not market_closed,
+                "reason": "السوق مغلق حالياً" if market_closed else "السوق مفتوح -- قابل للتحليل",
+                "bid": t.get("bid"),
+                "ask": t.get("ask"),
+                "spread": t.get("spread"),
+                "spread_points": t.get("spread_points"),
+                "time": t.get("time"),
+            })
+    else:
+        for sym in _SCREENER_MT5_SYMBOLS:
+            candidates.append({
+                "symbol": sym,
+                "source": "mt5",
+                "tradable": False,
+                "reason": f"تعذّر الاتصال بـ MT5: {init_err}",
+            })
+
+    # -- OKX (BTC-USDT, ETH-USDT, ...) --
+    try:
+        okx_tickers = await asyncio.to_thread(fetch_okx_tickers, _OKX_SCAN_SYMBOLS)
+    except Exception as exc:
+        okx_tickers = []
+        logger.warning("gold_crypto_screener: OKX tickers failed -- %s", exc)
+
+    okx_seen = {t["symbol"] for t in okx_tickers}
+    for t in okx_tickers:
+        candidates.append({
+            "symbol": t["symbol"],
+            "source": "okx",
+            "tradable": True,
+            "reason": "السوق متاح على مدار الساعة -- قابل للتحليل",
+            "last": t.get("last"),
+            "bid": t.get("bid"),
+            "ask": t.get("ask"),
+            "change_pct_24h": t.get("change_pct"),
+            "vol_24h": t.get("vol_24h"),
+            "time": t.get("ts"),
+        })
+
+    for sym in _OKX_SCAN_SYMBOLS:
+        if sym not in okx_seen:
+            candidates.append({
+                "symbol": sym,
+                "source": "okx",
+                "tradable": False,
+                "reason": "تعذّر جلب بيانات السعر من OKX حالياً",
+            })
+
+    return Utf8JsonResponse(content={
+        "ok":         True,
+        "read_only":  True,
+        "candidates": candidates,
+        "ts":         datetime.now(timezone.utc).isoformat(),
+    })
+
+
+class MultiTimeframeAnalysisRequest(BaseModel):
+    symbol: str
+
+
+@app.post("/api/lab/multi-timeframe-analysis")
+async def api_multi_timeframe_analysis(body: MultiTimeframeAnalysisRequest) -> JSONResponse:
+    """
+    تحليل الزوج المختار (XAUUSD أو رمز OKX) عبر عدة فريمات زمنية
+    (M5/M15/H1/H4/D1 لـ MT5، أو 5m/15m/1H/4H/1D لـ OKX).
+
+    يخص هذه الميزة الذهب والكريبتو فقط. أي إشارة معتمدة يتم حفظها في قاعدة
+    البيانات وإرسال تنبيه تيليجرام لها تلقائياً عبر المسار الحالي
+    (analyze_market -> _send_telegram_alert) -- لا حاجة لكود إرسال جديد.
+
+    قراءة فقط -- لا تنفيذ تداول من أي نوع.
+    """
+    symbol = body.symbol.strip().upper()
+    allowed = set(_SCREENER_MT5_SYMBOLS) | set(_OKX_SCAN_SYMBOLS)
+    if symbol not in allowed:
+        return Utf8JsonResponse(
+            status_code=400,
+            content={
+                "ok": False,
+                "error": f"الرمز '{symbol}' غير مسموح به -- هذه الميزة تخص الذهب والكريبتو فقط",
+                "allowed_symbols": sorted(allowed),
+            },
+        )
+
+    engine = CouncilEngine()
+    results: list[dict[str, Any]] = []
+
+    if "-" in symbol:
+        # -- مسار OKX --
+        account_balance = await asyncio.to_thread(_get_okx_account_balance)
+        for bar in _MTF_OKX_BARS:
+            verdicts = await asyncio.to_thread(
+                _sync_scan_okx_cycle, engine, [symbol], bar, _AGENT_SCAN_CANDLE_COUNT, account_balance,
+            )
+            results.append(_verdict_to_summary(OKX_BAR_DISPLAY.get(bar, bar), verdicts))
+    else:
+        # -- مسار MT5 --
+        for tf in _MTF_MT5_TIMEFRAMES:
+            verdicts = await asyncio.to_thread(
+                _sync_scan_cycle, engine, [symbol], tf, _AGENT_SCAN_CANDLE_COUNT,
+            )
+            results.append(_verdict_to_summary(tf, verdicts))
+
+    return Utf8JsonResponse(content={
+        "ok":        True,
+        "read_only": True,
+        "symbol":    symbol,
+        "results":   results,
+        "ts":        datetime.now(timezone.utc).isoformat(),
+    })
+
+
+def _verdict_to_summary(timeframe: str, verdicts: list[CouncilVerdict]) -> dict[str, Any]:
+    """يحوّل CouncilVerdict إلى ملخص JSON لاستخدامه في تحليل متعدد الفريمات."""
+    if not verdicts:
+        return {
+            "timeframe": timeframe,
+            "approved": False,
+            "direction": None,
+            "reason": "تعذّر جلب الشموع لهذا الفريم",
+        }
+
+    v = verdicts[0]
+    return {
+        "timeframe":       timeframe,
+        "approved":        v.approved,
+        "direction":       v.direction,
+        "signal_strength": round(v.signal_strength, 4) if v.signal_strength is not None else None,
+        "entry":           v.entry,
+        "sl":              v.sl,
+        "tp":              v.tp,
+        "lot_size":        v.lot_size,
+        "risk_amount":     v.risk_amount,
+        "risk_percent":    v.risk_percent,
+        "profit_amount":   v.profit_amount,
+        "duration":        v.duration,
+        "digits":          v.digits,
+        "confluence":      v.confluence,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Ranked Screener + Watchlist (Read-Only, Gold + Crypto + MT5 visible symbols)
+# ---------------------------------------------------------------------------
+
+_CONFLUENCE_LABELS_AR: dict[str, str] = {
+    "STRONG": "توافق قوي 3/3",
+    "MEDIUM": "توافق متوسط 2/3",
+    "WEAK":   "توافق ضعيف 1/3",
+    "NONE":   "بدون توافق 0/3",
+}
+
+
+def _candidate_reason(approved: bool, direction: str | None, confluence_level: str | None) -> str:
+    label = _CONFLUENCE_LABELS_AR.get((confluence_level or "").upper(), "بدون توافق")
+    if approved and direction:
+        return f"إشارة {direction} معتمدة — {label}"
+    return f"غير معتمد حالياً — {label}"
+
+
+@app.get("/api/lab/ranked-candidates")
+def api_lab_ranked_candidates(source: str | None = Query(default=None)) -> JSONResponse:
+    """
+    قائمة ترشيح مرتبة حسب الأفضلية (قوة الإشارة) لكل الرموز التي يفحصها
+    المسح الخلفي (رموز MT5 المرئية + رموز OKX). تعتمد على آخر صف محفوظ في
+    triple_firewall_signals لكل رمز -- لا تُجري تحليلاً جديداً ولا ترسل
+    تنبيهات. قراءة فقط.
+
+    source : "mt5" -> رموز MT5 المرئية فقط (طرفية الذهب)،
+             "okx"  -> رموز OKX فقط (طرفية الكريبتو)،
+             بدون قيمة -> القائمة المدمجة (السلوك السابق).
+    """
+    universe: list[tuple[str, str]] = []
+
+    if source == "okx":
+        universe = [(s, "okx") for s in _OKX_SCAN_SYMBOLS]
+    else:
+        mt5_symbols: list[str] = []
+        init_ok, _ = _safe_mt5_init()
+        if init_ok:
+            try:
+                mt5_symbols = _get_visible_mt5_symbols() or _symbols_from_env()
+            finally:
+                mt5.shutdown()
+        else:
+            mt5_symbols = _symbols_from_env()
+
+        universe = [(s, "mt5") for s in mt5_symbols]
+        if source != "mt5":
+            universe += [(s, "okx") for s in _OKX_SCAN_SYMBOLS]
+
+    db = SessionLocal()
+    try:
+        candidates: list[dict[str, Any]] = []
+        for symbol, source in universe:
+            row = (
+                db.query(TripleFirewallSignal)
+                .filter(TripleFirewallSignal.symbol == symbol)
+                .order_by(TripleFirewallSignal.timestamp.desc())
+                .first()
+            )
+            if row is None:
+                candidates.append({
+                    "symbol": symbol,
+                    "source": source,
+                    "approved": False,
+                    "direction": None,
+                    "signal_strength": 0.0,
+                    "confluence_level": None,
+                    "reason": "بانتظار أول دورة فحص",
+                    "last_scan_ts": None,
+                })
+                continue
+
+            candidates.append({
+                "symbol": symbol,
+                "source": source,
+                "approved": bool(row.approved),
+                "direction": row.direction,
+                "signal_strength": round(row.signal_strength, 4),
+                "confluence_level": row.confluence_level,
+                "reason": _candidate_reason(bool(row.approved), row.direction, row.confluence_level),
+                "last_scan_ts": row.timestamp.isoformat() if row.timestamp else None,
+            })
+    finally:
+        db.close()
+
+    candidates.sort(key=lambda c: (c["approved"], c["signal_strength"]), reverse=True)
+
+    return Utf8JsonResponse(content={
+        "ok":         True,
+        "read_only":  True,
+        "candidates": candidates,
+        "ts":         datetime.now(timezone.utc).isoformat(),
+    })
+
+
+_WATCHLIST_CONFIG_KEY = "lab_watchlist_symbols"
+_WATCHLIST_MAX_SYMBOLS = 5
+
+
+def _get_watchlist_symbols() -> list[str]:
+    db = SessionLocal()
+    try:
+        row = db.query(SystemConfig).filter(SystemConfig.key == _WATCHLIST_CONFIG_KEY).first()
+        if not row or not row.value:
+            return []
+        try:
+            data = json.loads(row.value)
+        except (TypeError, ValueError):
+            return []
+        return [s for s in data if isinstance(s, str)] if isinstance(data, list) else []
+    finally:
+        db.close()
+
+
+@app.get("/api/lab/watchlist")
+def api_lab_get_watchlist() -> JSONResponse:
+    """قائمة المتابعة الحالية (حد أقصى 5 رموز) -- قراءة فقط."""
+    return Utf8JsonResponse(content={"ok": True, "symbols": _get_watchlist_symbols()})
+
+
+class WatchlistRequest(BaseModel):
+    symbols: list[str]
+
+
+@app.post("/api/lab/watchlist")
+def api_lab_set_watchlist(body: WatchlistRequest) -> JSONResponse:
+    """
+    تحديث قائمة المتابعة (حد أقصى 5 رموز/أزواج). يجب أن يكون كل رمز ضمن
+    مجموعة الترشيح الحالية (رموز MT5 المرئية + رموز OKX المسموحة).
+    لا تنفيذ تداول -- مجرد تخزين تفضيل المستخدم لتوجيه المسح الخلفي.
+    """
+    requested = []
+    for s in body.symbols:
+        sym = s.strip().upper()
+        if sym and sym not in requested:
+            requested.append(sym)
+
+    if len(requested) > _WATCHLIST_MAX_SYMBOLS:
+        return Utf8JsonResponse(
+            status_code=400,
+            content={"ok": False, "error": f"الحد الأقصى {_WATCHLIST_MAX_SYMBOLS} عملات/أزواج"},
+        )
+
+    mt5_symbols: list[str] = []
+    init_ok, _ = _safe_mt5_init()
+    if init_ok:
+        try:
+            mt5_symbols = _get_visible_mt5_symbols() or _symbols_from_env()
+        finally:
+            mt5.shutdown()
+    else:
+        mt5_symbols = _symbols_from_env()
+
+    allowed = {s.upper() for s in mt5_symbols} | set(_OKX_SCAN_SYMBOLS)
+    invalid = [s for s in requested if s not in allowed]
+    if invalid:
+        return Utf8JsonResponse(
+            status_code=400,
+            content={"ok": False, "error": f"رموز غير مسموحة: {', '.join(invalid)}", "allowed_symbols": sorted(allowed)},
+        )
+
+    db = SessionLocal()
+    try:
+        row = db.query(SystemConfig).filter(SystemConfig.key == _WATCHLIST_CONFIG_KEY).first()
+        value = json.dumps(requested, ensure_ascii=False)
+        if row:
+            row.value = value
+        else:
+            db.add(SystemConfig(key=_WATCHLIST_CONFIG_KEY, value=value))
+        db.commit()
+    finally:
+        db.close()
+
+    return Utf8JsonResponse(content={"ok": True, "symbols": requested})
+
+
+async def run_watchlist_multi_timeframe_scan() -> None:
+    """
+    حلقة خلفية إضافية: تحلل رموز قائمة المتابعة (حد أقصى 5) عبر عدة فريمات
+    عند إغلاق كل شمعة، بشكل منفصل عن المسح الخلفي الأساسي (H1 لكل الرموز).
+
+    إشارة معتمدة على أي فريم تُحفظ وتُرسل تيليجرام تلقائياً عبر المسار
+    الحالي (analyze_market -> _send_telegram_alert).
+    """
+    mt5_periods = {"M5": 300, "M15": 900, "H1": 3600, "H4": 14400, "D1": 86400}
+    okx_periods = {"5m": 300, "15m": 900, "1H": 3600, "4H": 14400, "1D": 86400}
+
+    logger.info("watchlist_scan: loop started")
+
+    while True:
+        await asyncio.sleep(60)
+
+        symbols = _get_watchlist_symbols()
+        if not symbols:
+            continue
+
+        now = time.time()
+        engine = CouncilEngine()
+
+        mt5_symbols = [s for s in symbols if "-" not in s]
+        okx_symbols = [s for s in symbols if "-" in s]
+
+        for tf, period in mt5_periods.items():
+            if mt5_symbols and (now % period) < 60:
+                for sym in mt5_symbols:
+                    try:
+                        await asyncio.to_thread(_sync_scan_cycle, engine, [sym], tf, _AGENT_SCAN_CANDLE_COUNT)
+                    except Exception as exc:
+                        logger.warning("watchlist_scan: mt5 %s/%s failed -- %s", sym, tf, exc)
+
+        for bar, period in okx_periods.items():
+            if okx_symbols and (now % period) < 60:
+                account_balance = await asyncio.to_thread(_get_okx_account_balance)
+                for sym in okx_symbols:
+                    try:
+                        await asyncio.to_thread(
+                            _sync_scan_okx_cycle, engine, [sym], bar, _AGENT_SCAN_CANDLE_COUNT, account_balance,
+                        )
+                    except Exception as exc:
+                        logger.warning("watchlist_scan: okx %s/%s failed -- %s", sym, bar, exc)
+
+
+# ---------------------------------------------------------------------------
 # WebSocket: live market stream (Phase 2 -- framework ready, stream TBD)
 # ---------------------------------------------------------------------------
 
@@ -2328,6 +3057,52 @@ async def ws_live_market(websocket: WebSocket) -> None:
                     "subscribed": symbols,
                     "note":       "agent council active -- signals broadcast on approval",
                 })
+                
+                # Trigger an immediate on-demand scan
+                async def _scan_and_send(syms: list[str], ws: WebSocket) -> None:
+                    try:
+                        eng = CouncilEngine()
+                        for s in syms:
+                            if "-" in s:
+                                res = await asyncio.to_thread(_sync_scan_okx_cycle, eng, [s], _OKX_SCAN_BAR, _AGENT_SCAN_CANDLE_COUNT)
+                            else:
+                                res = await asyncio.to_thread(_sync_scan_cycle, eng, [s], _AGENT_SCAN_TIMEFRAME, _AGENT_SCAN_CANDLE_COUNT)
+                            
+                            for verdict in res:
+                                ds = "okx" if "-" in verdict.symbol else "mt5"
+                                try:
+                                    await ws.send_json({
+                                        "type":            "agent_signal",
+                                        "symbol":          verdict.symbol,
+                                        "direction":       verdict.direction,
+                                        "signal_strength": round(verdict.signal_strength, 4),
+                                        "entry":           verdict.entry,
+                                        "sl":              verdict.sl,
+                                        "tp":              verdict.tp,
+                                        "atr":             round(verdict.atr, 5) if verdict.atr else None,
+                                        "risk_amount":     verdict.risk_amount,
+                                        "profit_amount":   verdict.profit_amount,
+                                        "lot_size":        verdict.lot_size,
+                                        "duration":        verdict.duration,
+                                        "votes": [
+                                            {
+                                                "agent":      v.agent,
+                                                "approved":   v.approved,
+                                                "confidence": round(v.confidence, 4),
+                                                "reason":     v.reason,
+                                            }
+                                            for v in verdict.votes
+                                        ],
+                                        "ts":          verdict.timestamp.isoformat(),
+                                        "read_only":   True,
+                                        "data_source": ds,
+                                    })
+                                except Exception:
+                                    pass
+                    except Exception as e:
+                        logger.warning(f"on-demand scan failed: {e}")
+                
+                asyncio.create_task(_scan_and_send(symbols, websocket))
 
             else:
                 await websocket.send_json({
@@ -2346,3 +3121,122 @@ async def ws_live_market(websocket: WebSocket) -> None:
 # - FORBIDDEN_MT5_FUNCTION_NAMES applies to ALL endpoints ABOVE /demo/order-send.
 # - order_send is ONLY used inside /demo/order-send, gated by MT5_DEMO_EXECUTION_ENABLED.
 # - READ_ONLY_MODE remains True and governs all /readonly/* endpoints.
+
+@app.get("/api/okx/scanner")
+def api_okx_scanner():
+    """
+    Fetch all OKX SPOT instruments and filter them.
+    """
+    import okx_bridge
+    instruments = okx_bridge.fetch_okx_spot_instruments()
+    
+    total = len(instruments)
+    approved = []
+    rejected = []
+    
+    # Stablecoins to exclude from base
+    STABLECOINS = {"USDT", "USDC", "DAI", "BUSD", "TUSD", "USDP", "EURT", "FDUSD"}
+    
+    # Leveraged or meme/junk tokens keywords (basic filter)
+    LEVERAGED_KEYWORDS = {"UP", "DOWN", "BULL", "BEAR", "3L", "3S", "5L", "5S"}
+
+    for inst in instruments:
+        inst_id = inst.get("instId", "")
+        base = inst.get("baseCcy", "").upper()
+        quote = inst.get("quoteCcy", "").upper()
+        state = inst.get("state", "")
+        
+        # Default object
+        coin = {
+            "symbol": inst_id,
+            "base": base,
+            "quote": quote,
+            "status": "rejected",
+            "reason": ""
+        }
+        
+        if state != "live":
+            coin["reason"] = "العملة غير نشطة حالياً (Not Live)"
+            rejected.append(coin)
+            continue
+            
+        if quote != "USDT":
+            coin["reason"] = f"يجب أن يكون التسعير بـ USDT وليس {quote}"
+            rejected.append(coin)
+            continue
+            
+        if base in STABLECOINS:
+            coin["reason"] = "عملة مستقرة مستبعدة"
+            rejected.append(coin)
+            continue
+            
+        is_leveraged = any(kw in inst_id.upper() for kw in LEVERAGED_KEYWORDS)
+        if is_leveraged:
+            coin["reason"] = "عملة ذات رافعة مالية مدمجة/مخاطرة عالية"
+            rejected.append(coin)
+            continue
+            
+        coin["status"] = "approved"
+        coin["reason"] = "سيولة مقبولة ونشطة للتداول"
+        approved.append(coin)
+        
+    return Utf8JsonResponse(content={
+        "total": total,
+        "approved_count": len(approved),
+        "rejected_count": len(rejected),
+        "coins": approved + rejected
+    })
+
+@app.get("/api/mt5-readonly/scan")
+def api_mt5_scan():
+    """
+    Returns MT5 symbols categorized as approved/rejected for the scanner UI.
+    """
+    ok, _ = _safe_mt5_init()
+    if not ok:
+        return Utf8JsonResponse(
+            status_code=503,
+            content={"ok": False, "error": "MT5 is not available"}
+        )
+        
+    symbols = _get_visible_mt5_symbols(limit=300)
+    
+    coins = []
+    approved_count = 0
+    rejected_count = 0
+    
+    for sym in symbols:
+        sym_upper = sym.upper()
+        
+        # Simple criteria: accept 6-char forex pairs and common metals
+        is_forex = len(sym_upper) == 6 and sym_upper.isalpha()
+        is_metal = sym_upper in ["XAUUSD", "XAGUSD", "XAUEUR", "XAGEUR"]
+        is_crypto = sym_upper in ["BTCUSD", "ETHUSD"]
+        
+        # Determine base/quote roughly for 6-char pairs
+        base = sym[:3] if len(sym) >= 6 else sym
+        quote = sym[3:6] if len(sym) >= 6 else "USD"
+        
+        if is_forex or is_metal or is_crypto:
+            status = "approved"
+            reason = "مقبول: زوج عملات/معادن سيولة عالية"
+            approved_count += 1
+        else:
+            status = "rejected"
+            reason = "مرفوض: رمز غير قياسي أو خارج تركيز التداول الرئيسي"
+            rejected_count += 1
+            
+        coins.append({
+            "symbol": sym,
+            "base": base,
+            "quote": quote,
+            "status": status,
+            "reason": reason
+        })
+        
+    return Utf8JsonResponse(content={
+        "total": len(symbols),
+        "approved_count": approved_count,
+        "rejected_count": rejected_count,
+        "coins": coins
+    })
