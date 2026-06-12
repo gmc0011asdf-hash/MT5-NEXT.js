@@ -300,6 +300,19 @@ def generate_occurrences(now_utc: datetime, days_ahead: int = 7) -> list[dict]:
 # Status / risk-window computation
 # ---------------------------------------------------------------------------
 
+def _as_utc(dt: datetime) -> datetime:
+    """SQLite drops tzinfo on round-trip; treat naive datetimes as UTC."""
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
+def seconds_until(event_time_utc: datetime, now_utc: datetime) -> float:
+    """(event_time_utc - now_utc) in seconds, tolerant of naive datetimes
+    read back from SQLite (treated as UTC)."""
+    return (_as_utc(event_time_utc) - now_utc).total_seconds()
+
+
 def compute_status(event_time_utc: datetime, now_utc: datetime) -> str:
     """
     delta = (event_time_utc - now_utc).total_seconds()
@@ -308,7 +321,7 @@ def compute_status(event_time_utc: datetime, now_utc: datetime) -> str:
     - -900 <= delta <= 0       -> "released"    (صدر -- ضمن نافذة +15 دقيقة)
     - delta < -900             -> "risk_ended"  (انتهت فترة الخطر)
     """
-    delta = (event_time_utc - now_utc).total_seconds()
+    delta = seconds_until(event_time_utc, now_utc)
     if delta > 1800:
         return "upcoming"
     if delta > 0:
@@ -323,7 +336,7 @@ def is_in_risk_window(event_time_utc: datetime, now_utc: datetime, impact: str) 
     [event_time_utc - 5min, event_time_utc + 15min]."""
     if impact != "high":
         return False
-    delta = (event_time_utc - now_utc).total_seconds()
+    delta = seconds_until(event_time_utc, now_utc)
     return -900 <= delta <= 300
 
 
@@ -403,7 +416,7 @@ def _seconds_to_next_high_impact(db: Session, now_utc: datetime | None = None) -
     )
     if row is None:
         return None
-    return (row.event_time_utc - now_utc).total_seconds()
+    return seconds_until(row.event_time_utc, now_utc)
 
 
 async def run_news_radar_sync() -> None:

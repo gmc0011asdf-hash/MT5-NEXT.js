@@ -28,9 +28,10 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from agents import CouncilEngine, CouncilVerdict, calculate_position_size, candles_to_dataframe, get_market_session
-from database import DecisionJournal, GoldProAnalysis, MT5OpenPosition, MT5TradeHistory, SessionLocal, StrategySignal, SystemConfig, TelegramSubscriber, TripleFirewallSignal, get_db, init_db
+from database import DecisionJournal, EconomicNewsEvent, GoldProAnalysis, MT5OpenPosition, MT5TradeHistory, SessionLocal, StrategySignal, SystemConfig, TelegramSubscriber, TripleFirewallSignal, get_db, init_db
 from telegram_subscribers import block_subscriber, run_telegram_bot_polling, unblock_subscriber
 from mt5_trade_sync import run_mt5_trade_sync, sync_mt5_trades_once
+from economic_calendar import compute_status, is_in_risk_window, run_news_radar_sync, seconds_until, sync_calendar_events
 from okx_bridge import (
     DEFAULT_OKX_SYMBOLS,
     OKX_BAR_DISPLAY,
@@ -2409,6 +2410,140 @@ def api_trade_history_summary(
         "matchedWinRatePct": _win_rate(matched),
         "unmatchedWinRatePct": _win_rate(unmatched),
         "netProfit": round(sum(r.profit for r in rows), 2),
+    })
+
+
+# ---------------------------------------------------------------------------
+# News Radar endpoints (organized semi-dynamic economic calendar)
+# Read-only -- no external API, no live news feed, no Telegram (Phase 1).
+# ---------------------------------------------------------------------------
+
+@app.get("/api/news-radar/events")
+def api_news_radar_events(
+    impact: str | None = Query(default=None),
+    currency: str | None = Query(default=None),
+    symbol: str | None = Query(default=None),
+    days_ahead: int = Query(default=7, ge=1, le=14),
+    db: Session = Depends(get_db),
+) -> JSONResponse:
+    """
+    قائمة الأحداث الاقتصادية المنظمة (شبه ديناميكية) ضمن نافذة زمنية.
+    الحالة (status) تُحسب ديناميكياً عند كل قراءة. قراءة فقط -- ليست توصية مالية.
+    """
+    now_utc = datetime.now(timezone.utc)
+    window_start = now_utc - timedelta(days=1)
+    window_end = now_utc + timedelta(days=days_ahead)
+
+    query = db.query(EconomicNewsEvent).filter(
+        EconomicNewsEvent.event_time_utc >= window_start,
+        EconomicNewsEvent.event_time_utc <= window_end,
+    )
+    if impact:
+        query = query.filter(EconomicNewsEvent.impact == impact)
+    if currency:
+        query = query.filter(EconomicNewsEvent.currency == currency)
+
+    rows = query.order_by(EconomicNewsEvent.event_time_utc.asc()).all()
+
+    events: list[dict] = []
+    for row in rows:
+        data = row.to_dict()
+        if symbol and symbol not in data["affectedSymbols"]:
+            continue
+        data["status"] = compute_status(row.event_time_utc, now_utc)
+        data["secondsToEvent"] = seconds_until(row.event_time_utc, now_utc)
+        events.append(data)
+
+    return Utf8JsonResponse(content={"ok": True, "total": len(events), "events": events})
+
+
+@app.post("/api/news-radar/refresh-now")
+def api_news_radar_refresh_now(db: Session = Depends(get_db)) -> JSONResponse:
+    """
+    تشغيل دورة تحديث فورية للتقويم الاقتصادي المنظم (يدوي/تشخيصي) -- نفس
+    منطق الحلقة الخلفية. لا يتصل بأي مصدر خارجي، فقط يولّد/يحدّث الصفوف
+    من القوالب الثابتة. قراءة/تحليل فقط.
+    """
+    now_utc = datetime.now(timezone.utc)
+    sync_calendar_events(db, now_utc=now_utc)
+
+    window_end = now_utc + timedelta(days=7)
+    rows = (
+        db.query(EconomicNewsEvent)
+        .filter(EconomicNewsEvent.event_time_utc >= now_utc - timedelta(days=1))
+        .filter(EconomicNewsEvent.event_time_utc <= window_end)
+        .order_by(EconomicNewsEvent.event_time_utc.asc())
+        .all()
+    )
+
+    events: list[dict] = []
+    for row in rows:
+        data = row.to_dict()
+        data["status"] = compute_status(row.event_time_utc, now_utc)
+        data["secondsToEvent"] = seconds_until(row.event_time_utc, now_utc)
+        events.append(data)
+
+    return Utf8JsonResponse(content={
+        "ok": True,
+        "lastUpdated": now_utc.isoformat(),
+        "lastUpdatedBaghdad": (now_utc + timedelta(hours=3)).isoformat(),
+        "total": len(events),
+        "events": events,
+    })
+
+
+@app.get("/api/news-radar/top-bar")
+def api_news_radar_top_bar(db: Session = Depends(get_db)) -> JSONResponse:
+    """
+    شريط "ساعات الأخبار المهمة": أقرب حدث قادم + هل نحن داخل منطقة خطر
+    خبرية الآن (خبر عالي التأثير ضمن -5/+15 دقيقة). قراءة فقط.
+    """
+    now_utc = datetime.now(timezone.utc)
+
+    next_row = (
+        db.query(EconomicNewsEvent)
+        .filter(EconomicNewsEvent.event_time_utc >= now_utc)
+        .order_by(EconomicNewsEvent.event_time_utc.asc())
+        .first()
+    )
+    next_event: dict | None = None
+    if next_row is not None:
+        next_event = next_row.to_dict()
+        next_event["status"] = compute_status(next_row.event_time_utc, now_utc)
+        next_event["secondsToEvent"] = seconds_until(next_row.event_time_utc, now_utc)
+
+    high_impact_rows = (
+        db.query(EconomicNewsEvent)
+        .filter(EconomicNewsEvent.impact == "high")
+        .filter(EconomicNewsEvent.event_time_utc >= now_utc - timedelta(hours=1))
+        .filter(EconomicNewsEvent.event_time_utc <= now_utc + timedelta(hours=1))
+        .all()
+    )
+
+    risk_events: list[dict] = []
+    for row in high_impact_rows:
+        if is_in_risk_window(row.event_time_utc, now_utc, row.impact):
+            data = row.to_dict()
+            data["status"] = compute_status(row.event_time_utc, now_utc)
+            data["secondsToEvent"] = seconds_until(row.event_time_utc, now_utc)
+            risk_events.append(data)
+
+    in_risk_window = len(risk_events) > 0
+    risk_warning: str | None = None
+    if in_risk_window:
+        first = risk_events[0]
+        assets = " أو ".join(first["affectedSymbols"]) if first["affectedSymbols"] else "الأصول المرتبطة"
+        risk_warning = (
+            f"تحذير: يوجد خبر عالي التأثير قريب/جارٍ ({first['title']}). "
+            f"يفضل الحذر من فتح صفقات جديدة على {assets} حتى انتهاء فترة الخبر."
+        )
+
+    return Utf8JsonResponse(content={
+        "ok": True,
+        "nextEvent": next_event,
+        "inRiskWindow": in_risk_window,
+        "riskWarning": risk_warning,
+        "riskEvents": risk_events,
     })
 
 
