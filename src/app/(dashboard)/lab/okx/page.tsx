@@ -22,6 +22,7 @@ import {
   RefreshCcw,
   CheckCircle,
   XCircle,
+  X,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { OkxChartAnalyzer } from "@/components/lab/OkxChartAnalyzer";
@@ -243,6 +244,215 @@ function SymbolTabs({
 }
 
 // ---------------------------------------------------------------------------
+// Simulate Entry Modal — Local-First simulated crypto journal
+// ---------------------------------------------------------------------------
+
+function SimulateEntryModal({
+  signal,
+  symbol,
+  onClose,
+}: {
+  signal: AgentSignal;
+  symbol: OkxSymbol;
+  onClose: () => void;
+}) {
+  const symMeta = getSymbolMeta(symbol);
+  const computedEntry = _computeEntry(signal);
+
+  const [entryPrice, setEntryPrice] = useState(computedEntry != null ? String(computedEntry) : "");
+  const [stopLoss, setStopLoss]     = useState(signal.sl != null ? String(signal.sl) : "");
+  const [takeProfit, setTakeProfit] = useState(signal.tp != null ? String(signal.tp) : "");
+  const [lotSize, setLotSize]       = useState(signal.lot_size != null ? String(signal.lot_size) : "");
+  const [notes, setNotes]           = useState("");
+  const [simDate, setSimDate]       = useState(() => {
+    const d = new Date();
+    const pad = (n: number) => String(n).padStart(2, "0");
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  });
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError]           = useState<string | null>(null);
+  const [success, setSuccess]       = useState(false);
+
+  const handleSubmit = useCallback(async () => {
+    setSubmitting(true);
+    setError(null);
+    try {
+      const openedAt = simDate ? new Date(simDate).getTime() : Date.now();
+      const res = await fetch("/api/lab/journal/simulated-positions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          symbol,
+          source:         "okx",
+          direction:      signal.direction,
+          entryPrice:     entryPrice  ? Number(entryPrice)  : null,
+          stopLoss:       stopLoss    ? Number(stopLoss)    : null,
+          takeProfit:     takeProfit  ? Number(takeProfit)  : null,
+          lotSize:        lotSize     ? Number(lotSize)     : null,
+          riskAmount:     signal.risk_amount,
+          profitAmount:   signal.profit_amount,
+          signalStrength: signal.signal_strength,
+          openedAt,
+          notes: notes.trim() || null,
+        }),
+      });
+      const json = await res.json();
+      if (!res.ok || json.ok === false) {
+        throw new Error(json.error || `HTTP ${res.status}`);
+      }
+      setSuccess(true);
+      setTimeout(onClose, 1200);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "فشل الحفظ");
+    } finally {
+      setSubmitting(false);
+    }
+  }, [symbol, signal, entryPrice, stopLoss, takeProfit, lotSize, simDate, notes, onClose]);
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-4"
+      onClick={onClose}
+    >
+      <div
+        className="w-full max-w-md rounded-2xl border border-border/40 bg-card p-5 shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
+        dir="rtl"
+      >
+        <div className="mb-4 flex items-center justify-between">
+          <h3 className="text-sm font-bold text-foreground">
+            محاكاة دخول صفقة — {symMeta.short}
+          </h3>
+          <button
+            type="button"
+            onClick={onClose}
+            className="text-muted-foreground transition-colors hover:text-foreground"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+
+        <div className="mb-3 flex items-start gap-2 rounded-lg border border-amber-500/20 bg-amber-500/5 px-3 py-2">
+          <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-400" />
+          <p className="text-[11px] leading-relaxed text-amber-200/80">
+            صفقة محاكاة (Paper Trade) لأغراض التوثيق والتحليل فقط — لا يتم إرسال أي
+            أمر حقيقي لأي منصة.
+          </p>
+        </div>
+
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <label className="mb-1 block text-[10px] text-muted-foreground">الاتجاه</label>
+            <div
+              className={cn(
+                "rounded-lg border px-3 py-2 text-center text-xs font-bold",
+                signal.direction === "BUY"
+                  ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-300"
+                  : "border-rose-500/40 bg-rose-500/10 text-rose-300",
+              )}
+            >
+              {signal.direction === "BUY" ? "شراء" : "بيع"}
+            </div>
+          </div>
+
+          <div>
+            <label className="mb-1 block text-[10px] text-muted-foreground">الزوج</label>
+            <div className="rounded-lg border border-border/30 bg-card/50 px-3 py-2 text-center font-mono text-xs font-bold text-foreground">
+              {symbol}
+            </div>
+          </div>
+
+          <div>
+            <label className="mb-1 block text-[10px] text-muted-foreground">سعر الدخول</label>
+            <input
+              type="number"
+              value={entryPrice}
+              onChange={(e) => setEntryPrice(e.target.value)}
+              className="w-full rounded-lg border border-border/30 bg-card/50 px-3 py-2 text-xs font-mono text-foreground focus:border-cyan-500/50 focus:outline-none"
+            />
+          </div>
+
+          <div>
+            <label className="mb-1 block text-[10px] text-muted-foreground">حجم اللوت</label>
+            <input
+              type="number"
+              value={lotSize}
+              onChange={(e) => setLotSize(e.target.value)}
+              className="w-full rounded-lg border border-border/30 bg-card/50 px-3 py-2 text-xs font-mono text-foreground focus:border-cyan-500/50 focus:outline-none"
+            />
+          </div>
+
+          <div>
+            <label className="mb-1 block text-[10px] text-muted-foreground">وقف الخسارة SL</label>
+            <input
+              type="number"
+              value={stopLoss}
+              onChange={(e) => setStopLoss(e.target.value)}
+              className="w-full rounded-lg border border-border/30 bg-card/50 px-3 py-2 text-xs font-mono text-rose-300 focus:border-rose-500/50 focus:outline-none"
+            />
+          </div>
+
+          <div>
+            <label className="mb-1 block text-[10px] text-muted-foreground">الهدف TP</label>
+            <input
+              type="number"
+              value={takeProfit}
+              onChange={(e) => setTakeProfit(e.target.value)}
+              className="w-full rounded-lg border border-border/30 bg-card/50 px-3 py-2 text-xs font-mono text-emerald-300 focus:border-emerald-500/50 focus:outline-none"
+            />
+          </div>
+
+          <div className="col-span-2">
+            <label className="mb-1 block text-[10px] text-muted-foreground">تاريخ ووقت المحاكاة</label>
+            <input
+              type="datetime-local"
+              value={simDate}
+              onChange={(e) => setSimDate(e.target.value)}
+              className="w-full rounded-lg border border-border/30 bg-card/50 px-3 py-2 text-xs text-foreground focus:border-cyan-500/50 focus:outline-none"
+            />
+          </div>
+
+          <div className="col-span-2">
+            <label className="mb-1 block text-[10px] text-muted-foreground">ملاحظات (اختياري)</label>
+            <textarea
+              value={notes}
+              onChange={(e) => setNotes(e.target.value)}
+              rows={2}
+              className="w-full resize-none rounded-lg border border-border/30 bg-card/50 px-3 py-2 text-xs text-foreground focus:border-cyan-500/50 focus:outline-none"
+            />
+          </div>
+        </div>
+
+        {error && <p className="mt-3 text-[11px] text-rose-400">{error}</p>}
+        {success && (
+          <p className="mt-3 text-[11px] text-emerald-400">
+            تم حفظ الصفقة المحاكاة — راجعها في سجل القرارات
+          </p>
+        )}
+
+        <div className="mt-4 flex items-center gap-2">
+          <button
+            type="button"
+            onClick={handleSubmit}
+            disabled={submitting || success}
+            className="flex-1 rounded-lg border border-cyan-500/40 bg-cyan-500/10 px-3 py-2 text-xs font-bold text-cyan-300 transition-colors hover:bg-cyan-500/20 disabled:opacity-50"
+          >
+            {submitting ? "جاري الحفظ..." : "تأكيد الدخول المحاكى"}
+          </button>
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-lg border border-border/30 px-3 py-2 text-xs text-muted-foreground transition-colors hover:text-foreground"
+          >
+            إلغاء
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Crypto Terminal Card
 // ---------------------------------------------------------------------------
 
@@ -255,6 +465,7 @@ function CryptoTerminalCard({
 }) {
   const dir     = signal?.direction ?? null;
   const symMeta = getSymbolMeta(symbol);
+  const [showSimulateModal, setShowSimulateModal] = useState(false);
 
   const theme =
     dir === "BUY"
@@ -459,11 +670,30 @@ function CryptoTerminalCard({
         </div>
       )}
 
+      {/* Simulate Entry action */}
+      {signal && dir != null && (
+        <button
+          type="button"
+          onClick={() => setShowSimulateModal(true)}
+          className="mt-4 w-full rounded-xl border border-cyan-500/30 bg-cyan-500/10 px-4 py-2.5 text-xs font-bold text-cyan-300 transition-colors hover:bg-cyan-500/20"
+        >
+          محاكاة دخول الصفقة
+        </button>
+      )}
+
       {/* Timestamp */}
       {signal?.ts && (
         <p className="mt-5 text-center text-[10px] tabular-nums text-muted-foreground/40">
           آخر إشارة: {new Date(signal.ts).toLocaleTimeString("ar-SA")}
         </p>
+      )}
+
+      {showSimulateModal && signal && dir != null && (
+        <SimulateEntryModal
+          signal={signal}
+          symbol={symbol}
+          onClose={() => setShowSimulateModal(false)}
+        />
       )}
     </div>
   );

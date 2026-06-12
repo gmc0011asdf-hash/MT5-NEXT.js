@@ -12,6 +12,7 @@ import {
   ChevronUp,
   AlertTriangle,
   Users,
+  Activity,
 } from "lucide-react";
 
 const FASTAPI_BASE = "http://127.0.0.1:8010";
@@ -52,6 +53,51 @@ interface JournalResponse {
 }
 
 // ---------------------------------------------------------------------------
+// Simulated Crypto Journal — types
+// ---------------------------------------------------------------------------
+
+type SimulatedPositionStatus = "PENDING" | "ACTIVE" | "HIT_TP" | "HIT_SL" | "CLOSED_MANUAL";
+
+interface SimulatedPosition {
+  _id:            number;
+  symbol:         string;
+  source:         string;
+  direction:      "BUY" | "SELL";
+  entryPrice:     number | null;
+  stopLoss:       number | null;
+  takeProfit:     number | null;
+  lotSize:        number | null;
+  riskAmount:     number | null;
+  profitAmount:   number | null;
+  signalStrength: number | null;
+  status:         SimulatedPositionStatus;
+  openedAt:       string | null;
+  closedAt:       string | null;
+  notes:          string | null;
+  createdAt:      string | null;
+}
+
+interface SimulatedPositionsResponse {
+  ok:        boolean;
+  count:     number;
+  positions: SimulatedPosition[];
+}
+
+interface SimulatedStats {
+  total:        number;
+  wins:         number;
+  losses:       number;
+  open:         number;
+  closedManual: number;
+  winRate:      number;
+}
+
+interface SimulatedStatsResponse {
+  ok:    boolean;
+  stats: SimulatedStats;
+}
+
+// ---------------------------------------------------------------------------
 // Data fetching
 // ---------------------------------------------------------------------------
 
@@ -67,6 +113,22 @@ async function fetchJournal(
   });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return res.json() as Promise<JournalResponse>;
+}
+
+async function fetchSimulatedPositions(): Promise<SimulatedPositionsResponse> {
+  const res = await fetch("/api/lab/journal/simulated-positions?limit=100", {
+    cache: "no-store",
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json() as Promise<SimulatedPositionsResponse>;
+}
+
+async function fetchSimulatedStats(): Promise<SimulatedStatsResponse> {
+  const res = await fetch("/api/lab/journal/simulated-positions/stats", {
+    cache: "no-store",
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json() as Promise<SimulatedStatsResponse>;
 }
 
 // ---------------------------------------------------------------------------
@@ -318,6 +380,251 @@ function StatsBar({
 }
 
 // ---------------------------------------------------------------------------
+// Simulated Crypto Journal — status action buttons
+// ---------------------------------------------------------------------------
+
+const SIMULATED_STATUS_LABELS: Record<SimulatedPositionStatus, string> = {
+  PENDING:       "بانتظار التفعيل",
+  ACTIVE:        "نشطة",
+  HIT_TP:        "تحقق الهدف",
+  HIT_SL:        "ضرب وقف الخسارة",
+  CLOSED_MANUAL: "إغلاق يدوي",
+};
+
+function SimulatedPositionActions({
+  position,
+  onUpdated,
+}: {
+  position: SimulatedPosition;
+  onUpdated: () => void;
+}) {
+  const [pending, setPending] = useState<SimulatedPositionStatus | null>(null);
+
+  const updateStatus = async (status: SimulatedPositionStatus) => {
+    setPending(status);
+    try {
+      const res = await fetch(
+        `/api/lab/journal/simulated-positions/${position._id}/status`,
+        {
+          method:  "POST",
+          headers: { "Content-Type": "application/json" },
+          body:    JSON.stringify({ status }),
+        },
+      );
+      if (res.ok) onUpdated();
+    } finally {
+      setPending(null);
+    }
+  };
+
+  const busy = pending !== null;
+
+  return (
+    <div className="flex flex-wrap items-center gap-1.5">
+      {position.status === "PENDING" && (
+        <button
+          type="button"
+          onClick={() => updateStatus("ACTIVE")}
+          disabled={busy}
+          className="rounded-full border border-cyan-500/30 bg-cyan-500/10 px-2.5 py-1 text-[10px] font-bold text-cyan-300 transition-colors hover:bg-cyan-500/20 disabled:opacity-50"
+        >
+          تفعيل
+        </button>
+      )}
+      <button
+        type="button"
+        onClick={() => updateStatus("HIT_TP")}
+        disabled={busy}
+        className="rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2.5 py-1 text-[10px] font-bold text-emerald-300 transition-colors hover:bg-emerald-500/20 disabled:opacity-50"
+      >
+        HIT TP
+      </button>
+      <button
+        type="button"
+        onClick={() => updateStatus("HIT_SL")}
+        disabled={busy}
+        className="rounded-full border border-rose-500/30 bg-rose-500/10 px-2.5 py-1 text-[10px] font-bold text-rose-300 transition-colors hover:bg-rose-500/20 disabled:opacity-50"
+      >
+        HIT SL
+      </button>
+      <button
+        type="button"
+        onClick={() => updateStatus("CLOSED_MANUAL")}
+        disabled={busy}
+        className="rounded-full border border-border/40 bg-muted/20 px-2.5 py-1 text-[10px] font-bold text-muted-foreground transition-colors hover:text-foreground disabled:opacity-50"
+      >
+        إغلاق يدوي
+      </button>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Simulated Crypto Journal — single position row
+// ---------------------------------------------------------------------------
+
+function SimulatedPositionRow({
+  position,
+  onUpdated,
+}: {
+  position: SimulatedPosition;
+  onUpdated: () => void;
+}) {
+  const isOpen = position.status === "PENDING" || position.status === "ACTIVE";
+  const ts = position.openedAt ?? position.createdAt;
+
+  return (
+    <div className="rounded-xl border border-border bg-card/50 px-4 py-3 flex flex-wrap items-center gap-x-4 gap-y-2">
+      <DirectionBadge dir={position.direction} />
+
+      <span className="font-mono text-sm font-semibold text-foreground min-w-[90px]">
+        {position.symbol}
+      </span>
+
+      {position.entryPrice != null && (
+        <span className="tabular-nums text-xs text-muted-foreground">
+          دخول: {position.entryPrice}
+        </span>
+      )}
+      {position.stopLoss != null && (
+        <span className="tabular-nums text-xs text-rose-300">
+          SL: {position.stopLoss}
+        </span>
+      )}
+      {position.takeProfit != null && (
+        <span className="tabular-nums text-xs text-emerald-300">
+          TP: {position.takeProfit}
+        </span>
+      )}
+      {position.lotSize != null && (
+        <span className="tabular-nums text-xs text-muted-foreground">
+          لوت: {position.lotSize}
+        </span>
+      )}
+
+      <span className="rounded px-1.5 py-0.5 text-[10px] font-medium bg-muted/30 text-muted-foreground">
+        {SIMULATED_STATUS_LABELS[position.status]}
+      </span>
+
+      {ts && (
+        <span className="text-xs text-muted-foreground mr-auto">
+          {formatTs(ts)}
+        </span>
+      )}
+
+      {isOpen && (
+        <div className={ts ? "" : "mr-auto"}>
+          <SimulatedPositionActions position={position} onUpdated={onUpdated} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Simulated Crypto Journal — section
+// ---------------------------------------------------------------------------
+
+function SimulatedPositionsSection() {
+  const {
+    data: posData,
+    isLoading: posLoading,
+    isError: posError,
+    refetch: refetchPositions,
+  } = useQuery<SimulatedPositionsResponse>({
+    queryKey: ["simulated-positions"],
+    queryFn:  fetchSimulatedPositions,
+    refetchInterval: 60_000,
+    retry:    false,
+    staleTime: 30_000,
+  });
+
+  const { data: statsData, refetch: refetchStats } = useQuery<SimulatedStatsResponse>({
+    queryKey: ["simulated-positions-stats"],
+    queryFn:  fetchSimulatedStats,
+    refetchInterval: 60_000,
+    retry:    false,
+    staleTime: 30_000,
+  });
+
+  const positions = posData?.positions ?? [];
+  const openPositions   = positions.filter((p) => p.status === "PENDING" || p.status === "ACTIVE");
+  const closedPositions = positions.filter((p) => p.status !== "PENDING" && p.status !== "ACTIVE");
+  const stats = statsData?.stats;
+
+  const handleUpdated = () => {
+    refetchPositions();
+    refetchStats();
+  };
+
+  if (posError) return null;
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center gap-3">
+        <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-cyan-500/15 border border-cyan-500/25">
+          <Activity className="h-4 w-4 text-cyan-400" />
+        </div>
+        <div>
+          <h2 className="text-base font-bold text-foreground">
+            الصفقات المحاكاة — الكريبتو
+          </h2>
+          <p className="text-xs text-muted-foreground">
+            سجل صفقات محاكي (Paper Trades) — لا تنفيذ حقيقي — للأغراض المعلوماتية فقط
+          </p>
+        </div>
+      </div>
+
+      {stats && (
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+          <div className="rounded-xl border border-border bg-card/50 p-3 text-center">
+            <p className="tabular-nums text-lg font-bold text-foreground">{stats.total}</p>
+            <p className="text-[11px] text-muted-foreground">إجمالي الصفقات</p>
+          </div>
+          <div className="rounded-xl border border-cyan-500/20 bg-cyan-500/5 p-3 text-center">
+            <p className="tabular-nums text-lg font-bold text-cyan-300">{stats.open}</p>
+            <p className="text-[11px] text-muted-foreground">صفقات مفتوحة</p>
+          </div>
+          <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/5 p-3 text-center">
+            <p className="tabular-nums text-lg font-bold text-emerald-300">{stats.winRate}%</p>
+            <p className="text-[11px] text-muted-foreground">معدل النجاح</p>
+          </div>
+          <div className="rounded-xl border border-border bg-card/50 p-3 text-center">
+            <p className="tabular-nums text-lg font-bold text-foreground">
+              {stats.wins} / {stats.losses}
+            </p>
+            <p className="text-[11px] text-muted-foreground">هدف / وقف خسارة</p>
+          </div>
+        </div>
+      )}
+
+      {posLoading ? (
+        <div className="h-14 rounded-xl border border-border bg-card/50 animate-pulse" />
+      ) : openPositions.length === 0 && closedPositions.length === 0 ? (
+        <div className="rounded-xl border border-border bg-card/30 px-4 py-8 text-center">
+          <Activity className="h-8 w-8 text-muted-foreground/30 mx-auto mb-2" />
+          <p className="text-sm text-muted-foreground">
+            لا توجد صفقات محاكاة بعد
+          </p>
+          <p className="text-xs text-muted-foreground/70 mt-1">
+            استخدم زر &quot;محاكاة دخول الصفقة&quot; في طرفية الكريبتو لإضافة صفقة
+          </p>
+        </div>
+      ) : (
+        <div className="space-y-2">
+          {openPositions.map((p) => (
+            <SimulatedPositionRow key={p._id} position={p} onUpdated={handleUpdated} />
+          ))}
+          {closedPositions.slice(0, 10).map((p) => (
+            <SimulatedPositionRow key={p._id} position={p} onUpdated={handleUpdated} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Main Page
 // ---------------------------------------------------------------------------
 
@@ -380,6 +687,9 @@ export default function DecisionJournalPage() {
             ليس توصية مالية — القرار النهائي للإنسان دائماً.
           </p>
         </div>
+
+        {/* Simulated Crypto Journal */}
+        <SimulatedPositionsSection />
 
         {/* Filters */}
         <div className="flex flex-wrap gap-3">

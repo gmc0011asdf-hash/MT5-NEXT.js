@@ -248,6 +248,71 @@ class GoldProAnalysis(Base):
         }
 
 
+class SimulatedPosition(Base):
+    """
+    Simulated (paper) trade position created from the OKX crypto lab UI.
+
+    Local-First, analysis-only record: nothing here is sent to any broker
+    or execution endpoint. Status transitions (PENDING -> ACTIVE ->
+    HIT_TP / HIT_SL / CLOSED_MANUAL) are set manually by the user from the
+    Decision Journal to track simulated win-rate.
+
+    Fields:
+        symbol, source                  - e.g. "BTC-USDT", "okx"
+        direction                        - "BUY" | "SELL"
+        entry_price, stop_loss,
+        take_profit, lot_size            - trade plan copied from the signal
+        risk_amount, profit_amount       - estimated USD amounts at entry
+        signal_strength                  - council confidence at entry (0..1)
+        status                           - PENDING | ACTIVE | HIT_TP | HIT_SL | CLOSED_MANUAL
+        opened_at, closed_at             - simulation timestamps (user supplied / set on close)
+        notes                            - optional free-text note
+    """
+
+    __tablename__ = "simulated_positions"
+
+    id              = Column(Integer, primary_key=True, autoincrement=True)
+    symbol          = Column(String(20), nullable=False)
+    source          = Column(String(10), nullable=False, default="okx")
+    direction       = Column(String(4), nullable=False)
+    entry_price     = Column(Float, nullable=True)
+    stop_loss       = Column(Float, nullable=True)
+    take_profit     = Column(Float, nullable=True)
+    lot_size        = Column(Float, nullable=True)
+    risk_amount     = Column(Float, nullable=True)
+    profit_amount   = Column(Float, nullable=True)
+    signal_strength = Column(Float, nullable=True)
+    status          = Column(String(15), nullable=False, default="PENDING")
+    opened_at       = Column(DateTime(timezone=True), nullable=True)
+    closed_at       = Column(DateTime(timezone=True), nullable=True)
+    notes           = Column(Text, nullable=True)
+    timestamp       = Column(DateTime(timezone=True), nullable=False, default=_utcnow)
+
+    __table_args__ = (
+        Index("ix_sim_pos_symbol_status", "symbol", "status"),
+    )
+
+    def to_dict(self) -> dict:
+        return {
+            "_id":            self.id,
+            "symbol":         self.symbol,
+            "source":         self.source,
+            "direction":      self.direction,
+            "entryPrice":     self.entry_price,
+            "stopLoss":       self.stop_loss,
+            "takeProfit":     self.take_profit,
+            "lotSize":        self.lot_size,
+            "riskAmount":     self.risk_amount,
+            "profitAmount":   self.profit_amount,
+            "signalStrength": self.signal_strength,
+            "status":         self.status,
+            "openedAt":       self.opened_at.isoformat() if self.opened_at else None,
+            "closedAt":       self.closed_at.isoformat() if self.closed_at else None,
+            "notes":          self.notes,
+            "createdAt":      self.timestamp.isoformat() if self.timestamp else None,
+        }
+
+
 class TripleFirewallSignal(Base):
     """
     Structured history of Triple Firewall confluence analysis runs.

@@ -28,7 +28,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from agents import CouncilEngine, CouncilVerdict, calculate_position_size, candles_to_dataframe, get_market_session
-from database import DecisionJournal, EconomicNewsEvent, GoldProAnalysis, MT5OpenPosition, MT5TradeHistory, SessionLocal, StrategySignal, SystemConfig, TelegramSubscriber, TripleFirewallSignal, get_db, init_db
+from database import DecisionJournal, EconomicNewsEvent, GoldProAnalysis, MT5OpenPosition, MT5TradeHistory, SessionLocal, SimulatedPosition, StrategySignal, SystemConfig, TelegramSubscriber, TripleFirewallSignal, get_db, init_db
 from telegram_subscribers import block_subscriber, run_telegram_bot_polling, unblock_subscriber
 from mt5_trade_sync import run_mt5_trade_sync, sync_mt5_trades_once
 from economic_calendar import compute_status, is_in_risk_window, run_news_radar_sync, seconds_until, sync_calendar_events
@@ -2037,6 +2037,164 @@ def api_get_gold_pro_accuracy_stats(
                 "losses":   losses,
                 "pending":  pending,
                 "accuracy": accuracy,
+            },
+        }
+    )
+
+
+_SIMULATED_POSITION_STATUSES = ("PENDING", "ACTIVE", "HIT_TP", "HIT_SL", "CLOSED_MANUAL")
+
+
+class SimulatedPositionCreateRequest(BaseModel):
+    """Simulated (paper) crypto trade created from the OKX lab 'Simulate Entry' form."""
+    symbol:         str
+    source:         str = "okx"
+    direction:      str
+    entryPrice:     float | None = None
+    stopLoss:       float | None = None
+    takeProfit:     float | None = None
+    lotSize:        float | None = None
+    riskAmount:     float | None = None
+    profitAmount:   float | None = None
+    signalStrength: float | None = None
+    openedAt:       int | None = None
+    notes:          str | None = None
+
+
+class SimulatedPositionStatusRequest(BaseModel):
+    """Manual status update for a simulated position (HIT_TP / HIT_SL / etc.)."""
+    status:   str
+    closedAt: int | None = None
+
+
+@app.post("/api/journal/simulated-positions")
+def api_create_simulated_position(
+    body: SimulatedPositionCreateRequest,
+    db:   Session = Depends(get_db),
+) -> JSONResponse:
+    """
+    Creates a simulated (paper) trade record. Local-First, analysis-only.
+    Does not place, modify, or close any real or pending order.
+    """
+    direction = body.direction.strip().upper()
+    if direction not in ("BUY", "SELL"):
+        return Utf8JsonResponse(content={"ok": False, "error": "direction غير صالح"}, status_code=400)
+
+    row = SimulatedPosition(
+        symbol=body.symbol.strip().upper(),
+        source=(body.source or "okx").strip().lower(),
+        direction=direction,
+        entry_price=body.entryPrice,
+        stop_loss=body.stopLoss,
+        take_profit=body.takeProfit,
+        lot_size=body.lotSize,
+        risk_amount=body.riskAmount,
+        profit_amount=body.profitAmount,
+        signal_strength=body.signalStrength,
+        status="PENDING",
+        opened_at=datetime.fromtimestamp(body.openedAt / 1000, tz=timezone.utc) if body.openedAt else None,
+        notes=body.notes,
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+
+    return Utf8JsonResponse(content={"ok": True, "id": row.id, "position": row.to_dict()})
+
+
+@app.get("/api/journal/simulated-positions")
+def api_get_simulated_positions(
+    status: str | None = Query(default=None, max_length=15),
+    source: str | None = Query(default=None, max_length=10),
+    limit:  int        = Query(default=100, ge=1, le=500),
+    db:     Session    = Depends(get_db),
+) -> JSONResponse:
+    """
+    Returns simulated positions, most recent first.
+    Read-only — no writes performed here.
+    """
+    q = db.query(SimulatedPosition)
+
+    if status and status.strip():
+        q = q.filter(SimulatedPosition.status == status.strip().upper())
+    if source and source.strip():
+        q = q.filter(SimulatedPosition.source == source.strip().lower())
+
+    rows = q.order_by(SimulatedPosition.timestamp.desc()).limit(limit).all()
+
+    return Utf8JsonResponse(
+        content={
+            "ok":        True,
+            "count":     len(rows),
+            "positions": [r.to_dict() for r in rows],
+        }
+    )
+
+
+@app.post("/api/journal/simulated-positions/{position_id}/status")
+def api_update_simulated_position_status(
+    position_id: int,
+    body:        SimulatedPositionStatusRequest,
+    db:          Session = Depends(get_db),
+) -> JSONResponse:
+    """
+    Manually updates the status of a simulated position
+    (e.g. ACTIVE -> HIT_TP / HIT_SL / CLOSED_MANUAL).
+    Local journal bookkeeping only — no trading action performed.
+    """
+    new_status = body.status.strip().upper()
+    if new_status not in _SIMULATED_POSITION_STATUSES:
+        return Utf8JsonResponse(content={"ok": False, "error": "status غير صالح"}, status_code=400)
+
+    row = db.query(SimulatedPosition).filter(SimulatedPosition.id == position_id).first()
+    if row is None:
+        return Utf8JsonResponse(content={"ok": False, "error": "الصفقة غير موجودة"}, status_code=404)
+
+    row.status = new_status
+    if new_status in ("HIT_TP", "HIT_SL", "CLOSED_MANUAL"):
+        row.closed_at = (
+            datetime.fromtimestamp(body.closedAt / 1000, tz=timezone.utc) if body.closedAt else datetime.now(timezone.utc)
+        )
+    db.commit()
+    db.refresh(row)
+
+    return Utf8JsonResponse(content={"ok": True, "position": row.to_dict()})
+
+
+@app.get("/api/journal/simulated-positions/stats")
+def api_get_simulated_position_stats(
+    source: str | None = Query(default=None, max_length=10),
+    db:     Session    = Depends(get_db),
+) -> JSONResponse:
+    """
+    Aggregate win-rate stats over simulated positions, grouped by closed outcome.
+    Read-only — no writes performed here.
+    """
+    q = db.query(SimulatedPosition)
+
+    if source and source.strip():
+        q = q.filter(SimulatedPosition.source == source.strip().lower())
+
+    rows = q.all()
+
+    total   = len(rows)
+    wins    = sum(1 for r in rows if r.status == "HIT_TP")
+    losses  = sum(1 for r in rows if r.status == "HIT_SL")
+    open_   = sum(1 for r in rows if r.status in ("PENDING", "ACTIVE"))
+    closed_manual = sum(1 for r in rows if r.status == "CLOSED_MANUAL")
+    decided = wins + losses
+    win_rate = round((wins / decided) * 100, 1) if decided > 0 else 0.0
+
+    return Utf8JsonResponse(
+        content={
+            "ok": True,
+            "stats": {
+                "total":        total,
+                "wins":         wins,
+                "losses":       losses,
+                "open":         open_,
+                "closedManual": closed_manual,
+                "winRate":      win_rate,
             },
         }
     )
