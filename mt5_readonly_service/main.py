@@ -2063,8 +2063,10 @@ class SimulatedPositionCreateRequest(BaseModel):
 
 class SimulatedPositionStatusRequest(BaseModel):
     """Manual status update for a simulated position (HIT_TP / HIT_SL / etc.)."""
-    status:   str
-    closedAt: int | None = None
+    status:              str
+    closedAt:            int | None = None
+    technicalPostMortem: str | None = None
+    actionableLesson:    str | None = None
 
 
 @app.post("/api/journal/simulated-positions")
@@ -2155,6 +2157,10 @@ def api_update_simulated_position_status(
         row.closed_at = (
             datetime.fromtimestamp(body.closedAt / 1000, tz=timezone.utc) if body.closedAt else datetime.now(timezone.utc)
         )
+        if body.technicalPostMortem is not None:
+            row.technical_post_mortem = body.technicalPostMortem
+        if body.actionableLesson is not None:
+            row.actionable_lesson = body.actionableLesson
     db.commit()
     db.refresh(row)
 

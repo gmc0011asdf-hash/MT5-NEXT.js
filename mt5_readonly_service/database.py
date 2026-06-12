@@ -283,10 +283,12 @@ class SimulatedPosition(Base):
     profit_amount   = Column(Float, nullable=True)
     signal_strength = Column(Float, nullable=True)
     status          = Column(String(15), nullable=False, default="PENDING")
-    opened_at       = Column(DateTime(timezone=True), nullable=True)
-    closed_at       = Column(DateTime(timezone=True), nullable=True)
-    notes           = Column(Text, nullable=True)
-    timestamp       = Column(DateTime(timezone=True), nullable=False, default=_utcnow)
+    opened_at             = Column(DateTime(timezone=True), nullable=True)
+    closed_at             = Column(DateTime(timezone=True), nullable=True)
+    notes                 = Column(Text, nullable=True)
+    technical_post_mortem = Column(Text, nullable=True)
+    actionable_lesson     = Column(Text, nullable=True)
+    timestamp             = Column(DateTime(timezone=True), nullable=False, default=_utcnow)
 
     __table_args__ = (
         Index("ix_sim_pos_symbol_status", "symbol", "status"),
@@ -306,10 +308,12 @@ class SimulatedPosition(Base):
             "profitAmount":   self.profit_amount,
             "signalStrength": self.signal_strength,
             "status":         self.status,
-            "openedAt":       self.opened_at.isoformat() if self.opened_at else None,
-            "closedAt":       self.closed_at.isoformat() if self.closed_at else None,
-            "notes":          self.notes,
-            "createdAt":      self.timestamp.isoformat() if self.timestamp else None,
+            "openedAt":            self.opened_at.isoformat() if self.opened_at else None,
+            "closedAt":            self.closed_at.isoformat() if self.closed_at else None,
+            "notes":               self.notes,
+            "technicalPostMortem": self.technical_post_mortem,
+            "actionableLesson":    self.actionable_lesson,
+            "createdAt":           self.timestamp.isoformat() if self.timestamp else None,
         }
 
 
@@ -689,23 +693,31 @@ class SystemConfig(Base):
 # Public interface
 # ---------------------------------------------------------------------------
 
-def _ensure_telegram_subscriber_columns() -> None:
+def _ensure_schema_updates() -> None:
     """
     Base.metadata.create_all() only creates missing TABLES, not missing
-    COLUMNS on tables that already exist. telegram_subscribers was created
-    by an earlier stage and already has rows, so a new column added to the
-    model needs an explicit ALTER TABLE here. Idempotent and additive --
-    existing rows get the column's DEFAULT value, nothing is dropped.
+    COLUMNS on tables that already exist. This function explicitly adds
+    columns using ALTER TABLE for existing rows. Idempotent and additive.
     """
     inspector = inspect(engine)
-    if "telegram_subscribers" not in inspector.get_table_names():
-        return
-    columns = {col["name"] for col in inspector.get_columns("telegram_subscribers")}
-    if "is_blocked" not in columns:
+    
+    # 1. Telegram Subscribers
+    if "telegram_subscribers" in inspector.get_table_names():
+        columns = {col["name"] for col in inspector.get_columns("telegram_subscribers")}
+        if "is_blocked" not in columns:
+            with engine.begin() as conn:
+                conn.execute(text(
+                    "ALTER TABLE telegram_subscribers ADD COLUMN is_blocked INTEGER NOT NULL DEFAULT 0"
+                ))
+
+    # 2. Simulated Positions
+    if "simulated_positions" in inspector.get_table_names():
+        columns = {col["name"] for col in inspector.get_columns("simulated_positions")}
         with engine.begin() as conn:
-            conn.execute(text(
-                "ALTER TABLE telegram_subscribers ADD COLUMN is_blocked INTEGER NOT NULL DEFAULT 0"
-            ))
+            if "technical_post_mortem" not in columns:
+                conn.execute(text("ALTER TABLE simulated_positions ADD COLUMN technical_post_mortem TEXT"))
+            if "actionable_lesson" not in columns:
+                conn.execute(text("ALTER TABLE simulated_positions ADD COLUMN actionable_lesson TEXT"))
 
 
 def init_db() -> None:
@@ -715,7 +727,7 @@ def init_db() -> None:
     Existing data is never dropped or altered.
     """
     Base.metadata.create_all(bind=engine)
-    _ensure_telegram_subscriber_columns()
+    _ensure_schema_updates()
 
 
 def get_db() -> Generator[Session, None, None]:

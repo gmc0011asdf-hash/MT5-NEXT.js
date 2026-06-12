@@ -13,7 +13,12 @@ import {
   AlertTriangle,
   Users,
   Activity,
+  X,
+  MessageSquareText,
+  Flame,
+  Award,
 } from "lucide-react";
+import { cn } from "@/lib/utils";
 
 const FASTAPI_BASE = "http://127.0.0.1:8010";
 
@@ -73,8 +78,10 @@ interface SimulatedPosition {
   status:         SimulatedPositionStatus;
   openedAt:       string | null;
   closedAt:       string | null;
-  notes:          string | null;
-  createdAt:      string | null;
+  notes:               string | null;
+  technicalPostMortem: string | null;
+  actionableLesson:    string | null;
+  createdAt:           string | null;
 }
 
 interface SimulatedPositionsResponse {
@@ -115,16 +122,16 @@ async function fetchJournal(
   return res.json() as Promise<JournalResponse>;
 }
 
-async function fetchSimulatedPositions(): Promise<SimulatedPositionsResponse> {
-  const res = await fetch("/api/lab/journal/simulated-positions?limit=100", {
+async function fetchSimulatedPositions(source: "mt5" | "okx"): Promise<SimulatedPositionsResponse> {
+  const res = await fetch(`/api/lab/journal/simulated-positions?limit=100&source=${source}`, {
     cache: "no-store",
   });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return res.json() as Promise<SimulatedPositionsResponse>;
 }
 
-async function fetchSimulatedStats(): Promise<SimulatedStatsResponse> {
-  const res = await fetch("/api/lab/journal/simulated-positions/stats", {
+async function fetchSimulatedStats(source: "mt5" | "okx"): Promise<SimulatedStatsResponse> {
+  const res = await fetch(`/api/lab/journal/simulated-positions/stats?source=${source}`, {
     cache: "no-store",
   });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -398,64 +405,161 @@ function SimulatedPositionActions({
   position: SimulatedPosition;
   onUpdated: () => void;
 }) {
-  const [pending, setPending] = useState<SimulatedPositionStatus | null>(null);
+  const [pendingStatus, setPendingStatus] = useState<SimulatedPositionStatus | null>(null);
+  const [showModal, setShowModal] = useState(false);
+  const [technicalPostMortem, setTechnicalPostMortem] = useState("");
+  const [actionableLesson, setActionableLesson] = useState("");
 
-  const updateStatus = async (status: SimulatedPositionStatus) => {
-    setPending(status);
+  const updateStatus = async (status: SimulatedPositionStatus, pm?: string, lesson?: string) => {
+    setPendingStatus(status);
     try {
       const res = await fetch(
         `/api/lab/journal/simulated-positions/${position._id}/status`,
         {
           method:  "POST",
           headers: { "Content-Type": "application/json" },
-          body:    JSON.stringify({ status }),
+          body:    JSON.stringify({
+            status,
+            technicalPostMortem: pm || undefined,
+            actionableLesson: lesson || undefined,
+          }),
         },
       );
-      if (res.ok) onUpdated();
+      if (res.ok) {
+        setShowModal(false);
+        onUpdated();
+      }
     } finally {
-      setPending(null);
+      setPendingStatus(null);
     }
   };
 
-  const busy = pending !== null;
+  const handleActionClick = (status: SimulatedPositionStatus) => {
+    if (status === "ACTIVE") {
+      updateStatus(status);
+    } else {
+      setPendingStatus(status);
+      setShowModal(true);
+    }
+  };
+
+  const busy = pendingStatus !== null && !showModal;
 
   return (
-    <div className="flex flex-wrap items-center gap-1.5">
-      {position.status === "PENDING" && (
+    <>
+      <div className="flex flex-wrap items-center gap-1.5">
+        {position.status === "PENDING" && (
+          <button
+            type="button"
+            onClick={() => handleActionClick("ACTIVE")}
+            disabled={busy}
+            className="rounded-full border border-cyan-500/30 bg-cyan-500/10 px-2.5 py-1 text-[10px] font-bold text-cyan-300 transition-colors hover:bg-cyan-500/20 disabled:opacity-50"
+          >
+            تفعيل
+          </button>
+        )}
         <button
           type="button"
-          onClick={() => updateStatus("ACTIVE")}
+          onClick={() => handleActionClick("HIT_TP")}
           disabled={busy}
-          className="rounded-full border border-cyan-500/30 bg-cyan-500/10 px-2.5 py-1 text-[10px] font-bold text-cyan-300 transition-colors hover:bg-cyan-500/20 disabled:opacity-50"
+          className="rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2.5 py-1 text-[10px] font-bold text-emerald-300 transition-colors hover:bg-emerald-500/20 disabled:opacity-50"
         >
-          تفعيل
+          HIT TP
         </button>
+        <button
+          type="button"
+          onClick={() => handleActionClick("HIT_SL")}
+          disabled={busy}
+          className="rounded-full border border-rose-500/30 bg-rose-500/10 px-2.5 py-1 text-[10px] font-bold text-rose-300 transition-colors hover:bg-rose-500/20 disabled:opacity-50"
+        >
+          HIT SL
+        </button>
+        <button
+          type="button"
+          onClick={() => handleActionClick("CLOSED_MANUAL")}
+          disabled={busy}
+          className="rounded-full border border-border/40 bg-muted/20 px-2.5 py-1 text-[10px] font-bold text-muted-foreground transition-colors hover:text-foreground disabled:opacity-50"
+        >
+          إغلاق يدوي
+        </button>
+      </div>
+
+      {showModal && pendingStatus && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-4"
+          onClick={() => {
+            setShowModal(false);
+            setPendingStatus(null);
+          }}
+        >
+          <div
+            className="w-full max-w-md rounded-2xl border border-border/40 bg-card p-5 shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+            dir="rtl"
+          >
+            <div className="mb-4 flex items-center justify-between">
+              <h3 className="text-sm font-bold text-foreground">
+                تشريح نتيجة الصفقة (Post-Mortem)
+              </h3>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowModal(false);
+                  setPendingStatus(null);
+                }}
+                className="text-muted-foreground transition-colors hover:text-foreground"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <div className="mb-4 rounded-lg border border-border/30 bg-card/50 p-3">
+              <p className="text-xs text-muted-foreground">
+                إغلاق الصفقة كـ: <span className="font-bold text-foreground">{SIMULATED_STATUS_LABELS[pendingStatus]}</span>
+              </p>
+              <p className="text-[10px] text-muted-foreground/70 mt-1">
+                سجل الملاحظات التقنية والدروس المستفادة لبناء مرجع تعليمي (اختياري).
+              </p>
+            </div>
+
+            <div className="space-y-4">
+              <div>
+                <label className="mb-1 block text-xs text-muted-foreground">التحليل الفني للنتيجة (Technical Post-Mortem)</label>
+                <textarea
+                  value={technicalPostMortem}
+                  onChange={(e) => setTechnicalPostMortem(e.target.value)}
+                  rows={3}
+                  placeholder="مثال: تم ضرب الوقف بسبب خبر مفاجئ، أو السعر احترم منطقة الـ FVG..."
+                  className="w-full resize-none rounded-lg border border-border/30 bg-card/50 px-3 py-2 text-xs text-foreground focus:border-amber-500/50 focus:outline-none"
+                />
+              </div>
+
+              <div>
+                <label className="mb-1 block text-xs text-muted-foreground">الدرس المستفاد (Actionable Lesson)</label>
+                <textarea
+                  value={actionableLesson}
+                  onChange={(e) => setActionableLesson(e.target.value)}
+                  rows={3}
+                  placeholder="مثال: يجب تجنب الدخول قبل الأخبار بـ 15 دقيقة..."
+                  className="w-full resize-none rounded-lg border border-border/30 bg-card/50 px-3 py-2 text-xs text-foreground focus:border-amber-500/50 focus:outline-none"
+                />
+              </div>
+            </div>
+
+            <div className="mt-5 flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => updateStatus(pendingStatus, technicalPostMortem, actionableLesson)}
+                disabled={busy}
+                className="flex-1 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs font-bold text-amber-300 transition-colors hover:bg-amber-500/20 disabled:opacity-50"
+              >
+                {busy ? "جاري الإغلاق..." : "تأكيد وإغلاق الصفقة"}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
-      <button
-        type="button"
-        onClick={() => updateStatus("HIT_TP")}
-        disabled={busy}
-        className="rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2.5 py-1 text-[10px] font-bold text-emerald-300 transition-colors hover:bg-emerald-500/20 disabled:opacity-50"
-      >
-        HIT TP
-      </button>
-      <button
-        type="button"
-        onClick={() => updateStatus("HIT_SL")}
-        disabled={busy}
-        className="rounded-full border border-rose-500/30 bg-rose-500/10 px-2.5 py-1 text-[10px] font-bold text-rose-300 transition-colors hover:bg-rose-500/20 disabled:opacity-50"
-      >
-        HIT SL
-      </button>
-      <button
-        type="button"
-        onClick={() => updateStatus("CLOSED_MANUAL")}
-        disabled={busy}
-        className="rounded-full border border-border/40 bg-muted/20 px-2.5 py-1 text-[10px] font-bold text-muted-foreground transition-colors hover:text-foreground disabled:opacity-50"
-      >
-        إغلاق يدوي
-      </button>
-    </div>
+    </>
   );
 }
 
@@ -474,47 +578,74 @@ function SimulatedPositionRow({
   const ts = position.openedAt ?? position.createdAt;
 
   return (
-    <div className="rounded-xl border border-border bg-card/50 px-4 py-3 flex flex-wrap items-center gap-x-4 gap-y-2">
-      <DirectionBadge dir={position.direction} />
+    <div className="rounded-xl border border-border bg-card/50 transition-colors">
+      <div className="px-4 py-3 flex flex-wrap items-center gap-x-4 gap-y-2">
+        <DirectionBadge dir={position.direction} />
 
-      <span className="font-mono text-sm font-semibold text-foreground min-w-[90px]">
-        {position.symbol}
-      </span>
+        <span className="font-mono text-sm font-semibold text-foreground min-w-[90px]">
+          {position.symbol}
+        </span>
 
-      {position.entryPrice != null && (
-        <span className="tabular-nums text-xs text-muted-foreground">
-          دخول: {position.entryPrice}
-        </span>
-      )}
-      {position.stopLoss != null && (
-        <span className="tabular-nums text-xs text-rose-300">
-          SL: {position.stopLoss}
-        </span>
-      )}
-      {position.takeProfit != null && (
-        <span className="tabular-nums text-xs text-emerald-300">
-          TP: {position.takeProfit}
-        </span>
-      )}
-      {position.lotSize != null && (
-        <span className="tabular-nums text-xs text-muted-foreground">
-          لوت: {position.lotSize}
-        </span>
-      )}
+        {position.entryPrice != null && (
+          <span className="tabular-nums text-xs text-muted-foreground">
+            دخول: {position.entryPrice}
+          </span>
+        )}
+        {position.stopLoss != null && (
+          <span className="tabular-nums text-xs text-rose-300">
+            SL: {position.stopLoss}
+          </span>
+        )}
+        {position.takeProfit != null && (
+          <span className="tabular-nums text-xs text-emerald-300">
+            TP: {position.takeProfit}
+          </span>
+        )}
+        {position.lotSize != null && (
+          <span className="tabular-nums text-xs text-muted-foreground">
+            لوت: {position.lotSize}
+          </span>
+        )}
 
-      <span className="rounded px-1.5 py-0.5 text-[10px] font-medium bg-muted/30 text-muted-foreground">
-        {SIMULATED_STATUS_LABELS[position.status]}
-      </span>
-
-      {ts && (
-        <span className="text-xs text-muted-foreground mr-auto">
-          {formatTs(ts)}
+        <span className="rounded px-1.5 py-0.5 text-[10px] font-medium bg-muted/30 text-muted-foreground">
+          {SIMULATED_STATUS_LABELS[position.status]}
         </span>
-      )}
 
-      {isOpen && (
-        <div className={ts ? "" : "mr-auto"}>
-          <SimulatedPositionActions position={position} onUpdated={onUpdated} />
+        {ts && (
+          <span className="text-xs text-muted-foreground mr-auto">
+            {formatTs(ts)}
+          </span>
+        )}
+
+        {isOpen && (
+          <div className={ts ? "" : "mr-auto"}>
+            <SimulatedPositionActions position={position} onUpdated={onUpdated} />
+          </div>
+        )}
+      </div>
+
+      {(!isOpen && (position.technicalPostMortem || position.actionableLesson)) && (
+        <div className="border-t border-border/50 bg-card/30 px-4 py-3">
+          <div className="grid gap-3 sm:grid-cols-2">
+            {position.technicalPostMortem && (
+              <div className="rounded-lg border border-border/30 bg-card/50 p-2.5 text-xs">
+                <div className="mb-1.5 flex items-center gap-1.5 text-muted-foreground">
+                  <Activity className="h-3.5 w-3.5" />
+                  <span className="font-semibold">التحليل الفني للنتيجة</span>
+                </div>
+                <p className="leading-relaxed text-foreground/80">{position.technicalPostMortem}</p>
+              </div>
+            )}
+            {position.actionableLesson && (
+              <div className="rounded-lg border border-border/30 bg-card/50 p-2.5 text-xs">
+                <div className="mb-1.5 flex items-center gap-1.5 text-muted-foreground">
+                  <MessageSquareText className="h-3.5 w-3.5" />
+                  <span className="font-semibold">الدرس المستفاد</span>
+                </div>
+                <p className="leading-relaxed text-foreground/80">{position.actionableLesson}</p>
+              </div>
+            )}
+          </div>
         </div>
       )}
     </div>
@@ -525,23 +656,23 @@ function SimulatedPositionRow({
 // Simulated Crypto Journal — section
 // ---------------------------------------------------------------------------
 
-function SimulatedPositionsSection() {
+function SimulatedPositionsSection({ source }: { source: "mt5" | "okx" }) {
   const {
     data: posData,
     isLoading: posLoading,
     isError: posError,
     refetch: refetchPositions,
   } = useQuery<SimulatedPositionsResponse>({
-    queryKey: ["simulated-positions"],
-    queryFn:  fetchSimulatedPositions,
+    queryKey: ["simulated-positions", source],
+    queryFn:  () => fetchSimulatedPositions(source),
     refetchInterval: 60_000,
     retry:    false,
     staleTime: 30_000,
   });
 
   const { data: statsData, refetch: refetchStats } = useQuery<SimulatedStatsResponse>({
-    queryKey: ["simulated-positions-stats"],
-    queryFn:  fetchSimulatedStats,
+    queryKey: ["simulated-positions-stats", source],
+    queryFn:  () => fetchSimulatedStats(source),
     refetchInterval: 60_000,
     retry:    false,
     staleTime: 30_000,
@@ -562,12 +693,12 @@ function SimulatedPositionsSection() {
   return (
     <div className="space-y-3">
       <div className="flex items-center gap-3">
-        <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-cyan-500/15 border border-cyan-500/25">
-          <Activity className="h-4 w-4 text-cyan-400" />
+        <div className={cn("flex h-9 w-9 items-center justify-center rounded-xl border", source === "mt5" ? "bg-amber-500/15 border-amber-500/25" : "bg-cyan-500/15 border-cyan-500/25")}>
+          <Activity className={cn("h-4 w-4", source === "mt5" ? "text-amber-400" : "text-cyan-400")} />
         </div>
         <div>
           <h2 className="text-base font-bold text-foreground">
-            الصفقات المحاكاة — الكريبتو
+            الصفقات المحاكاة — {source === "mt5" ? "الفوركس والذهب" : "الكريبتو"}
           </h2>
           <p className="text-xs text-muted-foreground">
             سجل صفقات محاكي (Paper Trades) — لا تنفيذ حقيقي — للأغراض المعلوماتية فقط
@@ -581,8 +712,8 @@ function SimulatedPositionsSection() {
             <p className="tabular-nums text-lg font-bold text-foreground">{stats.total}</p>
             <p className="text-[11px] text-muted-foreground">إجمالي الصفقات</p>
           </div>
-          <div className="rounded-xl border border-cyan-500/20 bg-cyan-500/5 p-3 text-center">
-            <p className="tabular-nums text-lg font-bold text-cyan-300">{stats.open}</p>
+          <div className={cn("rounded-xl border p-3 text-center", source === "mt5" ? "border-amber-500/20 bg-amber-500/5" : "border-cyan-500/20 bg-cyan-500/5")}>
+            <p className={cn("tabular-nums text-lg font-bold", source === "mt5" ? "text-amber-300" : "text-cyan-300")}>{stats.open}</p>
             <p className="text-[11px] text-muted-foreground">صفقات مفتوحة</p>
           </div>
           <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/5 p-3 text-center">
@@ -607,7 +738,7 @@ function SimulatedPositionsSection() {
             لا توجد صفقات محاكاة بعد
           </p>
           <p className="text-xs text-muted-foreground/70 mt-1">
-            استخدم زر &quot;محاكاة دخول الصفقة&quot; في طرفية الكريبتو لإضافة صفقة
+            استخدم زر &quot;محاكاة دخول الصفقة&quot; في الطرفية لإضافة صفقة
           </p>
         </div>
       ) : (
@@ -620,6 +751,43 @@ function SimulatedPositionsSection() {
           ))}
         </div>
       )}
+    </div>
+  );
+}
+
+function SimulatedPositionsTabs() {
+  const [activeTab, setActiveTab] = useState<"mt5" | "okx">("mt5");
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center gap-2 border-b border-border/50 pb-2">
+        <button
+          onClick={() => setActiveTab("mt5")}
+          className={cn(
+            "flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-semibold transition-colors",
+            activeTab === "mt5"
+              ? "bg-amber-500/10 text-amber-400"
+              : "text-muted-foreground hover:bg-card/50 hover:text-foreground"
+          )}
+        >
+          <Award className="h-4 w-4" />
+          الذهب والفوركس (MT5)
+        </button>
+        <button
+          onClick={() => setActiveTab("okx")}
+          className={cn(
+            "flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-semibold transition-colors",
+            activeTab === "okx"
+              ? "bg-cyan-500/10 text-cyan-400"
+              : "text-muted-foreground hover:bg-card/50 hover:text-foreground"
+          )}
+        >
+          <Flame className="h-4 w-4" />
+          الكريبتو (OKX)
+        </button>
+      </div>
+
+      <SimulatedPositionsSection source={activeTab} />
     </div>
   );
 }
@@ -688,8 +856,8 @@ export default function DecisionJournalPage() {
           </p>
         </div>
 
-        {/* Simulated Crypto Journal */}
-        <SimulatedPositionsSection />
+        {/* Simulated Crypto & MT5 Journal */}
+        <SimulatedPositionsTabs />
 
         {/* Filters */}
         <div className="flex flex-wrap gap-3">
