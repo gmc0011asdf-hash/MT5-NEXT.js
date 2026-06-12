@@ -155,18 +155,21 @@ function SimulateEntryModal({
   symbol,
   onClose,
 }: {
-  signal: AgentSignal;
+  signal: AgentSignal | null;
   symbol: string;
   onClose: () => void;
 }) {
-  const [entryPrice, setEntryPrice] = useState(signal.entry != null ? String(signal.entry) : "");
-  const [stopLoss, setStopLoss]     = useState(signal.sl != null ? String(signal.sl) : "");
-  const [takeProfit, setTakeProfit] = useState(signal.tp != null ? String(signal.tp) : "");
-  const [lotSize, setLotSize]       = useState(signal.lot_size != null ? String(signal.lot_size) : "");
-  const initialNotes = signal.votes
-    .filter((v) => v.approved && v.reason)
-    .map((v) => `${v.agent}: ${v.reason}`)
-    .join("\n");
+  const [direction, setDirection]   = useState<"BUY" | "SELL">(signal?.direction === "SELL" ? "SELL" : "BUY");
+  const [entryPrice, setEntryPrice] = useState(signal?.entry != null ? String(signal.entry) : "");
+  const [stopLoss, setStopLoss]     = useState(signal?.sl != null ? String(signal.sl) : "");
+  const [takeProfit, setTakeProfit] = useState(signal?.tp != null ? String(signal.tp) : "");
+  const [lotSize, setLotSize]       = useState(signal?.lot_size != null ? String(signal.lot_size) : "");
+  const initialNotes = signal?.votes
+    ? signal.votes
+        .filter((v) => v.approved && v.reason)
+        .map((v) => `${v.agent}: ${v.reason}`)
+        .join("\n")
+    : "";
   const [notes, setNotes]           = useState(initialNotes);
   const [simDate, setSimDate]       = useState(() => {
     const d = new Date();
@@ -188,14 +191,14 @@ function SimulateEntryModal({
         body: JSON.stringify({
           symbol,
           source:         "mt5",
-          direction:      signal.direction,
+          direction:      direction,
           entryPrice:     entryPrice  ? Number(entryPrice)  : null,
           stopLoss:       stopLoss    ? Number(stopLoss)    : null,
           takeProfit:     takeProfit  ? Number(takeProfit)  : null,
           lotSize:        lotSize     ? Number(lotSize)     : null,
-          riskAmount:     signal.risk_amount,
-          profitAmount:   signal.profit_amount,
-          signalStrength: signal.signal_strength,
+          riskAmount:     signal?.risk_amount,
+          profitAmount:   signal?.profit_amount,
+          signalStrength: signal?.signal_strength,
           openedAt,
           notes: notes.trim() || null,
         }),
@@ -211,7 +214,7 @@ function SimulateEntryModal({
     } finally {
       setSubmitting(false);
     }
-  }, [symbol, signal, entryPrice, stopLoss, takeProfit, lotSize, simDate, notes, onClose]);
+  }, [symbol, signal, direction, entryPrice, stopLoss, takeProfit, lotSize, simDate, notes, onClose]);
 
   return (
     <div
@@ -247,16 +250,19 @@ function SimulateEntryModal({
         <div className="grid grid-cols-2 gap-3">
           <div>
             <label className="mb-1 block text-[10px] text-muted-foreground">الاتجاه</label>
-            <div
+            <select
+              value={direction}
+              onChange={(e) => setDirection(e.target.value as "BUY" | "SELL")}
               className={cn(
-                "rounded-lg border px-3 py-2 text-center text-xs font-bold",
-                signal.direction === "BUY"
-                  ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-300"
-                  : "border-rose-500/40 bg-rose-500/10 text-rose-300",
+                "w-full rounded-lg border px-3 py-2 text-center text-xs font-bold appearance-none cursor-pointer focus:outline-none",
+                direction === "BUY"
+                  ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-300 focus:border-emerald-500/50"
+                  : "border-rose-500/40 bg-rose-500/10 text-rose-300 focus:border-rose-500/50",
               )}
             >
-              {signal.direction === "BUY" ? "شراء" : "بيع"}
-            </div>
+              <option value="BUY">شراء (BUY)</option>
+              <option value="SELL">بيع (SELL)</option>
+            </select>
           </div>
 
           <div>
@@ -545,7 +551,7 @@ function TerminalCard({ signal, symbol }: { signal: AgentSignal | null; symbol: 
           </p>
         )}
 
-        {signal && signal.direction && (signal.sl != null || signal.tp != null) && (
+        {symbol && (
           <button
             type="button"
             onClick={() => setShowSimulateModal(true)}
@@ -556,7 +562,7 @@ function TerminalCard({ signal, symbol }: { signal: AgentSignal | null; symbol: 
         )}
       </div>
 
-      {showSimulateModal && signal && (
+      {showSimulateModal && symbol && (
         <SimulateEntryModal
           signal={signal}
           symbol={symbol}
