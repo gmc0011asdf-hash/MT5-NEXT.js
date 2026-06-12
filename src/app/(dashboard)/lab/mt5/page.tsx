@@ -35,6 +35,7 @@ interface AgentVote {
   approved:   boolean;
   confidence: number;
   reason:     string;
+  metadata?:  Record<string, unknown>;
 }
 
 interface AgentSignal {
@@ -45,6 +46,8 @@ interface AgentSignal {
   entry:           number | null;
   sl:              number | null;
   tp:              number | null;
+  theoretical_sl:  number | null;
+  theoretical_tp:  number | null;
   atr:             number | null;
   risk_amount:     number | null;
   profit_amount:   number | null;
@@ -70,6 +73,39 @@ const AGENT_CONFIG: Record<string, { label: string; indicator: string; veto: boo
 };
 
 const AGENT_ORDER = ["TrendAgent", "VolatilityAgent", "MomentumAgent", "RiskAgent"];
+
+// Arabic labels for raw agent metadata (ICT / risk / momentum / volatility metrics)
+const METADATA_LABELS: Record<string, string> = {
+  ema50:         "EMA 50",
+  ema200:        "EMA 200",
+  close:         "السعر الحالي",
+  recent_high:   "أعلى سعر (النطاق)",
+  recent_low:    "أدنى سعر (النطاق)",
+  bullish_fvg:   "فجوة سعرية صعودية (FVG)",
+  bearish_fvg:   "فجوة سعرية هبوطية (FVG)",
+  bullish_bos:   "كسر هيكل صعودي (BOS)",
+  bearish_bos:   "كسر هيكل هبوطي (BOS)",
+  bullish_sweep: "اجتياح سيولة صعودي",
+  bearish_sweep: "اجتياح سيولة هبوطي",
+  atr:           "ATR",
+  entry:         "سعر الدخول",
+  sl:            "وقف الخسارة",
+  tp:            "الهدف",
+  rr:            "نسبة المخاطرة/الربح RR",
+  risk:          "المخاطرة ($)",
+  profit:        "الربح المتوقع ($)",
+  duration:      "المدة المتوقعة",
+  bb_upper:      "Bollinger العلوي",
+  bb_lower:      "Bollinger السفلي",
+  rsi:           "RSI (14)",
+};
+
+function formatMetadataValue(val: unknown): string {
+  if (typeof val === "boolean") return val ? "نعم" : "لا";
+  if (typeof val === "number") return Number.isFinite(val) ? val.toFixed(2) : "--";
+  if (val == null) return "--";
+  return String(val);
+}
 
 // ---------------------------------------------------------------------------
 // Tiny sub-components
@@ -207,6 +243,29 @@ function TerminalCard({ signal, symbol }: { signal: AgentSignal | null; symbol: 
             </div>
           ))}
         </div>
+      ) : signal && (signal.theoretical_sl != null || signal.theoretical_tp != null) ? (
+        <div className="space-y-2">
+          <div className="grid grid-cols-3 gap-3 opacity-60">
+            {[
+              { key: "sl",  label: "وقف نظري SL", val: signal.theoretical_sl, color: "text-rose-400"    },
+              { key: "tp",  label: "هدف نظري TP",  val: signal.theoretical_tp, color: "text-emerald-400" },
+              { key: "atr", label: "ATR (تقلب)",    val: signal.atr,            color: "text-amber-400"   },
+            ].map(({ key, label, val, color }) => (
+              <div
+                key={key}
+                className="rounded-xl border border-dashed border-border/25 bg-card/30 px-3 py-3 text-center"
+              >
+                <p className="text-[10px] leading-tight text-muted-foreground/70 mb-1">{label}</p>
+                <p className={cn("text-sm font-bold tabular-nums", color)}>
+                  {val != null ? val.toFixed(2) : "--"}
+                </p>
+              </div>
+            ))}
+          </div>
+          <p className="text-center text-[10px] text-muted-foreground/40">
+            مستويات نظرية لأغراض معلوماتية فقط — المجلس في وضع الانتظار (WAIT) ولم يعتمد الإشارة
+          </p>
+        </div>
       ) : (
         <div className="rounded-xl border border-border/20 bg-card/30 px-4 py-5 text-center">
           <p className="text-sm text-muted-foreground/60">
@@ -336,6 +395,22 @@ function AgentCard({ vote }: { vote: AgentVote }) {
         <p className="mt-2.5 line-clamp-3 text-[10px] leading-relaxed text-muted-foreground/70">
           {vote.reason}
         </p>
+      )}
+
+      {/* Raw metrics (ICT / ATR / RR / RSI / Bollinger) -- diagnostic only */}
+      {vote.metadata && Object.keys(vote.metadata).length > 0 && (
+        <div className="mt-2.5 grid grid-cols-2 gap-x-2 gap-y-1 border-t border-border/20 pt-2">
+          {Object.entries(vote.metadata).map(([key, val]) => (
+            <div key={key} className="flex items-center justify-between gap-1">
+              <span className="text-[9px] text-muted-foreground/50">
+                {METADATA_LABELS[key] ?? key}
+              </span>
+              <span className="font-mono text-[9px] font-semibold text-muted-foreground/80 tabular-nums">
+                {formatMetadataValue(val)}
+              </span>
+            </div>
+          ))}
+        </div>
       )}
     </div>
   );

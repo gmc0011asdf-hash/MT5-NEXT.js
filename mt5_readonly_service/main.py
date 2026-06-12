@@ -545,6 +545,7 @@ def _sync_scan_cycle(
                             "volume_max":      float(info.volume_max),
                             "volume_step":     float(info.volume_step),
                             "digits":          int(info.digits),
+                            "contract_size":   float(info.trade_contract_size),
                         }
                     
                     if not is_stale:
@@ -758,6 +759,8 @@ async def run_live_agent_council_scan() -> None:
                 "entry":           verdict.entry,
                 "sl":              verdict.sl,
                 "tp":              verdict.tp,
+                "theoretical_sl":  verdict.theoretical_sl,
+                "theoretical_tp":  verdict.theoretical_tp,
                 "atr":             round(verdict.atr, 5) if verdict.atr else None,
                 "risk_amount":     verdict.risk_amount,
                 "profit_amount":   verdict.profit_amount,
@@ -769,6 +772,7 @@ async def run_live_agent_council_scan() -> None:
                         "approved":   v.approved,
                         "confidence": round(v.confidence, 4),
                         "reason":     v.reason,
+                        "metadata":   v.metadata,
                     }
                     for v in verdict.votes
                 ],
@@ -3437,6 +3441,8 @@ async def ws_live_market(websocket: WebSocket) -> None:
                                         "entry":           verdict.entry,
                                         "sl":              verdict.sl,
                                         "tp":              verdict.tp,
+                                        "theoretical_sl":  verdict.theoretical_sl,
+                                        "theoretical_tp":  verdict.theoretical_tp,
                                         "atr":             round(verdict.atr, 5) if verdict.atr else None,
                                         "risk_amount":     verdict.risk_amount,
                                         "profit_amount":   verdict.profit_amount,
@@ -3448,6 +3454,7 @@ async def ws_live_market(websocket: WebSocket) -> None:
                                                 "approved":   v.approved,
                                                 "confidence": round(v.confidence, 4),
                                                 "reason":     v.reason,
+                                                "metadata":   v.metadata,
                                             }
                                             for v in verdict.votes
                                         ],

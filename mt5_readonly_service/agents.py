@@ -65,6 +65,16 @@ ATR_LENGTH = 14
 ATR_SL_MULT = 1.5   # SL placed at entry +/- ATR * ATR_SL_MULT
 ATR_TP_MULT = 3.0   # TP placed at entry +/- ATR * ATR_TP_MULT
 MIN_RR      = 2.0   # minimum reward-to-risk ratio required by RiskAgent
+MIN_RR_HARD_FLOOR = 2.0   # حد أدنى صارم لـ RR لا يمكن تجاوزه عبر system_config (فيتو RiskAgent دونه)
+
+MAX_RISK_PERCENT = 3.0   # أقصى نسبة مخاطرة من رأس المال لكل صفقة (سقف صارم 3%)
+
+SIGNAL_COOLDOWN_HOURS = 4.0   # فترة تهدئة بين إشارتين متطابقتين (نفس الرمز + الاتجاه)
+
+DEFAULT_CONTRACT_SIZE = 100_000.0   # حجم العقد القياسي للفوركس (احتياطي عند غياب tick_value/tick_size)
+
+SWING_LOOKBACK = 30   # نطاق البحث عن آخر قمة/قاع تأرجحي وكتلة تنفيذية (Order Block)
+SWING_STRENGTH = 2    # عدد الشموع على كل جانب لتأكيد القمة/القاع التأرجحي (فركتل)
 
 MIN_CANDLES_EMA = EMA_LENGTH + 10   # 210 bars
 MIN_CANDLES_BB  = BB_LENGTH  + 5    # 25 bars
@@ -77,6 +87,10 @@ MIN_CANDLES_ATR = ATR_LENGTH + 5    # 19 bars
 # ---------------------------------------------------------------------------
 
 _runtime_cfg: dict[str, float] = {}
+
+# In-memory cooldown tracker: (symbol, direction) -> last alert timestamp (UTC).
+# Resets on service restart -- acceptable for a radar-style duplicate-signal guard.
+_LAST_SIGNAL_ALERT_TIMES: dict[tuple[str, str], datetime] = {}
 
 
 def _cfg(key: str, default: float | int) -> float | int:
@@ -348,6 +362,7 @@ def calculate_position_size(
     trade_tick_value: float,
     trade_tick_size: float,
     point: float,
+    contract_size: float = DEFAULT_CONTRACT_SIZE,
     volume_min: float = 0.01,
     volume_max: float = 1000.0,
     volume_step: float = 0.01,
@@ -360,6 +375,10 @@ def calculate_position_size(
     slDistPoints  = |entry - stop_loss| / point
     rawLot        = riskUsd / (slDistPoints * pointValue)
 
+    If trade_tick_value/trade_tick_size are unavailable (0), falls back to the
+    standard forex formula using contract_size:
+        pointValue = point * contract_size
+
     The result is rounded to volume_step and clipped to [volume_min, volume_max].
     Returns a dict with raw/normalized lot, riskUsd, and any warnings —
     never raises.
@@ -371,8 +390,8 @@ def calculate_position_size(
         warnings.append("riskUsd <= 0 -- account_equity أو risk_percent غير صالح")
         return {"raw_lot": 0.0, "normalized_lot": 0.0, "risk_usd": risk_usd, "warnings": warnings}
 
-    if point <= 0 or trade_tick_value <= 0 or trade_tick_size <= 0:
-        warnings.append("خصائص الرمز غير صالحة (point/tick_value/tick_size) -- لا يمكن حساب اللوت")
+    if point <= 0:
+        warnings.append("نقطة السعر (point) غير صالحة -- لا يمكن حساب اللوت")
         return {"raw_lot": 0.0, "normalized_lot": 0.0, "risk_usd": risk_usd, "warnings": warnings}
 
     sl_dist_points = abs(entry_price - stop_loss) / point
@@ -380,7 +399,15 @@ def calculate_position_size(
         warnings.append("المسافة بين الدخول ووقف الخسارة = صفر -- لا يمكن حساب اللوت")
         return {"raw_lot": 0.0, "normalized_lot": 0.0, "risk_usd": risk_usd, "warnings": warnings}
 
-    point_value_per_lot = trade_tick_value * (point / trade_tick_size)
+    if trade_tick_value > 0 and trade_tick_size > 0:
+        point_value_per_lot = trade_tick_value * (point / trade_tick_size)
+    else:
+        # احتياطي: معادلة الفوركس القياسية بحجم العقد عند غياب tick_value/tick_size
+        warnings.append(
+            f"tick_value/tick_size غير متاحة -- استُخدمت معادلة احتياطية بحجم عقد {contract_size:.0f}"
+        )
+        point_value_per_lot = point * contract_size
+
     risk_per_lot = sl_dist_points * point_value_per_lot
     if risk_per_lot <= 0:
         warnings.append("risk_per_lot = صفر -- لا يمكن حساب اللوت")
@@ -433,6 +460,8 @@ class CouncilVerdict:
     entry:           float | None = None
     sl:              float | None = None
     tp:              float | None = None
+    theoretical_sl:  float | None = None     # مستوى SL نظري (RiskAgent) -- يُعرض حتى عند WAIT
+    theoretical_tp:  float | None = None     # مستوى TP نظري (RiskAgent) -- يُعرض حتى عند WAIT
     atr:             float | None = None
     risk_amount:     float | None = None
     risk_percent:    float | None = None      # نسبة المخاطرة المستخدمة من رأس المال (1-3%)
@@ -481,10 +510,6 @@ class TrendAgent:
         
         bullish_bos = bool(c3['close'] > recent_high)
         bearish_bos = bool(c3['close'] < recent_low)
-        
-        # Liquidity Sweeps Detection
-        bullish_sweep = bool(c3['low'] < recent_low and c3['close'] > recent_low)
-        bearish_sweep = bool(c3['high'] > recent_high and c3['close'] < recent_high)
 
         # Fallback EMAs for general trend
         ema50 = df['close'].ewm(span=50, adjust=False).mean().iloc[-1] if len(df) >= 50 else c3['close']
@@ -495,14 +520,138 @@ class TrendAgent:
             "bearish_fvg": bearish_fvg,
             "bullish_bos": bullish_bos,
             "bearish_bos": bearish_bos,
-            "bullish_sweep": bullish_sweep,
-            "bearish_sweep": bearish_sweep,
             "recent_high": recent_high,
             "recent_low": recent_low,
             "close": c3['close'],
             "ema50": ema50,
             "ema200": ema200
         }
+
+    def _find_swing_points(
+        self, df: pd.DataFrame, lookback: int, strength: int,
+    ) -> tuple[list[tuple[int, float]], list[tuple[int, float]]]:
+        """
+        رصد القمم والقيعان التأرجحية (Swing Highs/Lows) عبر فركتل بسيط:
+        الشمعة i تُعتبر قمة تأرجحية إذا كان ارتفاعها أعلى من (أو يساوي) ارتفاع
+        `strength` شموع قبلها و`strength` شموع بعدها (والعكس للقاع التأرجحي).
+        تُستثنى آخر `strength` شمعة لعدم وجود تأكيد كافٍ بعدها بعد.
+        """
+        n = len(df)
+        highs = df["high"].to_numpy()
+        lows  = df["low"].to_numpy()
+
+        start = max(strength, n - lookback - strength)
+        end   = n - strength  # استثناء الشموع الأخيرة غير المؤكدة
+
+        swing_highs: list[tuple[int, float]] = []
+        swing_lows:  list[tuple[int, float]] = []
+
+        for i in range(start, end):
+            h_window = highs[i - strength: i + strength + 1]
+            l_window = lows[i - strength: i + strength + 1]
+            if highs[i] == h_window.max():
+                swing_highs.append((i, float(highs[i])))
+            if lows[i] == l_window.min():
+                swing_lows.append((i, float(lows[i])))
+
+        return swing_highs, swing_lows
+
+    def _detect_liquidity_sweep(
+        self,
+        df: pd.DataFrame,
+        swing_highs: list[tuple[int, float]],
+        swing_lows: list[tuple[int, float]],
+    ) -> dict:
+        """
+        رصد سحب السيولة (Liquidity Sweep / Stop Hunt):
+        تجاوز ذيل الشمعة الحالية (High أو Low) لآخر قمة/قاع تأرجحي سابق
+        (سحب أوامر وقف الخسارة المتراكمة)، مع إغلاق جسم الشمعة قسرياً
+        داخل النطاق السعري القديم -- كسر كاذب (False Breakout) يُعد
+        إشارة انعكاس مؤسسية قوية.
+        """
+        c = df.iloc[-1]
+        result = {
+            "bullish_sweep": False,
+            "bearish_sweep": False,
+            "swept_low":  None,
+            "swept_high": None,
+        }
+
+        if swing_lows:
+            swept_low = swing_lows[-1][1]
+            if c["low"] < swept_low and c["close"] > swept_low:
+                result["bullish_sweep"] = True
+                result["swept_low"] = round(float(swept_low), 5)
+
+        if swing_highs:
+            swept_high = swing_highs[-1][1]
+            if c["high"] > swept_high and c["close"] < swept_high:
+                result["bearish_sweep"] = True
+                result["swept_high"] = round(float(swept_high), 5)
+
+        return result
+
+    def _detect_order_blocks(self, df: pd.DataFrame, lookback: int) -> dict:
+        """
+        رصد الكتل التنفيذية (Order Blocks):
+        - Bullish OB: آخر شمعة هابطة قبل حركة صعودية عنيفة كسرت أعلى نطاق سابق
+          (Break of Structure صاعد).
+        - Bearish OB: آخر شمعة صاعدة قبل حركة هبوطية عنيفة كسرت أدنى نطاق سابق
+          (Break of Structure هابط).
+        كما يُحدَّد ما إذا كان السعر الحالي قد عاد لاختبار (Mitigation) هذه
+        الكتلة -- منطقة دخول عالية الاحتمالية.
+        """
+        result = {
+            "bullish_ob_high": None, "bullish_ob_low": None, "bullish_ob_mitigated": False,
+            "bearish_ob_high": None, "bearish_ob_low": None, "bearish_ob_mitigated": False,
+        }
+
+        n = len(df)
+        window_size = min(lookback, n - 1)
+        if window_size < 3:
+            return result
+
+        window = df.iloc[-window_size - 1: -1]  # استثناء الشمعة الحالية
+        highs  = window["high"].to_numpy()
+        lows   = window["low"].to_numpy()
+        opens  = window["open"].to_numpy()
+        closes = window["close"].to_numpy()
+
+        # Bullish OB: آخر اختراق صعودي عنيف (إغلاق أعلى من أعلى ما سبقه)
+        for i in range(len(window) - 1, 0, -1):
+            prior_high = highs[:i].max()
+            if closes[i] > opens[i] and closes[i] > prior_high:
+                j = i - 1
+                while j >= 0 and closes[j] > opens[j]:
+                    j -= 1
+                if j >= 0:
+                    result["bullish_ob_high"] = round(float(highs[j]), 5)
+                    result["bullish_ob_low"]  = round(float(lows[j]), 5)
+                break
+
+        # Bearish OB: آخر اختراق هبوطي عنيف (إغلاق أدنى من أدنى ما سبقه)
+        for i in range(len(window) - 1, 0, -1):
+            prior_low = lows[:i].min()
+            if closes[i] < opens[i] and closes[i] < prior_low:
+                j = i - 1
+                while j >= 0 and closes[j] < opens[j]:
+                    j -= 1
+                if j >= 0:
+                    result["bearish_ob_high"] = round(float(highs[j]), 5)
+                    result["bearish_ob_low"]  = round(float(lows[j]), 5)
+                break
+
+        c = df.iloc[-1]
+        if result["bullish_ob_high"] is not None:
+            result["bullish_ob_mitigated"] = bool(
+                c["low"] <= result["bullish_ob_high"] and c["close"] >= result["bullish_ob_low"]
+            )
+        if result["bearish_ob_high"] is not None:
+            result["bearish_ob_mitigated"] = bool(
+                c["high"] >= result["bearish_ob_low"] and c["close"] <= result["bearish_ob_high"]
+            )
+
+        return result
 
     def vote(self, direction: str, df: pd.DataFrame) -> AgentVote:
         if len(df) < 20:
@@ -518,6 +667,13 @@ class TrendAgent:
         # Convert np.bool_ to regular bool for JSON serialization
         clean_ict = {k: bool(v) if isinstance(v, (bool, np.bool_)) else float(v) if isinstance(v, (float, np.floating, int, np.integer)) else v for k, v in ict.items()}
 
+        swing_highs, swing_lows = self._find_swing_points(df, SWING_LOOKBACK, SWING_STRENGTH)
+        sweep = self._detect_liquidity_sweep(df, swing_highs, swing_lows)
+        ob    = self._detect_order_blocks(df, SWING_LOOKBACK)
+
+        clean_ict.update(sweep)
+        clean_ict.update(ob)
+
         approved = False
         reason = ""
         confidence = 0.0
@@ -527,10 +683,22 @@ class TrendAgent:
                 approved = True
                 confidence = 1.0
                 reason = f"مقبول: كسر هيكل صاعد (Bullish BOS) إغلاق أعلى من القمة {ict['recent_high']:.5f}"
-            elif ict["bullish_sweep"] and (ict["bullish_fvg"] or (ict["close"] > ict["ema50"] and ict["ema50"] >= ict["ema200"])):
+            elif sweep["bullish_sweep"]:
                 approved = True
                 confidence = 1.0
-                reason = f"مقبول بامتياز: سحب سيولة بيعية (Bullish Sweep) تحت القاع {ict['recent_low']:.5f} مدعوم باتجاه إيجابي (FVG/EMA)"
+                reason = (
+                    f"مقبول بامتياز: رصد سحب سيولة مؤسسية (Liquidity Sweep) تحت القاع "
+                    f"التأرجحي السابق {sweep['swept_low']:.5f} مع إغلاق الجسم داخل النطاق "
+                    f"القديم -- كسر كاذب لتجميع أوامر البيع (Stop Hunt)"
+                )
+            elif ob["bullish_ob_mitigated"]:
+                approved = True
+                confidence = 1.0
+                reason = (
+                    f"مقبول بامتياز: عودة السعر لاختبار كتلة تنفيذية صاعدة (Bullish Order "
+                    f"Block) بين {ob['bullish_ob_low']:.5f} و {ob['bullish_ob_high']:.5f} "
+                    f"-- منطقة دخول عالية الاحتمالية (Mitigation)"
+                )
             elif ict["bullish_fvg"]:
                 approved = True
                 confidence = 0.8
@@ -540,16 +708,28 @@ class TrendAgent:
                 confidence = 0.5
                 reason = "مقبول جزئياً: لا يوجد هيكل واضح ولكن السعر في اتجاه عام صاعد (أعلى من EMA 50 و 200)"
             else:
-                reason = "مرفوض: لا يوجد كسر هيكل صاعد (BOS) ولا اتجاه عام صاعد (EMA)"
+                reason = "مرفوض: لا يوجد كسر هيكل صاعد (BOS)، ولا سحب سيولة، ولا كتلة تنفيذية مفعّلة، ولا اتجاه عام صاعد (EMA)"
         else:
             if ict["bearish_bos"]:
                 approved = True
                 confidence = 1.0
                 reason = f"مقبول: كسر هيكل هابط (Bearish BOS) إغلاق أدنى من القاع {ict['recent_low']:.5f}"
-            elif ict["bearish_sweep"] and (ict["bearish_fvg"] or (ict["close"] < ict["ema50"] and ict["ema50"] <= ict["ema200"])):
+            elif sweep["bearish_sweep"]:
                 approved = True
                 confidence = 1.0
-                reason = f"مقبول بامتياز: سحب سيولة شرائية (Bearish Sweep) فوق القمة {ict['recent_high']:.5f} مدعوم باتجاه سلبي (FVG/EMA)"
+                reason = (
+                    f"مقبول بامتياز: رصد سحب سيولة مؤسسية (Liquidity Sweep) فوق القمة "
+                    f"التأرجحية السابقة {sweep['swept_high']:.5f} مع إغلاق الجسم داخل النطاق "
+                    f"القديم -- كسر كاذب لتجميع أوامر الشراء (Stop Hunt)"
+                )
+            elif ob["bearish_ob_mitigated"]:
+                approved = True
+                confidence = 1.0
+                reason = (
+                    f"مقبول بامتياز: عودة السعر لاختبار كتلة تنفيذية هابطة (Bearish Order "
+                    f"Block) بين {ob['bearish_ob_low']:.5f} و {ob['bearish_ob_high']:.5f} "
+                    f"-- منطقة دخول عالية الاحتمالية (Mitigation)"
+                )
             elif ict["bearish_fvg"]:
                 approved = True
                 confidence = 0.8
@@ -559,7 +739,7 @@ class TrendAgent:
                 confidence = 0.5
                 reason = "مقبول جزئياً: لا يوجد هيكل واضح ولكن السعر في اتجاه عام هابط (أدنى من EMA 50 و 200)"
             else:
-                reason = "مرفوض: لا يوجد كسر هيكل هابط (BOS) ولا اتجاه عام هابط (EMA)"
+                reason = "مرفوض: لا يوجد كسر هيكل هابط (BOS)، ولا سحب سيولة، ولا كتلة تنفيذية مفعّلة، ولا اتجاه عام هابط (EMA)"
 
         return AgentVote(
             agent=self.NAME, direction=direction,
@@ -729,7 +909,9 @@ class RiskAgent:
         _atr_len  = int(_cfg("atr_length",  ATR_LENGTH))
         _sl_mult  = float(_cfg("atr_sl_mult", ATR_SL_MULT))
         _tp_mult  = float(_cfg("atr_tp_mult", ATR_TP_MULT))
-        _min_rr   = float(_cfg("min_rr",      MIN_RR))
+        # حد أدنى صارم لـ RR = 2.0 لا يمكن تجاوزه عبر system_config -- أي قيمة أقل
+        # تُستبدل بالحد الأدنى الصارم MIN_RR_HARD_FLOOR (يفعّل فيتو RiskAgent دونه).
+        _min_rr   = max(float(_cfg("min_rr", MIN_RR)), MIN_RR_HARD_FLOOR)
 
         atr_val = _last(_atr(df["high"], df["low"], df["close"], _atr_len))
         close   = _last(df["close"])
@@ -762,14 +944,20 @@ class RiskAgent:
         risk_amount = effective_balance * risk_percent
         profit_amount = risk_amount * rr
 
-        tf = df.attrs.get("timeframe", "H1")
-        if "15" in tf:
-            duration = "1 إلى 3 ساعات"
+        tf = str(df.attrs.get("timeframe", "H1")).lower()
+        # مطابقة دقيقة (equality) لـ M1/M5 لتجنب تطابق جزئي خاطئ مع M15/M30
+        # (مثلاً "m1" هي بداية "m15" -- لذلك لا تُستخدم "in" هنا).
+        if tf in ("1m", "m1"):
+            duration = "5 إلى 20 دقيقة"
+        elif tf in ("5m", "m5"):
+            duration = "15 إلى 60 دقيقة"
+        elif "15" in tf:
+            duration = "45 دقيقة إلى 3 ساعات"
         elif "30" in tf:
             duration = "2 إلى 6 ساعات"
-        elif "H4" in tf or "4H" in tf:
+        elif "h4" in tf or "4h" in tf:
             duration = "16 إلى 48 ساعة"
-        elif "D1" in tf or "1D" in tf:
+        elif "d1" in tf or "1d" in tf:
             duration = "4 إلى 12 يوماً"
         else: # Default H1
             duration = "4 إلى 12 ساعة"
@@ -780,11 +968,28 @@ class RiskAgent:
             f"RR {rr:.2f} | مخاطرة ${risk_amount:.2f} | ربح المتوقع ${profit_amount:.2f}"
         )
 
+        # نصيحة رافعة معلوماتية للكريبتو (OKX) فقط -- بناءً على تقلب ATR/سعر:
+        # تقلب عالٍ (>= 1% من السعر) => 1x، تقلب مستقر => 3x.
+        # ملاحظة: قيمة معلوماتية بحتة لا تُستخدم في أي حساب لوت/مركز فعلي،
+        # ولا تُفعّل أي رافعة حقيقية -- العقود الآجلة والرافعة الحقيقية ممنوعة على OKX.
+        symbol_name = str(df.attrs.get("symbol", ""))
+        leverage_advice = None
+        if "-" in symbol_name:  # تنسيق رمز OKX مثل BTC-USDT
+            volatility_ratio = atr_val / close if close else 0.0
+            if volatility_ratio >= 0.01:
+                leverage_advice = "1x (تقلب مرتفع -- معلوماتي فقط، غير تنفيذي)"
+            else:
+                leverage_advice = "3x (تقلب مستقر -- معلوماتي فقط، غير تنفيذي)"
+
+        metadata = {"atr": atr_val, "entry": close, "sl": sl, "tp": tp, "rr": rr, "risk": risk_amount, "profit": profit_amount, "duration": duration}
+        if leverage_advice is not None:
+            metadata["leverage_advice"] = leverage_advice
+
         vote = AgentVote(
             agent=self.NAME, direction=direction,
             approved=approved, confidence=confidence,
             reason=reason,
-            metadata={"atr": atr_val, "entry": close, "sl": sl, "tp": tp, "rr": rr, "risk": risk_amount, "profit": profit_amount, "duration": duration},
+            metadata=metadata,
         )
         return vote, close, sl, tp, atr_val, risk_amount, profit_amount, duration
 
@@ -852,6 +1057,24 @@ class CouncilEngine:
         lot_size = None
         risk_percent_used = None
         digits = symbol_info.get("digits") if symbol_info else None
+
+        # Price decimals: استخدام دقة الرمز الحقيقية من MT5 (symbol_info.digits)
+        # عند توفرها، وإلا تقدير حسب حجم السعر (متوافق مع OKX وغيرها).
+        if digits is not None:
+            def fmt(val: float | None) -> float | None:
+                return round(val, digits) if val is not None else None
+        else:
+            def fmt(val: float | None) -> float | None:
+                if val is None: return None
+                if val > 1000: return round(val, 2)
+                if val > 10: return round(val, 3)
+                return round(val, 5)
+
+        # مستويات نظرية (من RiskAgent) -- تُحفظ دائماً للعرض المعلوماتي على
+        # الواجهة حتى عند رفض الإشارة (WAIT)، بصرف النظر عن approved.
+        theoretical_sl = fmt(sl)
+        theoretical_tp = fmt(tp)
+
         if approved:
             # Dynamic Risk 1% to 3%
             if signal_strength >= 0.85:
@@ -861,9 +1084,11 @@ class CouncilEngine:
             else:
                 risk_multiplier = 1.0
 
-            risk_percent_used = risk_multiplier  # base risk per RiskAgent.vote = 1%
-            risk_amt = (risk_amt or 0) * risk_multiplier
-            profit_amt = (profit_amt or 0) * risk_multiplier
+            # سقف صارم: لا تتجاوز نسبة المخاطرة الفعلية MAX_RISK_PERCENT (3%) من رأس المال
+            # بصرف النظر عن قوة الإشارة (risk_multiplier أساسه 1% لكل وحدة).
+            risk_percent_used = min(risk_multiplier, MAX_RISK_PERCENT)  # base risk per RiskAgent.vote = 1%
+            risk_amt = (risk_amt or 0) * risk_percent_used
+            profit_amt = (profit_amt or 0) * risk_percent_used
 
             # Estimated Lot/Quantity
             sl_dist = abs(entry - sl) if entry and sl else 0
@@ -883,24 +1108,13 @@ class CouncilEngine:
                         volume_min=symbol_info.get("volume_min", 0.01),
                         volume_max=symbol_info.get("volume_max", 1000.0),
                         volume_step=symbol_info.get("volume_step", 0.01),
+                        contract_size=symbol_info.get("contract_size", DEFAULT_CONTRACT_SIZE),
                     )
                     if sizing["normalized_lot"] > 0:
                         lot_size = sizing["normalized_lot"]
                 else:
                     # بدون بيانات رمز MT5 (مثل OKX): كمية الأصل الأساسي مباشرة (مناسبة للسبوت)
                     lot_size = round(risk_amt / sl_dist, 4)
-
-            # Price decimals: استخدام دقة الرمز الحقيقية من MT5 (symbol_info.digits)
-            # عند توفرها، وإلا تقدير حسب حجم السعر (متوافق مع OKX وغيرها).
-            if digits is not None:
-                def fmt(val: float | None) -> float | None:
-                    return round(val, digits) if val is not None else None
-            else:
-                def fmt(val: float | None) -> float | None:
-                    if val is None: return None
-                    if val > 1000: return round(val, 2)
-                    if val > 10: return round(val, 3)
-                    return round(val, 5)
 
             entry = fmt(entry)
             sl = fmt(sl)
@@ -966,6 +1180,8 @@ class CouncilEngine:
             entry           = entry if approved else None,
             sl              = sl if approved else None,
             tp              = tp if approved else None,
+            theoretical_sl  = theoretical_sl,
+            theoretical_tp  = theoretical_tp,
                 atr             = atr,
                 risk_amount     = risk_amt if approved else None,
                 risk_percent    = risk_percent_used if approved else None,
@@ -978,15 +1194,17 @@ class CouncilEngine:
                 session         = session_info,
             )
 
-    def _persist(self, verdict: CouncilVerdict, db: Session) -> None:
+    def _persist(self, verdict: CouncilVerdict, db: Session, record_signal: bool = True) -> None:
         """Write verdict to SQLite.
         - Always saves to DecisionJournal (approved + rejected history).
-        - Only saves to StrategySignal when verdict.approved is True.
+        - Only saves to StrategySignal when verdict.approved is True AND
+          record_signal is True (False during the 4-hour signal cooldown
+          for an identical symbol+direction, to avoid radar flooding).
         """
         try:
             signal_id: str | None = None
 
-            if verdict.approved:
+            if verdict.approved and record_signal:
                 record = StrategySignal(
                     symbol     = verdict.symbol,
                     signal     = verdict.direction or "NEUTRAL",
@@ -1119,32 +1337,27 @@ class CouncilEngine:
             time_str = baghdad_time.strftime("%I:%M %p").lstrip('0') + " بتوقيت بغداد"
 
             tf_display = verdict.timeframe.lower() if verdict.timeframe else "1h"
-            
-            import time
-            alert_key = (verdict.symbol, tf_display, verdict.direction)
-            now = time.time()
-            if alert_key in _LAST_TELEGRAM_ALERTS:
-                # Require at least 95% of the candle duration to pass before resending
-                if now - _LAST_TELEGRAM_ALERTS[alert_key] < (_tf_to_seconds(tf_display) * 0.95):
-                    logger.info("Skipping duplicate Telegram alert for %s", alert_key)
-                    return
-            _LAST_TELEGRAM_ALERTS[alert_key] = now
 
-            # تنسيق <code> يجعل الرقم قابلاً للنسخ بضغطة واحدة في تطبيق تيليجرام
+            # تمييز المنصة في بداية الرسالة: تنسيق رمز OKX يحتوي "-" (مثل BTC-USDT)
+            # أما رموز MT5 (فوركس/الذهب) فلا تحتوي "-" (مثل XAUUSD).
+            platform_tag = "[OKX - CRYPTO]" if "-" in verdict.symbol else "[MT5 - FOREX/GOLD]"
+
+            # فواصل ASCII فقط (بدون رموز Unicode رسومية) لحماية Turbopack من الانهيار
             text = (
-                f"━━━━━━━━━━━━━━━━━━━\n"
+                f"{platform_tag}\n"
+                f"===================\n"
                 f"🪙 الزوج: {verdict.symbol}  —  {tf_display}\n"
                 f"{dir_emoji} الإشارة: {dir_label}   |   القوة: {strength_label}\n"
-                f"──────────────────\n"
+                f"-------------------\n"
                 f"📥 سعر الدخول: <code>{entry_str}</code>\n"
                 f"🛑 وقف الخسارة (SL): <code>{sl_str}</code>\n"
                 f"🏆 الهدف الذكي (TP): <code>{tp_str}</code>\n"
-                f"──────────────────\n"
+                f"-------------------\n"
                 f"💰 حجم اللوت/العقد: <code>{lot_str}</code>\n"
                 f"⚠️ المبلغ المعرض للمخاطرة: {risk_str}\n"
                 f"🎯 الربح المتوقع: {profit_str}\n"
                 f"⏳ مدة الصفقة المتوقعة: {duration_str}\n"
-                f"──────────────────\n"
+                f"-------------------\n"
                 f"⏰ وقت صدور الإشارة: {time_str}\n"
                 f"\n"
                 f"تحليل معلوماتي مؤسسي — ليس توصية مالية"
@@ -1275,7 +1488,31 @@ class CouncilEngine:
 
         winner.session = get_market_session()
 
+        record_signal = True
+
         if winner.approved:
+            # رادار رصين: تجنب تكرار نفس الإشارة (نفس الرمز + نفس الاتجاه) خلال
+            # فترة تهدئة SIGNAL_COOLDOWN_HOURS (4 ساعات) -- لا تيليجرام ولا
+            # StrategySignal جديد، لكن DecisionJournal/TripleFirewallSignal
+            # تستمر كل دورة للتدقيق وتغذية الترشيح.
+            cooldown_key = (symbol, winner.direction)
+            last_alert_at = _LAST_SIGNAL_ALERT_TIMES.get(cooldown_key)
+            now_utc = datetime.now(timezone.utc)
+            on_cooldown = (
+                last_alert_at is not None
+                and (now_utc - last_alert_at).total_seconds() < SIGNAL_COOLDOWN_HOURS * 3600.0
+            )
+
+            if on_cooldown:
+                record_signal = False
+                logger.info(
+                    "CouncilEngine: signal on cooldown -- symbol=%s direction=%s "
+                    "(%.1f/%.1f hours elapsed) -- suppressing alert/StrategySignal",
+                    symbol, winner.direction,
+                    (now_utc - last_alert_at).total_seconds() / 3600.0,
+                    SIGNAL_COOLDOWN_HOURS,
+                )
+
             logger.info(
                 "CouncilEngine: SIGNAL APPROVED -- symbol=%s direction=%s "
                 "strength=%.0f%% votes=%s",
@@ -1284,9 +1521,10 @@ class CouncilEngine:
                 winner.signal_strength * 100,
                 winner.votes_summary(),
             )
-            if send_alert:
+            if send_alert and not on_cooldown:
                 if not market_closed and is_market_open(symbol):
                     self._send_telegram_alert(winner)
+                    _LAST_SIGNAL_ALERT_TIMES[cooldown_key] = now_utc
                     if db is not None:
                         from telegram_subscribers import broadcast_recommendation
                         broadcast_recommendation(winner, db)
@@ -1303,7 +1541,7 @@ class CouncilEngine:
 
         # Always persist to DecisionJournal (approved + rejected history)
         if db is not None:
-            self._persist(winner, db)
+            self._persist(winner, db, record_signal=record_signal)
 
         return winner
 
