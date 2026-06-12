@@ -1349,11 +1349,11 @@ class CouncilEngine:
             # BTC-USDT)، أما رموز MT5 (فوركس/الذهب) فلا تحتوي "-" (مثل XAUUSD).
             is_okx = "-" in verdict.symbol
             if is_okx:
-                header = "⚡ [OKX - CRYPTO] | توصية مؤسسية جديدة"
+                header = "🔥 OKX\nتوصية كريبتو جديدة"
                 leverage_advice = (verdict.metadata or {}).get("leverage_advice")
                 leverage_line = f"⚙️ الرافعة المقترحة: {leverage_advice}\n" if leverage_advice else ""
             else:
-                header = "🏛️ [MT5 - FOREX/GOLD] | توصية مؤسسية جديدة"
+                header = "🥇 GOLD\nتوصية ذهب/فوركس جديدة"
                 leverage_line = ""
 
             # فواصل ASCII فقط (بدون رموز Unicode رسومية) لحماية Turbopack من الانهيار

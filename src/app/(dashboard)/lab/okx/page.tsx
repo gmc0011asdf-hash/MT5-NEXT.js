@@ -13,15 +13,14 @@ import {
   Activity,
   AlertTriangle,
   Lock,
+  RefreshCcw,
+  Search,
   Shield,
   TrendingDown,
   TrendingUp,
   Wifi,
   WifiOff,
   Zap,
-  RefreshCcw,
-  CheckCircle,
-  XCircle,
   X,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -61,19 +60,15 @@ interface AgentSignal {
   data_source:     string;
 }
 
-interface ScannerCoin {
+interface RankedCandidate {
   symbol: string;
-  base: string;
-  quote: string;
-  status: "approved" | "rejected";
+  source: "mt5" | "okx" | string;
+  approved: boolean;
+  direction: Direction;
+  signal_strength: number;
+  confluence_level: string | null;
   reason: string;
-}
-
-interface ScannerStats {
-  total: number;
-  approved_count: number;
-  rejected_count: number;
-  coins: ScannerCoin[];
+  last_scan_ts: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -81,7 +76,6 @@ interface ScannerStats {
 // ---------------------------------------------------------------------------
 
 const WS_URL        = "ws://127.0.0.1:8010/ws/live-market";
-const API_URL       = "http://127.0.0.1:8010";
 const PING_INTERVAL = 25_000;
 const ATR_SL_MULT   = 1.5; // mirrors agents.py ATR_SL_MULT
 
@@ -128,6 +122,10 @@ const AGENT_ORDER = [
   "RiskAgent",
 ] as const;
 
+// الوكلاء الفنيون الثلاثة (بدون وكيل المخاطرة RiskAgent) -- تُستخدم قيم
+// الثقة الخاصة بهم لعرض القوة الفنية الخام عند حالة الانتظار/الرفض.
+const TECHNICAL_AGENTS = ["TrendAgent", "VolatilityAgent", "MomentumAgent"] as const;
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -145,6 +143,21 @@ function _computeEntry(signal: AgentSignal): number | null {
   if (signal.direction === "BUY")  return signal.sl + ATR_SL_MULT * signal.atr;
   if (signal.direction === "SELL") return signal.sl - ATR_SL_MULT * signal.atr;
   return null;
+}
+
+// عند الموافقة (signal_strength > 0) تُعرض القوة الإجمالية المعتمدة كما هي.
+// عند الانتظار/الرفض (الفيتو)، تُعرض القوة الفنية الخام كمتوسط ثقة الوكلاء
+// الفنيين الثلاثة (Trend/Volatility/Momentum) بصرف النظر عن موافقتهم.
+function computeSignalStrength(signal: AgentSignal | null): number {
+  if (!signal) return 0;
+  if (signal.signal_strength > 0) return Math.round(signal.signal_strength * 100);
+  const technicalVotes = signal.votes.filter((v) =>
+    (TECHNICAL_AGENTS as readonly string[]).includes(v.agent),
+  );
+  if (technicalVotes.length === 0) return 0;
+  const avgConfidence =
+    technicalVotes.reduce((sum, v) => sum + v.confidence, 0) / technicalVotes.length;
+  return Math.round(avgConfidence * 100);
 }
 
 // ---------------------------------------------------------------------------
@@ -187,58 +200,6 @@ function ConnectionBadge({ status }: { status: WsStatus }) {
       <span className={cn("h-1.5 w-1.5 rounded-full", m.dot)} />
       <Icon className="h-3 w-3" />
       <span>{m.label}</span>
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Symbol Tabs (BTC-USDT / ETH-USDT)
-// ---------------------------------------------------------------------------
-
-function SymbolTabs({
-  active,
-  symbolsList,
-  onChange,
-  hasSignal,
-}: {
-  active:    OkxSymbol;
-  symbolsList: OkxSymbol[];
-  onChange:  (s: OkxSymbol) => void;
-  hasSignal: Record<OkxSymbol, boolean>;
-}) {
-  return (
-    <div className="flex flex-wrap gap-2">
-      {symbolsList.map((sym) => {
-        const meta     = getSymbolMeta(sym);
-        const isActive = active === sym;
-        return (
-          <button
-            key={sym}
-            onClick={() => onChange(sym)}
-            className={cn(
-              "flex items-center gap-2 rounded-xl border px-4 py-2.5 transition-all duration-200",
-              isActive
-                ? meta.tabActive
-                : "border-border/25 bg-card/40 text-muted-foreground hover:border-border/50 hover:text-foreground",
-            )}
-          >
-            {hasSignal[sym] && (
-              <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-400" />
-            )}
-            <span
-              className={cn(
-                "text-sm font-black tracking-wider",
-                isActive && meta.accent,
-              )}
-            >
-              {meta.short}
-            </span>
-            <span className="text-[11px] font-normal opacity-60">
-              {sym}
-            </span>
-          </button>
-        );
-      })}
     </div>
   );
 }
@@ -501,18 +462,8 @@ function CryptoTerminalCard({
           node:  <Activity className="h-6 w-6 text-muted-foreground" />,
         };
 
-  // عند الموافقة (signal_strength > 0) تُعرض القوة الإجمالية المعتمدة كما هي.
-  // عند الانتظار/الرفض (الفيتو)، تُعرض القوة الفنية الخام كمتوسط ثقة الوكلاء
-  // الذين صوّتوا بالموافقة -- مع بقاء لافتة "انتظار" الحمراء كما هي.
-  const strength = (() => {
-    if (!signal) return 0;
-    if (signal.signal_strength > 0) return Math.round(signal.signal_strength * 100);
-    const approvedVotes = signal.votes.filter((v) => v.approved);
-    if (approvedVotes.length === 0) return 0;
-    const avgConfidence =
-      approvedVotes.reduce((sum, v) => sum + v.confidence, 0) / approvedVotes.length;
-    return Math.round(avgConfidence * 100);
-  })();
+  // مع بقاء لافتة "انتظار" الحمراء كما هي لتوضيح قرار الانتظار الحامي للمحفظة.
+  const strength = computeSignalStrength(signal);
   const entry    = signal ? _computeEntry(signal) : null;
 
   return (
@@ -824,6 +775,159 @@ function AgentVotingGrid({ votes }: { votes: AgentVote[] }) {
 }
 
 // ---------------------------------------------------------------------------
+// Watchlist Sidebar — بحث فوري + فلترة حسب الحالة + قوة لحظية لكل عملة
+// ---------------------------------------------------------------------------
+
+type SidebarFilter = "all" | "approved" | "wait";
+
+function OkxWatchlistSidebar({
+  candidates,
+  signals,
+  activeSymbol,
+  isScanning,
+  onScan,
+  onSelect,
+}: {
+  candidates:   RankedCandidate[];
+  signals:      Record<OkxSymbol, AgentSignal | null>;
+  activeSymbol: OkxSymbol;
+  isScanning:   boolean;
+  onScan:       () => void;
+  onSelect:     (symbol: OkxSymbol) => void;
+}) {
+  const [search, setSearch] = useState("");
+  const [filter, setFilter] = useState<SidebarFilter>("all");
+
+  const rows = candidates
+    .map((c) => {
+      const live = signals[c.symbol] ?? null;
+      const direction = live?.direction ?? c.direction;
+      const approved = live ? (live.direction !== null) : c.approved;
+      const strength = live ? computeSignalStrength(live) : Math.round(c.signal_strength * 100);
+      return { ...c, strength, direction, approved };
+    })
+    .filter((c) => c.symbol.toUpperCase().includes(search.trim().toUpperCase()))
+    .filter((c) => {
+      if (filter === "all") return true;
+      if (filter === "approved") return c.approved;
+      return !c.approved;
+    })
+    .sort((a, b) => b.strength - a.strength);
+
+  const allCount = candidates.length;
+  const approvedCount = candidates.filter(c => {
+    const live = signals[c.symbol] ?? null;
+    return live ? (live.direction !== null) : c.approved;
+  }).length;
+  const waitCount = allCount - approvedCount;
+
+  const filterTabs: { key: SidebarFilter; label: string; dot: string }[] = [
+    { key: "all",      label: `الكل (${allCount})`,   dot: "bg-muted-foreground/40" },
+    { key: "approved", label: `معتمد (${approvedCount})`,  dot: "bg-emerald-400" },
+    { key: "wait",     label: `انتظار (${waitCount})`, dot: "bg-rose-500" },
+  ];
+
+  return (
+    <div className="flex flex-col gap-3 rounded-2xl border border-border/25 bg-card/40 p-3 lg:max-h-[calc(100vh-220px)]">
+      <div className="flex items-center gap-2">
+        <div className="relative flex-1">
+          <Search className="pointer-events-none absolute right-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground/50" />
+          <input
+            type="text"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="بحث عن عملة..."
+            className="w-full rounded-lg border border-border/30 bg-card/60 py-2 pl-3 pr-9 text-xs text-foreground placeholder:text-muted-foreground/50 focus:border-cyan-500/50 focus:outline-none"
+          />
+        </div>
+        <button
+          onClick={onScan}
+          disabled={isScanning}
+          title="مسح وتحديث السوق"
+          className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-border/30 bg-card/60 text-muted-foreground transition-colors hover:border-cyan-500/50 hover:text-cyan-400 disabled:opacity-50"
+        >
+          <RefreshCcw className={cn("h-4 w-4", isScanning && "animate-spin text-cyan-400")} />
+        </button>
+      </div>
+
+      <div className="flex items-center gap-1.5">
+        {filterTabs.map((tab) => (
+          <button
+            key={tab.key}
+            type="button"
+            onClick={() => setFilter(tab.key)}
+            className={cn(
+              "flex flex-1 items-center justify-center gap-1.5 rounded-lg border px-2 py-1.5 text-[11px] font-medium transition-colors",
+              filter === tab.key
+                ? "border-cyan-500/40 bg-cyan-500/10 text-cyan-200"
+                : "border-border/25 bg-card/30 text-muted-foreground hover:text-foreground",
+            )}
+          >
+            <span className={cn("h-1.5 w-1.5 rounded-full", tab.dot)} />
+            {tab.label}
+          </button>
+        ))}
+      </div>
+
+      <div className="flex flex-col gap-1.5 overflow-y-auto pr-0.5 lg:flex-1">
+        {rows.length === 0 && (
+          <p className="px-1 py-4 text-center text-[11px] text-muted-foreground/50">
+            لا توجد عملات مطابقة
+          </p>
+        )}
+        {rows.map((c) => {
+          const meta     = getSymbolMeta(c.symbol);
+          const isActive = c.symbol === activeSymbol;
+          return (
+            <button
+              key={c.symbol}
+              type="button"
+              onClick={() => onSelect(c.symbol)}
+              className={cn(
+                "flex items-center gap-2 rounded-xl border px-3 py-2.5 text-right transition-colors",
+                isActive
+                  ? meta.tabActive
+                  : "border-border/20 bg-card/30 text-muted-foreground hover:border-border/40 hover:text-foreground",
+              )}
+            >
+              <span
+                className={cn(
+                  "h-1.5 w-1.5 shrink-0 rounded-full",
+                  c.direction === "BUY"
+                    ? "bg-emerald-400"
+                    : c.direction === "SELL"
+                    ? "bg-rose-500"
+                    : "bg-muted-foreground/30",
+                )}
+              />
+              <div className="flex-1">
+                <p
+                  className={cn(
+                    "text-xs font-bold tracking-wide",
+                    isActive && meta.accent,
+                  )}
+                >
+                  {meta.short}
+                </p>
+                <p className="text-[10px] text-muted-foreground/50">{c.symbol} - H1</p>
+              </div>
+              <span
+                className={cn(
+                  "shrink-0 text-xs font-black tabular-nums",
+                  c.approved ? "text-emerald-400" : "text-muted-foreground",
+                )}
+              >
+                {c.strength}%
+              </span>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Main page component
 // ---------------------------------------------------------------------------
 
@@ -838,10 +942,7 @@ export default function OkxLabPage() {
     "ETH-USDT": null,
   });
 
-  const [scannerLoading, setScannerLoading] = useState(false);
-  const [scannerStats, setScannerStats] = useState<ScannerStats | null>(null);
-  const [scannerFilter, setScannerFilter] = useState<"all" | "approved" | "rejected">("all");
-  const [selectedScannerCoin, setSelectedScannerCoin] = useState<string | null>(null);
+  const [sidebarCandidates, setSidebarCandidates] = useState<RankedCandidate[]>([]);
 
   // Fetch watchlist on mount
   useEffect(() => {
@@ -869,21 +970,67 @@ export default function OkxLabPage() {
     }
   }, []);
 
-  const handleScan = async () => {
-    setScannerLoading(true);
-    setSelectedScannerCoin(null);
+  const [isScanning, setIsScanning] = useState(false);
+
+  const loadSidebarCandidates = useCallback(async () => {
     try {
-      const res = await fetch(`${API_URL}/api/okx/scanner`);
-      if (res.ok) {
-        const data = await res.json();
-        setScannerStats(data);
+      const res = await fetch("/api/lab/ranked-candidates?source=okx", { cache: "no-store" });
+      const body = await res.json();
+      if (body.ok && Array.isArray(body.candidates)) {
+        setSidebarCandidates(body.candidates);
       }
-    } catch (e) {
-      console.error(e);
-    } finally {
-      setScannerLoading(false);
+    } catch (err) {
+      console.error("Failed to load OKX ranked candidates", err);
     }
-  };
+  }, []);
+
+  const handleScan = useCallback(async () => {
+    setIsScanning(true);
+    try {
+      let allSymbols = Array.from(
+        new Set([...sidebarCandidates.map((c) => c.symbol), ...symbolsList, activeSymbol])
+      );
+      if (allSymbols.length === 0) allSymbols = ["BTC-USDT", "ETH-USDT"];
+
+      // 1. Force backend scan via real API calls (as requested)
+      await Promise.allSettled(
+        allSymbols.map(sym => 
+          fetch('/api/lab/multi-timeframe-analysis', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ symbol: sym })
+          })
+        )
+      );
+
+      // 2. Refresh Sidebar Candidates to reflect the newly updated SQLite DB
+      await loadSidebarCandidates();
+      
+      // 3. Keep WebSocket stream alive
+      if (wsRef.current?.readyState === WebSocket.OPEN) {
+        wsRef.current.send(JSON.stringify({ type: "subscribe", symbols: allSymbols }));
+      }
+    } finally {
+      setTimeout(() => setIsScanning(false), 1000);
+    }
+  }, [loadSidebarCandidates, sidebarCandidates, symbolsList, activeSymbol]);
+
+  useEffect(() => {
+    loadSidebarCandidates();
+  }, [loadSidebarCandidates]);
+
+  // Silent auto-scan every 60 seconds
+  const handleScanRef = useRef(handleScan);
+  useEffect(() => {
+    handleScanRef.current = handleScan;
+  }, [handleScan]);
+
+  useEffect(() => {
+    const id = setInterval(() => {
+      handleScanRef.current();
+    }, 60_000);
+    return () => clearInterval(id);
+  }, []);
 
   const wsRef   = useRef<WebSocket | null>(null);
   const pingRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -964,17 +1111,36 @@ export default function OkxLabPage() {
     };
   }, [connect]);
 
+  // اختر أول عملة في القائمة الجانبية تلقائياً عند تحميل الترشيح لأول مرة
+  // إذا لم تكن العملة النشطة الحالية ضمن قائمة OKX المرشحة.
+  useEffect(() => {
+    if (sidebarCandidates.length === 0) return;
+    if (sidebarCandidates.some((c) => c.symbol === activeSymbol)) return;
+    setActiveSymbol(sidebarCandidates[0].symbol);
+  }, [sidebarCandidates, activeSymbol]);
+
+  // اشترك في تحديثات WebSocket اللحظية لكل عملات القائمة الجانبية بالإضافة
+  // إلى قائمة المتابعة، لعرض القوة الحية لكل عملة في الشريط الجانبي.
+  useEffect(() => {
+    if (wsStatus !== "connected" || sidebarCandidates.length === 0) return;
+    if (wsRef.current?.readyState !== WebSocket.OPEN) return;
+    const allSymbols = Array.from(
+      new Set([...sidebarCandidates.map((c) => c.symbol), ...symbolsList, activeSymbol]),
+    );
+    wsRef.current.send(JSON.stringify({ type: "subscribe", symbols: allSymbols }));
+  }, [sidebarCandidates, wsStatus]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const handleSelectSymbol = useCallback((symbol: OkxSymbol) => {
+    setActiveSymbol(symbol);
+  }, []);
+
   const activeSignal  = signals[activeSymbol];
-  const hasSignal = symbolsList.reduce((acc, sym) => {
-    acc[sym] = signals[sym] !== undefined && signals[sym] !== null;
-    return acc;
-  }, {} as Record<OkxSymbol, boolean>);
   const approvedCount = activeSignal
     ? activeSignal.votes.filter((v) => v.approved).length
     : 0;
 
   return (
-    <div className="mx-auto flex max-w-5xl flex-col gap-6 pb-10">
+    <div className="mx-auto flex max-w-7xl flex-col gap-6 pb-10">
       {/* Page header */}
       <div className="flex flex-col gap-3">
         <div className="flex items-start justify-between gap-4">
@@ -1009,139 +1175,49 @@ export default function OkxLabPage() {
         )}
       </div>
 
-      {/* Crypto terminal card */}
-      <section>
-        <p className="mb-2 px-1 text-[10px] uppercase tracking-wider text-muted-foreground/55">
-          قرار مجلس الوكلاء — {activeSymbol}
-        </p>
-        <CryptoTerminalCard signal={activeSignal} symbol={activeSymbol} />
-      </section>
+      {/* اللوحة الجانبية المستقرة + مساحة العمل المركزية */}
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-4">
+        <aside className="lg:col-span-1">
+          <OkxWatchlistSidebar
+            candidates={sidebarCandidates}
+            signals={signals}
+            activeSymbol={activeSymbol}
+            isScanning={isScanning}
+            onScan={handleScan}
+            onSelect={handleSelectSymbol}
+          />
+        </aside>
 
-      {/* 4-Agent voting grid */}
-      <section>
-        <div className="mb-3 flex items-center justify-between px-1">
-          <p className="text-[10px] uppercase tracking-wider text-muted-foreground/55">
-            رادار تصويت الوكلاء الأربعة
-          </p>
-          {activeSignal && (
-            <p className="text-[10px] text-muted-foreground/45">
-              {approvedCount} / 4 موافقين
+        <div className="flex flex-col gap-6 lg:col-span-3">
+          {/* Crypto terminal card */}
+          <section>
+            <p className="mb-2 px-1 text-[10px] uppercase tracking-wider text-muted-foreground/55">
+              قرار مجلس الوكلاء — {activeSymbol}
             </p>
-          )}
-        </div>
-        <AgentVotingGrid votes={activeSignal?.votes ?? []} />
-      </section>
+            <CryptoTerminalCard signal={activeSignal} symbol={activeSymbol} />
+          </section>
 
-      {/* Crypto Scanner Section */}
-      <section className="rounded-2xl border border-cyan-500/20 bg-card p-6 shadow-sm">
-        <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-          <div>
-            <h3 className="text-sm font-bold text-foreground">الماسح الآلي للعملات (Crypto Scanner)</h3>
-            <p className="mt-1 text-xs text-muted-foreground">
-              سحب وفرز جميع عملات Spot المتاحة لاستبعاد العملات المرفوضة واعتماد المسموح بها للتداول.
-            </p>
-          </div>
-          <button
-            onClick={handleScan}
-            disabled={scannerLoading}
-            className="flex items-center gap-2 rounded-lg bg-cyan-500/10 px-4 py-2.5 text-sm font-bold text-cyan-400 transition-colors hover:bg-cyan-500/20 disabled:opacity-50"
-          >
-            <RefreshCcw className={cn("h-4 w-4", scannerLoading && "animate-spin")} />
-            {scannerLoading ? "جاري الفرز..." : "بدء المسح والفلترة"}
-          </button>
-        </div>
+          {/* Live chart */}
+          <section>
+            <OkxChartAnalyzer symbol={activeSymbol} />
+          </section>
 
-        {scannerStats && (
-          <div className="mt-6">
-            <div className="grid grid-cols-3 gap-3">
-              <div 
-                onClick={() => setScannerFilter("all")}
-                className={cn("cursor-pointer rounded-xl border p-4 text-center transition-colors", scannerFilter === "all" ? "border-cyan-500/50 bg-cyan-500/10" : "border-border/30 bg-muted/20 hover:bg-muted/30")}
-              >
-                <p className="text-xs text-muted-foreground">العدد الكلي</p>
-                <p className="mt-1 text-2xl font-black text-foreground">{scannerStats.total}</p>
-              </div>
-              <div 
-                onClick={() => setScannerFilter("approved")}
-                className={cn("cursor-pointer rounded-xl border p-4 text-center transition-colors", scannerFilter === "approved" ? "border-emerald-500/60 bg-emerald-500/20" : "border-emerald-500/30 bg-emerald-500/10 hover:bg-emerald-500/15")}
-              >
-                <p className="text-xs text-emerald-400/80">المقبولة</p>
-                <p className="mt-1 text-2xl font-black text-emerald-400">{scannerStats.approved_count}</p>
-              </div>
-              <div 
-                onClick={() => setScannerFilter("rejected")}
-                className={cn("cursor-pointer rounded-xl border p-4 text-center transition-colors", scannerFilter === "rejected" ? "border-rose-500/60 bg-rose-500/20" : "border-rose-500/30 bg-rose-500/10 hover:bg-rose-500/15")}
-              >
-                <p className="text-xs text-rose-400/80">المرفوضة</p>
-                <p className="mt-1 text-2xl font-black text-rose-400">{scannerStats.rejected_count}</p>
-              </div>
+          {/* 4-Agent voting grid */}
+          <section>
+            <div className="mb-3 flex items-center justify-between px-1">
+              <p className="text-[10px] uppercase tracking-wider text-muted-foreground/55">
+                رادار تصويت الوكلاء الأربعة
+              </p>
+              {activeSignal && (
+                <p className="text-[10px] text-muted-foreground/45">
+                  {approvedCount} / 4 موافقين
+                </p>
+              )}
             </div>
-
-            <div className="mt-4 max-h-[300px] overflow-y-auto rounded-xl border border-border/20 bg-background/50">
-              <table className="w-full text-right text-[11px]">
-                <thead className="sticky top-0 border-b border-border/20 bg-card/90 backdrop-blur">
-                  <tr>
-                    <th className="px-4 py-2 font-semibold text-muted-foreground">العملة</th>
-                    <th className="px-4 py-2 font-semibold text-muted-foreground">الحالة</th>
-                    <th className="px-4 py-2 font-semibold text-muted-foreground">السبب</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-border/10">
-                  {scannerStats.coins
-                    .filter((c) => scannerFilter === "all" || c.status === scannerFilter)
-                    .map((c) => (
-                    <tr 
-                      key={c.symbol} 
-                      onClick={() => {
-                        if (c.status === "approved") {
-                          setSelectedScannerCoin(c.symbol);
-                          
-                          setSymbolsList(prev => {
-                            if (!prev.includes(c.symbol)) {
-                              return [...prev, c.symbol];
-                            }
-                            return prev;
-                          });
-                          setActiveSymbol(c.symbol);
-                          
-                          if (wsRef.current?.readyState === WebSocket.OPEN) {
-                             wsRef.current.send(JSON.stringify({ type: "subscribe", symbols: [c.symbol] }));
-                          }
-                        }
-                      }}
-                      className={cn(
-                        "transition-colors",
-                        c.status === "approved" ? "cursor-pointer hover:bg-emerald-500/5" : "hover:bg-muted/10",
-                        selectedScannerCoin === c.symbol && "bg-emerald-500/10"
-                      )}
-                    >
-                      <td className="px-4 py-2 font-bold font-mono">{c.symbol}</td>
-                      <td className="px-4 py-2">
-                        {c.status === "approved" ? (
-                          <div className="flex items-center gap-1.5 text-emerald-400">
-                            <CheckCircle className="h-3 w-3" />
-                            <span>مقبول</span>
-                          </div>
-                        ) : (
-                          <div className="flex items-center gap-1.5 text-rose-400">
-                            <XCircle className="h-3 w-3" />
-                            <span>مرفوض</span>
-                          </div>
-                        )}
-                      </td>
-                      <td className="px-4 py-2 text-muted-foreground/80">{c.reason}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-
-            {selectedScannerCoin && (
-              <OkxChartAnalyzer symbol={selectedScannerCoin} />
-            )}
-          </div>
-        )}
-      </section>
+            <AgentVotingGrid votes={activeSignal?.votes ?? []} />
+          </section>
+        </div>
+      </div>
 
       {/* شاشة الترشيح + قائمة المتابعة (عملات OKX فقط — حتى 5 رموز) */}
       <ScreenerWatchlistPanel 
