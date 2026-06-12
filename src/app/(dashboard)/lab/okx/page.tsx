@@ -501,7 +501,18 @@ function CryptoTerminalCard({
           node:  <Activity className="h-6 w-6 text-muted-foreground" />,
         };
 
-  const strength = signal ? Math.round(signal.signal_strength * 100) : 0;
+  // عند الموافقة (signal_strength > 0) تُعرض القوة الإجمالية المعتمدة كما هي.
+  // عند الانتظار/الرفض (الفيتو)، تُعرض القوة الفنية الخام كمتوسط ثقة الوكلاء
+  // الذين صوّتوا بالموافقة -- مع بقاء لافتة "انتظار" الحمراء كما هي.
+  const strength = (() => {
+    if (!signal) return 0;
+    if (signal.signal_strength > 0) return Math.round(signal.signal_strength * 100);
+    const approvedVotes = signal.votes.filter((v) => v.approved);
+    if (approvedVotes.length === 0) return 0;
+    const avgConfidence =
+      approvedVotes.reduce((sum, v) => sum + v.confidence, 0) / approvedVotes.length;
+    return Math.round(avgConfidence * 100);
+  })();
   const entry    = signal ? _computeEntry(signal) : null;
 
   return (
