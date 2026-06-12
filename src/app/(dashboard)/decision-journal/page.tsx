@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
   BookOpen,
@@ -47,14 +47,24 @@ interface JournalEntry {
   trade_id:     string | null;
   context:      JournalContext;
   agents_votes: Record<string, AgentVote>;
-  result:       "APPROVED" | "REJECTED";
+  result:       "APPROVED" | "REJECTED" | "WAIT";
   timestamp:    string;
 }
 
+interface JournalStats {
+  total:    number;
+  approved: number;
+  rejected: number;
+  wait:     number;
+}
+
 interface JournalResponse {
-  ok:      boolean;
-  count:   number;
-  entries: JournalEntry[];
+  ok:          boolean;
+  total_count: number;
+  stats:       JournalStats;
+  data:        JournalEntry[];
+  count:       number;
+  entries:     JournalEntry[];
 }
 
 // ---------------------------------------------------------------------------
@@ -105,16 +115,79 @@ interface SimulatedStatsResponse {
 }
 
 // ---------------------------------------------------------------------------
+// Real Trade Outcomes — types
+// ---------------------------------------------------------------------------
+
+interface RealMatchedSignal {
+  id:                      number;
+  confluenceLevel:         string | null;
+  signalStrength:          number;
+  sl:                      number | null;
+  tp:                      number | null;
+  rr:                      number | null;
+  timestamp:               string | null;
+  matchedTimeDeltaSeconds: number | null;
+}
+
+interface RealClosedTrade {
+  id:            number;
+  positionId:    number;
+  symbol:        string;
+  direction:     "BUY" | "SELL";
+  volume:        number;
+  openPrice:     number;
+  openTime:      string | null;
+  closePrice:    number;
+  closeTime:     string | null;
+  profit:        number;
+  matchedSignal: RealMatchedSignal | null;
+}
+
+interface RealOpenPosition {
+  id:            number;
+  ticket:        number;
+  symbol:        string;
+  direction:     "BUY" | "SELL";
+  volume:        number;
+  openPrice:     number;
+  openTime:      string | null;
+  currentPrice:  number;
+  sl:            number | null;
+  tp:            number | null;
+  profit:        number;
+  matchedSignal: RealMatchedSignal | null;
+}
+
+interface RealClosedResponse {
+  ok:     boolean;
+  total:  number;
+  trades: RealClosedTrade[];
+  error?: string;
+}
+
+interface RealOpenResponse {
+  ok:        boolean;
+  total:     number;
+  positions: RealOpenPosition[];
+  error?:    string;
+}
+
+// ---------------------------------------------------------------------------
 // Data fetching
 // ---------------------------------------------------------------------------
 
 async function fetchJournal(
+  source: "mt5" | "okx",
+  page?: number,
   result?: string,
   symbol?: string,
+  direction?: string,
 ): Promise<JournalResponse> {
-  const params = new URLSearchParams({ limit: "200" });
+  const params = new URLSearchParams({ limit: "50", source });
+  if (page) params.set("page", String(page));
   if (result) params.set("result", result);
   if (symbol) params.set("symbol", symbol);
+  if (direction) params.set("direction", direction);
   const res = await fetch(`${FASTAPI_BASE}/api/journal?${params.toString()}`, {
     cache: "no-store",
   });
@@ -136,6 +209,20 @@ async function fetchSimulatedStats(source: "mt5" | "okx"): Promise<SimulatedStat
   });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return res.json() as Promise<SimulatedStatsResponse>;
+}
+
+async function fetchRealTradesOpen(source: "mt5" | "okx"): Promise<RealOpenResponse> {
+  const res = await fetch(`/api/trade-history/open?source=${source}`, { cache: "no-store" });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json() as Promise<RealOpenResponse>;
+}
+
+async function fetchRealTradesClosed(source: "mt5" | "okx"): Promise<RealClosedResponse> {
+  const res = await fetch(`/api/trade-history/closed?source=${source}&days=365&limit=50`, {
+    cache: "no-store",
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json() as Promise<RealClosedResponse>;
 }
 
 // ---------------------------------------------------------------------------
@@ -185,12 +272,19 @@ function DirectionBadge({ dir }: { dir?: string | null }) {
   );
 }
 
-function ResultBadge({ result }: { result: "APPROVED" | "REJECTED" }) {
+function ResultBadge({ result }: { result: "APPROVED" | "REJECTED" | "WAIT" }) {
   if (result === "APPROVED")
     return (
       <span className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-semibold bg-emerald-500/15 text-emerald-300 border border-emerald-500/20">
         <CheckCircle2 className="h-3 w-3" />
         مقبول
+      </span>
+    );
+  if (result === "WAIT")
+    return (
+      <span className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-semibold bg-amber-500/15 text-amber-300 border border-amber-500/20">
+        <Clock className="h-3 w-3" />
+        انتظار
       </span>
     );
   return (
@@ -567,6 +661,16 @@ function SimulatedPositionActions({
 // Simulated Crypto Journal — single position row
 // ---------------------------------------------------------------------------
 
+function fmtPrice(val: number | null | undefined) {
+  if (val == null) return null;
+  return new Intl.NumberFormat("en-US", { maximumFractionDigits: 5 }).format(val);
+}
+
+function fmtMoney(val: number | null | undefined) {
+  if (val == null) return null;
+  return new Intl.NumberFormat("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(val);
+}
+
 function SimulatedPositionRow({
   position,
   onUpdated,
@@ -588,22 +692,32 @@ function SimulatedPositionRow({
 
         {position.entryPrice != null && (
           <span className="tabular-nums text-xs text-muted-foreground">
-            دخول: {position.entryPrice}
+            دخول: {fmtPrice(position.entryPrice)}
           </span>
         )}
         {position.stopLoss != null && (
           <span className="tabular-nums text-xs text-rose-300">
-            SL: {position.stopLoss}
+            SL: {fmtPrice(position.stopLoss)}
           </span>
         )}
         {position.takeProfit != null && (
           <span className="tabular-nums text-xs text-emerald-300">
-            TP: {position.takeProfit}
+            TP: {fmtPrice(position.takeProfit)}
           </span>
         )}
         {position.lotSize != null && (
           <span className="tabular-nums text-xs text-muted-foreground">
-            لوت: {position.lotSize}
+            لوت: {fmtMoney(position.lotSize)}
+          </span>
+        )}
+        {position.riskAmount != null && (
+          <span className="tabular-nums text-xs text-rose-400">
+            مخاطرة: ${fmtMoney(position.riskAmount)}
+          </span>
+        )}
+        {position.profitAmount != null && (
+          <span className="tabular-nums text-xs text-emerald-400">
+            ربح متوقع: ${fmtMoney(position.profitAmount)}
           </span>
         )}
 
@@ -793,29 +907,379 @@ function SimulatedPositionsTabs() {
 }
 
 // ---------------------------------------------------------------------------
+// Real Trade Outcomes — helpers
+// ---------------------------------------------------------------------------
+
+function formatRealDate(iso: string | null): string {
+  if (!iso) return "—";
+  try {
+    return new Date(iso).toLocaleString("ar-EG", { dateStyle: "medium", timeStyle: "short" });
+  } catch {
+    return iso;
+  }
+}
+
+function realDirectionLabel(direction: string): string {
+  return direction === "BUY" ? "شراء" : "بيع";
+}
+
+function realProfitClass(profit: number): string {
+  if (profit > 0) return "text-emerald-400";
+  if (profit < 0) return "text-rose-400";
+  return "text-slate-400";
+}
+
+function formatDuration(openIso: string | null, closeIso: string | null): string {
+  if (!openIso) return "—";
+  const start = new Date(openIso).getTime();
+  const end = closeIso ? new Date(closeIso).getTime() : Date.now();
+  const totalMinutes = Math.max(0, Math.round((end - start) / 60_000));
+  const days = Math.floor(totalMinutes / 1440);
+  const hours = Math.floor((totalMinutes % 1440) / 60);
+  const minutes = totalMinutes % 60;
+
+  const parts: string[] = [];
+  if (days > 0) parts.push(`${days} يوم`);
+  if (hours > 0) parts.push(`${hours} ساعة`);
+  if (minutes > 0 || parts.length === 0) parts.push(`${minutes} دقيقة`);
+  return parts.join(" و");
+}
+
+// ---------------------------------------------------------------------------
+// Real Trade Outcomes — outcome badge
+// ---------------------------------------------------------------------------
+
+function RealOutcomeBadge({ profit, isOpen }: { profit: number; isOpen: boolean }) {
+  if (isOpen) {
+    return (
+      <span
+        className={cn(
+          "inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-semibold border",
+          profit > 0
+            ? "bg-emerald-500/10 text-emerald-300 border-emerald-500/20"
+            : profit < 0
+              ? "bg-rose-500/10 text-rose-300 border-rose-500/20"
+              : "bg-slate-500/10 text-slate-300 border-slate-500/20"
+        )}
+      >
+        <Activity className="h-3 w-3" />
+        قيد التنفيذ
+      </span>
+    );
+  }
+
+  if (profit > 0)
+    return (
+      <span className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-semibold bg-emerald-500/15 text-emerald-300 border border-emerald-500/20">
+        <CheckCircle2 className="h-3 w-3" />
+        ربح
+      </span>
+    );
+
+  if (profit < 0)
+    return (
+      <span className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-semibold bg-rose-500/10 text-rose-300 border border-rose-500/20">
+        <XCircle className="h-3 w-3" />
+        خسارة
+      </span>
+    );
+
+  return (
+    <span className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-semibold bg-slate-500/10 text-slate-300 border border-slate-500/20">
+      تعادل
+    </span>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Real Trade Outcomes — predicted vs actual comparison
+// ---------------------------------------------------------------------------
+
+function PredictionComparison({
+  signal,
+  profit,
+  isOpen,
+}: {
+  signal: RealMatchedSignal | null;
+  profit: number;
+  isOpen: boolean;
+}) {
+  if (!signal) {
+    return (
+      <span className="rounded border border-slate-700 bg-slate-800 px-2 py-1 text-[11px] text-slate-400 w-fit">
+        صفقة يدوية — لا يوجد تحليل نظام مطابق لها
+      </span>
+    );
+  }
+
+  const followedPrediction = profit >= 0;
+
+  return (
+    <div className="flex flex-col gap-1 text-[11px]">
+      <span className="rounded border border-emerald-500/20 bg-emerald-500/10 px-2 py-0.5 text-emerald-400 w-fit">
+        مطابقة لتحليل النظام — توافق {signal.confluenceLevel ?? "—"} (قوة {Math.round(signal.signalStrength * 100)}%)
+      </span>
+      <span
+        className={cn(
+          "rounded border px-2 py-0.5 w-fit",
+          followedPrediction
+            ? "border-emerald-500/20 bg-emerald-500/5 text-emerald-300"
+            : "border-amber-500/20 bg-amber-500/5 text-amber-300"
+        )}
+      >
+        {followedPrediction
+          ? isOpen
+            ? "السعر يتحرك حالياً في الاتجاه المتوقع"
+            : "استمر السوق في الاتجاه المتوقع من النظام"
+          : isOpen
+            ? "السعر يتحرك حالياً عكس الاتجاه المتوقع"
+            : "انعكس السوق عكس الاتجاه المتوقع من النظام"}
+      </span>
+      {(signal.sl != null || signal.tp != null) && (
+        <span className="text-slate-500">
+          الهدف المتوقع: {signal.tp ?? "—"} | الوقف المتوقع: {signal.sl ?? "—"}
+        </span>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Real Trade Outcomes — trade row
+// ---------------------------------------------------------------------------
+
+function RealTradeRow({
+  symbol,
+  direction,
+  volume,
+  openTime,
+  closeTime,
+  profit,
+  matchedSignal,
+  isOpen,
+}: {
+  symbol: string;
+  direction: string;
+  volume: number;
+  openTime: string | null;
+  closeTime: string | null;
+  profit: number;
+  matchedSignal: RealMatchedSignal | null;
+  isOpen: boolean;
+}) {
+  return (
+    <div className="rounded-xl border border-border bg-card/50 px-4 py-3 flex flex-wrap items-start gap-x-4 gap-y-2">
+      <div className="flex flex-col gap-1 min-w-[110px]">
+        <div className="flex items-center gap-2">
+          <span className="font-mono text-sm font-semibold text-foreground">{symbol}</span>
+          <span
+            className={cn(
+              "rounded px-1.5 py-0.5 text-xs font-bold",
+              direction === "BUY" ? "bg-emerald-500/15 text-emerald-300" : "bg-rose-500/15 text-rose-300"
+            )}
+          >
+            {realDirectionLabel(direction)}
+          </span>
+        </div>
+        <span className="text-[11px] text-muted-foreground">الحجم: {volume}</span>
+      </div>
+
+      <div className="flex flex-col gap-1 min-w-[150px]">
+        <span className="text-[11px] text-muted-foreground">فتح: {formatRealDate(openTime)}</span>
+        <span className="text-[11px] text-muted-foreground">
+          {isOpen ? "لا تزال مفتوحة" : `إغلاق: ${formatRealDate(closeTime)}`}
+        </span>
+        <span className="text-[11px] text-muted-foreground">المدة: {formatDuration(openTime, closeTime)}</span>
+      </div>
+
+      <div className="flex flex-col gap-1 min-w-[90px]">
+        <RealOutcomeBadge profit={profit} isOpen={isOpen} />
+        <span className={cn("font-mono text-sm font-bold", realProfitClass(profit))}>{profit} USD</span>
+      </div>
+
+      <div className="flex-1 min-w-[220px]">
+        <PredictionComparison signal={matchedSignal} profit={profit} isOpen={isOpen} />
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Real Trade Outcomes — section + tabs
+// ---------------------------------------------------------------------------
+
+function RealTradeOutcomesSection({ source }: { source: "mt5" | "okx" }) {
+  const openQuery = useQuery<RealOpenResponse>({
+    queryKey:        ["real-trades-open", source],
+    queryFn:         () => fetchRealTradesOpen(source),
+    refetchInterval: 60_000,
+    retry:           false,
+    staleTime:       30_000,
+  });
+
+  const closedQuery = useQuery<RealClosedResponse>({
+    queryKey:        ["real-trades-closed", source],
+    queryFn:         () => fetchRealTradesClosed(source),
+    refetchInterval: 60_000,
+    retry:           false,
+    staleTime:       30_000,
+  });
+
+  const openPositions = openQuery.data?.positions ?? [];
+  const closedTrades  = closedQuery.data?.trades ?? [];
+  const isLoading     = openQuery.isLoading || closedQuery.isLoading;
+  const errorMessage  =
+    (openQuery.data?.ok === false ? openQuery.data.error : undefined) ??
+    (closedQuery.data?.ok === false ? closedQuery.data.error : undefined);
+
+  return (
+    <div className="space-y-3">
+      {errorMessage && (
+        <div className="rounded-xl border border-rose-500/20 bg-rose-500/5 px-4 py-3 text-xs text-rose-300">
+          ⚠️ {errorMessage}
+        </div>
+      )}
+
+      {isLoading && (
+        <p className="text-center text-sm text-muted-foreground py-6">جاري تحميل الصفقات...</p>
+      )}
+
+      {!isLoading && openPositions.length === 0 && closedTrades.length === 0 && !errorMessage && (
+        <p className="text-center text-sm text-muted-foreground py-6">
+          لا توجد صفقات حقيقية مسجّلة لهذه المنصة بعد
+        </p>
+      )}
+
+      {openPositions.length > 0 && (
+        <div className="space-y-2">
+          <h3 className="text-xs font-semibold text-muted-foreground">المراكز المفتوحة حالياً</h3>
+          {openPositions.map((p) => (
+            <RealTradeRow
+              key={`open-${p.id}`}
+              symbol={p.symbol}
+              direction={p.direction}
+              volume={p.volume}
+              openTime={p.openTime}
+              closeTime={null}
+              profit={p.profit}
+              matchedSignal={p.matchedSignal}
+              isOpen
+            />
+          ))}
+        </div>
+      )}
+
+      {closedTrades.length > 0 && (
+        <div className="space-y-2">
+          <h3 className="text-xs font-semibold text-muted-foreground">الصفقات المغلقة (آخر سنة)</h3>
+          {closedTrades.map((t) => (
+            <RealTradeRow
+              key={`closed-${t.id}`}
+              symbol={t.symbol}
+              direction={t.direction}
+              volume={t.volume}
+              openTime={t.openTime}
+              closeTime={t.closeTime}
+              profit={t.profit}
+              matchedSignal={t.matchedSignal}
+              isOpen={false}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function RealTradeOutcomesTabs() {
+  const [activeTab, setActiveTab] = useState<"mt5" | "okx">("mt5");
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-start gap-2 rounded-xl border border-cyan-500/20 bg-cyan-500/5 px-4 py-3">
+        <Activity className="h-4 w-4 shrink-0 text-cyan-400 mt-0.5" />
+        <p className="text-xs text-cyan-200/80 leading-relaxed">
+          نتائج الصفقات الحقيقية المنفّذة على الحساب — تُعرض هنا لمدة الصفقة ونتيجتها (ربح/خسارة) ومقارنتها
+          بتحليل النظام الأصلي، لتعلّم النظام من الأداء الفعلي. عرض فقط — للأغراض المعلوماتية، وليس توصية مالية.
+        </p>
+      </div>
+
+      <div className="flex items-center gap-2 border-b border-border/50 pb-2">
+        <button
+          onClick={() => setActiveTab("mt5")}
+          className={cn(
+            "flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-semibold transition-colors",
+            activeTab === "mt5"
+              ? "bg-amber-500/10 text-amber-400"
+              : "text-muted-foreground hover:bg-card/50 hover:text-foreground"
+          )}
+        >
+          <Award className="h-4 w-4" />
+          الذهب والفوركس (MT5)
+        </button>
+        <button
+          onClick={() => setActiveTab("okx")}
+          className={cn(
+            "flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-semibold transition-colors",
+            activeTab === "okx"
+              ? "bg-cyan-500/10 text-cyan-400"
+              : "text-muted-foreground hover:bg-card/50 hover:text-foreground"
+          )}
+        >
+          <Flame className="h-4 w-4" />
+          الكريبتو (OKX)
+        </button>
+      </div>
+
+      <RealTradeOutcomesSection source={activeTab} />
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Main Page
 // ---------------------------------------------------------------------------
 
 export default function DecisionJournalPage() {
-  const [filterResult, setFilterResult] = useState<"" | "APPROVED" | "REJECTED">("");
+  const [journalSource, setJournalSource] = useState<"mt5" | "okx">("mt5");
+  const [page, setPage] = useState(1);
+  const [filterResult, setFilterResult] = useState<"ALL" | "APPROVED" | "REJECTED" | "WAIT">("ALL");
   const [filterSymbol, setFilterSymbol] = useState<string>("");
+  const [filterDirection, setFilterDirection] = useState<"" | "BUY" | "SELL">("");
+
+  const handleSourceChange = (val: "mt5" | "okx") => {
+    setJournalSource(val);
+    setPage(1);
+  };
+
+  const handleResultChange = (val: "ALL" | "APPROVED" | "REJECTED" | "WAIT") => {
+    setFilterResult(val);
+    setPage(1);
+  };
+
+  const handleSymbolChange = (val: string) => {
+    setFilterSymbol(val.toUpperCase());
+    setPage(1);
+  };
+
+  const handleDirectionChange = (val: "" | "BUY" | "SELL") => {
+    setFilterDirection(val);
+    setPage(1);
+  };
 
   const { data, isLoading, isError, refetch, isFetching } =
     useQuery<JournalResponse>({
-      queryKey: ["decision-journal", filterResult, filterSymbol],
+      queryKey: ["decision-journal", journalSource, page, filterResult, filterSymbol, filterDirection],
       queryFn:  () =>
-        fetchJournal(filterResult || undefined, filterSymbol || undefined),
+        fetchJournal(journalSource, page, filterResult === "ALL" ? undefined : filterResult, filterSymbol || undefined, filterDirection || undefined),
       refetchInterval: 60_000,
       retry:           false,
       staleTime:       30_000,
     });
 
-  const entries = data?.entries ?? [];
-
-  const stats = useMemo(() => {
-    const approved = entries.filter((e) => e.result === "APPROVED").length;
-    return { total: entries.length, approved, rejected: entries.length - approved };
-  }, [entries]);
+  const entries = data?.data ?? data?.entries ?? [];
+  const totalCount = data?.total_count ?? 0;
+  const stats = data?.stats ?? { total: 0, approved: 0, rejected: 0, wait: 0 };
 
   return (
     <div className="min-h-screen bg-background" dir="rtl">
@@ -859,24 +1323,72 @@ export default function DecisionJournalPage() {
         {/* Simulated Crypto & MT5 Journal */}
         <SimulatedPositionsTabs />
 
+        {/* Real Trade Outcomes */}
+        <div className="space-y-3">
+          <h2 className="text-sm font-bold text-foreground flex items-center gap-2">
+            <Activity className="h-4 w-4 text-cyan-400" />
+            نتائج الصفقات الحقيقية — للتعلم من الأداء
+          </h2>
+          <RealTradeOutcomesTabs />
+        </div>
+
+        {/* Decision Journal Platform Tabs */}
+        <div className="flex items-center gap-2 border-b border-border/50 pb-2">
+          <button
+            type="button"
+            onClick={() => handleSourceChange("mt5")}
+            className={cn(
+              "flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-semibold transition-colors",
+              journalSource === "mt5"
+                ? "bg-amber-500/10 text-amber-400"
+                : "text-muted-foreground hover:bg-card/50 hover:text-foreground"
+            )}
+          >
+            <Award className="h-4 w-4" />
+            الذهب والفوركس (MT5)
+          </button>
+          <button
+            type="button"
+            onClick={() => handleSourceChange("okx")}
+            className={cn(
+              "flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-semibold transition-colors",
+              journalSource === "okx"
+                ? "bg-cyan-500/10 text-cyan-400"
+                : "text-muted-foreground hover:bg-card/50 hover:text-foreground"
+            )}
+          >
+            <Flame className="h-4 w-4" />
+            الكريبتو (OKX)
+          </button>
+        </div>
+
         {/* Filters */}
         <div className="flex flex-wrap gap-3">
           <select
             value={filterResult}
-            onChange={(e) =>
-              setFilterResult(e.target.value as "" | "APPROVED" | "REJECTED")
-            }
+            onChange={(e) => handleResultChange(e.target.value as "ALL" | "APPROVED" | "REJECTED" | "WAIT")}
             className="rounded-lg border border-border bg-card px-3 py-1.5 text-sm text-foreground focus:outline-none focus:border-amber-500/50"
           >
-            <option value="">جميع النتائج</option>
-            <option value="APPROVED">مقبولة فقط</option>
-            <option value="REJECTED">مرفوضة فقط</option>
+            <option value="ALL">جميع النتائج</option>
+            <option value="APPROVED">مقبولة فقط (APPROVED)</option>
+            <option value="REJECTED">مرفوضة فقط (REJECTED)</option>
+            <option value="WAIT">قيد الانتظار (WAIT)</option>
+          </select>
+
+          <select
+            value={filterDirection}
+            onChange={(e) => handleDirectionChange(e.target.value as "" | "BUY" | "SELL")}
+            className="rounded-lg border border-border bg-card px-3 py-1.5 text-sm text-foreground focus:outline-none focus:border-amber-500/50"
+          >
+            <option value="">جميع الاتجاهات</option>
+            <option value="BUY">شراء (BUY)</option>
+            <option value="SELL">بيع (SELL)</option>
           </select>
 
           <input
             type="text"
             value={filterSymbol}
-            onChange={(e) => setFilterSymbol(e.target.value.toUpperCase())}
+            onChange={(e) => handleSymbolChange(e.target.value)}
             placeholder="فلتر بالرمز (مثال: XAUUSD)"
             className="rounded-lg border border-border bg-card px-3 py-1.5 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:border-amber-500/50 w-48"
             maxLength={20}
@@ -933,10 +1445,35 @@ export default function DecisionJournalPage() {
 
         {/* Journal entries */}
         {!isLoading && entries.length > 0 && (
-          <div className="space-y-2">
-            {entries.map((entry) => (
-              <JournalRow key={entry.id} entry={entry} />
-            ))}
+          <div className="space-y-4">
+            <div className="space-y-2">
+              {entries.map((entry) => (
+                <JournalRow key={entry.id} entry={entry} />
+              ))}
+            </div>
+
+            {/* Pagination Controls */}
+            <div className="flex items-center justify-between border-t border-border/50 pt-4">
+              <button
+                type="button"
+                onClick={() => setPage((p) => Math.max(1, p - 1))}
+                disabled={page === 1}
+                className="rounded-lg border border-border bg-card px-4 py-2 text-sm text-foreground hover:bg-card/80 disabled:opacity-50"
+              >
+                الصفحة السابقة
+              </button>
+              <span className="text-sm text-muted-foreground">
+                الصفحة {page} من {Math.max(1, Math.ceil(totalCount / 50))} (إجمالي {totalCount} قرار)
+              </span>
+              <button
+                type="button"
+                onClick={() => setPage((p) => p + 1)}
+                disabled={page * 50 >= totalCount}
+                className="rounded-lg border border-border bg-card px-4 py-2 text-sm text-foreground hover:bg-card/80 disabled:opacity-50"
+              >
+                الصفحة التالية
+              </button>
+            </div>
           </div>
         )}
 
