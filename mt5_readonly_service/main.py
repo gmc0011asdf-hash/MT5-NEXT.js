@@ -781,6 +781,7 @@ async def _startup() -> None:
     asyncio.create_task(run_watchlist_multi_timeframe_scan())
     asyncio.create_task(run_telegram_bot_polling())
     asyncio.create_task(run_mt5_trade_sync())
+    asyncio.create_task(run_news_radar_sync())
 
 
 @app.post("/connect")
