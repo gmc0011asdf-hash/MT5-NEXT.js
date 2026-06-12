@@ -163,7 +163,11 @@ function SimulateEntryModal({
   const [stopLoss, setStopLoss]     = useState(signal.sl != null ? String(signal.sl) : "");
   const [takeProfit, setTakeProfit] = useState(signal.tp != null ? String(signal.tp) : "");
   const [lotSize, setLotSize]       = useState(signal.lot_size != null ? String(signal.lot_size) : "");
-  const [notes, setNotes]           = useState("");
+  const initialNotes = signal.votes
+    .filter((v) => v.approved && v.reason)
+    .map((v) => `${v.agent}: ${v.reason}`)
+    .join("\n");
+  const [notes, setNotes]           = useState(initialNotes);
   const [simDate, setSimDate]       = useState(() => {
     const d = new Date();
     const pad = (n: number) => String(n).padStart(2, "0");
@@ -313,11 +317,11 @@ function SimulateEntryModal({
           </div>
 
           <div className="col-span-2">
-            <label className="mb-1 block text-[10px] text-muted-foreground">ملاحظات (اختياري)</label>
+            <label className="mb-1 block text-[10px] text-muted-foreground">أسباب الدخول الفنية (Reasons for Entry)</label>
             <textarea
               value={notes}
               onChange={(e) => setNotes(e.target.value)}
-              rows={2}
+              rows={3}
               className="w-full resize-none rounded-lg border border-border/30 bg-card/50 px-3 py-2 text-xs text-foreground focus:border-amber-500/50 focus:outline-none"
             />
           </div>
