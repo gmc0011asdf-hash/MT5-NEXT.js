@@ -4,9 +4,10 @@ telegram_subscribers.py -- Opt-in Telegram subscriber system.
 Additive to the existing single-chat Telegram alert (agents.py:
 _send_telegram_alert, configured via system_config.telegram_chat_id).
 Anyone can send /start to the bot to subscribe; /stop unsubscribes;
-/help lists commands. Approved recommendations from the watchlist
-multi-timeframe scan (the sole send_alert=True path, per Stage C) are
-broadcast to all active subscribers.
+/help lists commands. Approved recommendations are relayed to all active
+subscribers using the SAME unified institutional message text built by
+agents.CouncilEngine._send_telegram_alert -- there is no separate template
+here, to avoid sending two different messages for the same opportunity.
 
 Read-only contract: this module never executes trades. It only sends
 Telegram messages and reads/writes subscriber + delivery-log rows.
@@ -17,7 +18,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 import requests
 from sqlalchemy.orm import Session
@@ -148,61 +149,6 @@ def _recommendation_id(verdict) -> str:
     return f"{verdict.symbol}|{verdict.direction}|{verdict.timestamp.isoformat()}"
 
 
-def format_recommendation_message(verdict) -> str:
-    """Build the Arabic recommendation message sent to subscribers.
-
-    Separate from agents._send_telegram_alert's message (which keeps its
-    existing format for the legacy single-chat alert). This system only
-    produces market-entry signals (no pending orders), so "نوع الدخول" is
-    always "سعر السوق (MARKET)", and only one target (TP1) is shown --
-    the engine does not compute a TP2.
-    """
-    digits = verdict.digits if verdict.digits is not None else 5
-    entry_str = f"{verdict.entry:.{digits}f}" if verdict.entry is not None else "—"
-    sl_str = f"{verdict.sl:.{digits}f}" if verdict.sl is not None else "—"
-    tp_str = f"{verdict.tp:.{digits}f}" if verdict.tp is not None else "—"
-
-    direction_label = "شراء" if verdict.direction == "BUY" else "بيع" if verdict.direction == "SELL" else "—"
-
-    risk_percent = verdict.risk_percent if verdict.risk_percent is not None else None
-    risk_str = f"{risk_percent:.1f}%" if risk_percent is not None else "—"
-
-    confidence_str = f"{verdict.signal_strength * 100:.0f}%"
-    duration_str = verdict.duration or "—"
-
-    confluence = verdict.confluence or {}
-    reason = confluence.get("level") or "—"
-    aligned = confluence.get("aligned_count")
-    if aligned is not None:
-        reason = f"{reason} ({aligned}/3 جدران متوافقة)"
-
-    baghdad_time = verdict.timestamp + timedelta(hours=3)
-    time_str = baghdad_time.strftime("%I:%M %p").lstrip("0") + " بتوقيت بغداد"
-
-    return (
-        "📢 توصية جديدة من النظام\n"
-        "━━━━━━━━━━━━━━━━━━━\n"
-        f"🪙 الأصل: {verdict.symbol}\n"
-        f"📈 الاتجاه: {direction_label}\n"
-        "🎯 نوع الدخول: سعر السوق (MARKET)\n"
-        "──────────────────\n"
-        f"📥 الدخول: <code>{entry_str}</code>\n"
-        f"🛑 وقف الخسارة: <code>{sl_str}</code>\n"
-        "🏆 الأهداف:\n"
-        f"   TP1: <code>{tp_str}</code>\n"
-        "──────────────────\n"
-        f"📊 نسبة المخاطرة: {risk_str}\n"
-        f"⭐ درجة الثقة: {confidence_str}\n"
-        f"⏳ مدة صلاحية التوصية: {duration_str}\n"
-        f"📝 سبب التوصية: {reason}\n"
-        "──────────────────\n"
-        f"⏰ {time_str}\n"
-        "\n"
-        "⚠️ تنبيه: هذه توصية تحليلية وليست أمراً إلزامياً بالشراء أو البيع.\n"
-        "قرار التداول وإدارة المخاطر مسؤوليتك الشخصية."
-    )
-
-
 def _send_message(token: str, chat_id: str, text: str, proxy_url: str | None = None) -> None:
     """Send one Telegram message. Raises on HTTP/network failure (caller logs)."""
     proxies = {"https": proxy_url, "http": proxy_url} if proxy_url else None
@@ -216,8 +162,9 @@ def _send_message(token: str, chat_id: str, text: str, proxy_url: str | None = N
         raise RuntimeError(f"Telegram HTTP {resp.status_code}: {resp.text[:200]}")
 
 
-def broadcast_recommendation(verdict, db: Session) -> None:
-    """Send the recommendation to every active subscriber.
+def broadcast_recommendation(verdict, text: str, db: Session) -> None:
+    """Relay the unified institutional message (built by
+    agents.CouncilEngine._send_telegram_alert) to every active subscriber.
 
     Never raises. A failure for one subscriber does not stop the others.
     Each attempt is logged to telegram_recommendation_deliveries; a
@@ -234,7 +181,6 @@ def broadcast_recommendation(verdict, db: Session) -> None:
             return
 
         rec_id = _recommendation_id(verdict)
-        text = format_recommendation_message(verdict)
 
         for sub in subscribers:
             already_sent = (

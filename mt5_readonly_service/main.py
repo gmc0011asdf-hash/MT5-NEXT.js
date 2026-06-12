@@ -3519,9 +3519,7 @@ async def run_watchlist_multi_timeframe_scan() -> None:
                     from agents import is_market_open
                     from datetime import datetime, timezone
                     if is_market_open(best_verdict.symbol, datetime.now(timezone.utc)):
-                        engine._send_telegram_alert(best_verdict)
-                        from telegram_subscribers import broadcast_recommendation
-                        broadcast_recommendation(best_verdict, db)
+                        engine._send_telegram_alert(best_verdict, db=db)
 
         finally:
             db.close()

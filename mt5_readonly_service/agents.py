@@ -1296,8 +1296,15 @@ class CouncilEngine:
             logger.error("CouncilEngine: DB write failed: %s", exc)
             db.rollback()
 
-    def _send_telegram_alert(self, verdict: CouncilVerdict) -> None:
-        """Send an Arabic Telegram notification for an approved signal.
+    def _send_telegram_alert(self, verdict: CouncilVerdict, db: Session | None = None) -> None:
+        """Send the unified institutional Telegram notification for an approved
+        signal -- this is the SOLE broadcast point for approved verdicts.
+
+        If `db` is provided, the exact same message text is also relayed to
+        every active Telegram subscriber via
+        telegram_subscribers.broadcast_recommendation -- callers must not
+        build or send a separate message for the same verdict.
+
         Reads TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID from environment.
         Never raises — errors are logged and silently discarded.
         """
@@ -1338,13 +1345,20 @@ class CouncilEngine:
 
             tf_display = verdict.timeframe.lower() if verdict.timeframe else "1h"
 
-            # تمييز المنصة في بداية الرسالة: تنسيق رمز OKX يحتوي "-" (مثل BTC-USDT)
-            # أما رموز MT5 (فوركس/الذهب) فلا تحتوي "-" (مثل XAUUSD).
-            platform_tag = "[OKX - CRYPTO]" if "-" in verdict.symbol else "[MT5 - FOREX/GOLD]"
+            # التمييز الجغرافي الحاسم في بداية الرسالة: رموز OKX تحتوي "-" (مثل
+            # BTC-USDT)، أما رموز MT5 (فوركس/الذهب) فلا تحتوي "-" (مثل XAUUSD).
+            is_okx = "-" in verdict.symbol
+            if is_okx:
+                header = "⚡ [OKX - CRYPTO] | توصية مؤسسية جديدة"
+                leverage_advice = (verdict.metadata or {}).get("leverage_advice")
+                leverage_line = f"⚙️ الرافعة المقترحة: {leverage_advice}\n" if leverage_advice else ""
+            else:
+                header = "🏛️ [MT5 - FOREX/GOLD] | توصية مؤسسية جديدة"
+                leverage_line = ""
 
             # فواصل ASCII فقط (بدون رموز Unicode رسومية) لحماية Turbopack من الانهيار
             text = (
-                f"{platform_tag}\n"
+                f"{header}\n"
                 f"===================\n"
                 f"🪙 الزوج: {verdict.symbol}  —  {tf_display}\n"
                 f"{dir_emoji} الإشارة: {dir_label}   |   القوة: {strength_label}\n"
@@ -1357,6 +1371,7 @@ class CouncilEngine:
                 f"⚠️ المبلغ المعرض للمخاطرة: {risk_str}\n"
                 f"🎯 الربح المتوقع: {profit_str}\n"
                 f"⏳ مدة الصفقة المتوقعة: {duration_str}\n"
+                f"{leverage_line}"
                 f"-------------------\n"
                 f"⏰ وقت صدور الإشارة: {time_str}\n"
                 f"\n"
@@ -1377,6 +1392,10 @@ class CouncilEngine:
                     "Telegram alert sent -- symbol=%s direction=%s",
                     verdict.symbol, verdict.direction,
                 )
+
+            if db is not None:
+                from telegram_subscribers import broadcast_recommendation
+                broadcast_recommendation(verdict, text, db)
         except Exception as exc:
             logger.warning("Telegram alert failed (non-fatal): %s", exc)
 
@@ -1531,11 +1550,8 @@ class CouncilEngine:
             )
             if send_alert and not on_cooldown:
                 if not market_closed and is_market_open(symbol):
-                    self._send_telegram_alert(winner)
+                    self._send_telegram_alert(winner, db=db)
                     _LAST_SIGNAL_ALERT_TIMES[cooldown_key] = now_utc
-                    if db is not None:
-                        from telegram_subscribers import broadcast_recommendation
-                        broadcast_recommendation(winner, db)
                 else:
                     logger.info("Market is closed for %s -- skipping Telegram alert.", symbol)
         else:
