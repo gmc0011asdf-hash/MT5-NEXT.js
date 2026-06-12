@@ -237,6 +237,104 @@ def get_market_session(now_utc: datetime | None = None) -> dict:
     }
 
 
+def is_market_open(symbol: str, now_utc: datetime | None = None) -> bool:
+    """
+    Check if the market is open for a given symbol.
+    Crypto is open 24/7.
+    Forex/Indices/Metals are closed from Friday 21:00 UTC to Sunday 21:00 UTC,
+    and also closed when no major session is active.
+    """
+    sym = symbol.upper()
+    crypto_keywords = ["BTC", "ETH", "SOL", "BNB", "XRP", "DOGE", "LTC", "ADA", "DOT", "MATIC"]
+    if any(k in sym for k in crypto_keywords) or "CRYPTO" in sym:
+        return True
+        
+    now = now_utc or datetime.now(timezone.utc)
+    wd = now.weekday()
+    hour = now.hour
+    
+    # Friday is 4. Closed after 21:00 UTC.
+    if wd == 4 and hour >= 21:
+        return False
+    # Saturday is 5. Always closed.
+    if wd == 5:
+        return False
+    # Sunday is 6. Closed before 21:00 UTC.
+    if wd == 6 and hour < 21:
+        return False
+        
+    # Forex is only active during major exchanges
+    active = [
+        name for name, (start, end) in _SESSION_WINDOWS_UTC.items()
+        if start <= hour < end
+    ]
+    if not active:
+        return False
+        
+    return True
+
+
+def notify_market_open() -> None:
+    """Send a broadcast notification to the bot when the market opens."""
+    if not _TELEGRAM_TOKEN or not _TELEGRAM_CHAT_ID:
+        return
+    text = (
+        "🔔 <b>إشعار افتتاح السوق</b>\n\n"
+        "السوق الآن مفتوح!\n"
+        "أوقات التداول: من الإثنين إلى الجمعة (بتوقيت الخادم).\n"
+        "العملات الرقمية (Crypto) متاحة للتداول 24/7."
+    )
+    try:
+        import requests
+        requests.post(
+            f"https://api.telegram.org/bot{_TELEGRAM_TOKEN}/sendMessage",
+            json={"chat_id": _TELEGRAM_CHAT_ID, "text": text, "parse_mode": "HTML"},
+            timeout=8.0,
+        )
+    except Exception as exc:
+        logger.warning("Telegram market open alert failed: %s", exc)
+
+def notify_market_closed() -> None:
+    if not _TELEGRAM_TOKEN or not _TELEGRAM_CHAT_ID:
+        return
+    text = (
+        "🔕 <b>السوق مغلق الآن</b>\n\n"
+        "تم إيقاف إرسال التوصيات لأسواق الفوركس والمعادن لأن السوق مغلق.\n"
+        "سوق الكريبتو (Crypto) مستمر 24/7."
+    )
+    try:
+        import requests
+        requests.post(
+            f"https://api.telegram.org/bot{_TELEGRAM_TOKEN}/sendMessage",
+            json={"chat_id": _TELEGRAM_CHAT_ID, "text": text, "parse_mode": "HTML"},
+            timeout=8.0,
+        )
+    except Exception as exc:
+        logger.warning("Telegram market closed alert failed: %s", exc)
+
+def notify_session_opened(sessions: list[str]) -> None:
+    if not _TELEGRAM_TOKEN or not _TELEGRAM_CHAT_ID:
+        return
+    
+    labels = []
+    for s in sessions:
+        label = _SESSION_LABELS_AR.get(s, s)
+        labels.append(label)
+    
+    text = f"🔔 <b>افتتاح بورصة جديدة</b>\n\nتم افتتاح: {', '.join(labels)}."
+    
+    try:
+        import requests
+        requests.post(
+            f"https://api.telegram.org/bot{_TELEGRAM_TOKEN}/sendMessage",
+            json={"chat_id": _TELEGRAM_CHAT_ID, "text": text, "parse_mode": "HTML"},
+            timeout=8.0,
+        )
+    except Exception as exc:
+        logger.warning("Telegram session open alert failed: %s", exc)
+
+
+
 # ---------------------------------------------------------------------------
 # Position sizing — risk % of equity -> normalized lot size
 # ---------------------------------------------------------------------------
@@ -332,9 +430,17 @@ class CouncilVerdict:
     approved:        bool
     signal_strength: float           # fraction of agents that approved (0.0 - 1.0)
     votes:           list[AgentVote]
+    entry:           float | None = None
     sl:              float | None = None
     tp:              float | None = None
     atr:             float | None = None
+    risk_amount:     float | None = None
+    risk_percent:    float | None = None      # نسبة المخاطرة المستخدمة من رأس المال (1-3%)
+    profit_amount:   float | None = None
+    lot_size:        float | None = None
+    digits:          int | None = None        # دقة سعر الرمز في MT5 (symbol_info.digits)
+    duration:        str | None = None
+    timeframe:       str | None = None
     confluence:      dict | None = None       # Triple Firewall confluence rating
     session:         dict | None = None       # Market session clock (Baghdad UTC+3)
     timestamp:       datetime = field(
@@ -351,55 +457,115 @@ class CouncilVerdict:
 
 class TrendAgent:
     """
-    EMA(200) trend alignment filter -- VETO power.
+    Market Structure (ICT) trend alignment filter -- VETO power.
 
-    BUY  approved when: close > EMA(200)
-    SELL approved when: close < EMA(200)
-
-    Confidence scales with the percentage distance from EMA(200):
-        0.5 at EMA touch, 1.0 at 1% distance or more.
+    BUY  approved when: Bullish BOS is detected or Bullish FVG exists recently.
+    SELL approved when: Bearish BOS is detected or Bearish FVG exists recently.
     """
 
     NAME = "TrendAgent"
 
+    def _detect_fvg_bos(self, df: pd.DataFrame) -> dict:
+        """Helper to detect ICT elements on the most recent candles."""
+        c1 = df.iloc[-3]
+        c2 = df.iloc[-2]
+        c3 = df.iloc[-1]
+
+        bullish_fvg = bool((c3['low'] > c1['high']) and (c2['close'] > c2['open']))
+        bearish_fvg = bool((c3['high'] < c1['low']) and (c2['close'] < c2['open']))
+
+        # Simplified Break of Structure (BOS) over a 20-candle lookback
+        recent_window = df.iloc[-20:-1]
+        recent_high = recent_window['high'].max()
+        recent_low = recent_window['low'].min()
+        
+        bullish_bos = bool(c3['close'] > recent_high)
+        bearish_bos = bool(c3['close'] < recent_low)
+        
+        # Liquidity Sweeps Detection
+        bullish_sweep = bool(c3['low'] < recent_low and c3['close'] > recent_low)
+        bearish_sweep = bool(c3['high'] > recent_high and c3['close'] < recent_high)
+
+        # Fallback EMAs for general trend
+        ema50 = df['close'].ewm(span=50, adjust=False).mean().iloc[-1] if len(df) >= 50 else c3['close']
+        ema200 = df['close'].ewm(span=200, adjust=False).mean().iloc[-1] if len(df) >= 200 else c3['close']
+
+        return {
+            "bullish_fvg": bullish_fvg,
+            "bearish_fvg": bearish_fvg,
+            "bullish_bos": bullish_bos,
+            "bearish_bos": bearish_bos,
+            "bullish_sweep": bullish_sweep,
+            "bearish_sweep": bearish_sweep,
+            "recent_high": recent_high,
+            "recent_low": recent_low,
+            "close": c3['close'],
+            "ema50": ema50,
+            "ema200": ema200
+        }
+
     def vote(self, direction: str, df: pd.DataFrame) -> AgentVote:
-        if len(df) < MIN_CANDLES_EMA:
+        if len(df) < 20:
             return AgentVote(
                 agent=self.NAME, direction=direction,
                 approved=False, confidence=0.0,
-                reason=(
-                    f"بيانات غير كافية -- يلزم {MIN_CANDLES_EMA} شمعة "
-                    f"(متوفر: {len(df)})"
-                ),
+                reason="بيانات غير كافية لتحليل هيكلة السوق (ICT)",
+                metadata={}
             )
 
-        ema200 = _last(_ema(df["close"], int(_cfg("ema_length", EMA_LENGTH))))
-        close  = _last(df["close"])
+        ict = self._detect_fvg_bos(df)
 
-        if ema200 is None or close is None:
-            return AgentVote(
-                agent=self.NAME, direction=direction,
-                approved=False, confidence=0.0,
-                reason="فشل حساب EMA(200) -- قيمة NaN",
-            )
+        # Convert np.bool_ to regular bool for JSON serialization
+        clean_ict = {k: bool(v) if isinstance(v, (bool, np.bool_)) else float(v) if isinstance(v, (float, np.floating, int, np.integer)) else v for k, v in ict.items()}
 
-        price_above = close > ema200
-        approved    = price_above if direction == "BUY" else not price_above
+        approved = False
+        reason = ""
+        confidence = 0.0
 
-        distance_pct = abs(close - ema200) / ema200
-        confidence   = _clamp(0.5 + distance_pct * 50.0, 0.5, 1.0) if approved else 0.0
-
-        side_ar = "فوق" if price_above else "تحت"
-        reason  = (
-            f"السعر {close:.5f} {side_ar} EMA(200) = {ema200:.5f} "
-            f"(بُعد {distance_pct * 100:.3f}%)"
-        )
+        if direction == "BUY":
+            if ict["bullish_bos"]:
+                approved = True
+                confidence = 1.0
+                reason = f"مقبول: كسر هيكل صاعد (Bullish BOS) إغلاق أعلى من القمة {ict['recent_high']:.5f}"
+            elif ict["bullish_sweep"] and (ict["bullish_fvg"] or (ict["close"] > ict["ema50"] and ict["ema50"] >= ict["ema200"])):
+                approved = True
+                confidence = 1.0
+                reason = f"مقبول بامتياز: سحب سيولة بيعية (Bullish Sweep) تحت القاع {ict['recent_low']:.5f} مدعوم باتجاه إيجابي (FVG/EMA)"
+            elif ict["bullish_fvg"]:
+                approved = True
+                confidence = 0.8
+                reason = "مقبول: رصد فجوة سعرية عادلة صاعدة (Bullish FVG)"
+            elif ict["close"] > ict["ema50"] and ict["ema50"] >= ict["ema200"]:
+                approved = True
+                confidence = 0.5
+                reason = "مقبول جزئياً: لا يوجد هيكل واضح ولكن السعر في اتجاه عام صاعد (أعلى من EMA 50 و 200)"
+            else:
+                reason = "مرفوض: لا يوجد كسر هيكل صاعد (BOS) ولا اتجاه عام صاعد (EMA)"
+        else:
+            if ict["bearish_bos"]:
+                approved = True
+                confidence = 1.0
+                reason = f"مقبول: كسر هيكل هابط (Bearish BOS) إغلاق أدنى من القاع {ict['recent_low']:.5f}"
+            elif ict["bearish_sweep"] and (ict["bearish_fvg"] or (ict["close"] < ict["ema50"] and ict["ema50"] <= ict["ema200"])):
+                approved = True
+                confidence = 1.0
+                reason = f"مقبول بامتياز: سحب سيولة شرائية (Bearish Sweep) فوق القمة {ict['recent_high']:.5f} مدعوم باتجاه سلبي (FVG/EMA)"
+            elif ict["bearish_fvg"]:
+                approved = True
+                confidence = 0.8
+                reason = "مقبول: رصد فجوة سعرية عادلة هابطة (Bearish FVG)"
+            elif ict["close"] < ict["ema50"] and ict["ema50"] <= ict["ema200"]:
+                approved = True
+                confidence = 0.5
+                reason = "مقبول جزئياً: لا يوجد هيكل واضح ولكن السعر في اتجاه عام هابط (أدنى من EMA 50 و 200)"
+            else:
+                reason = "مرفوض: لا يوجد كسر هيكل هابط (BOS) ولا اتجاه عام هابط (EMA)"
 
         return AgentVote(
             agent=self.NAME, direction=direction,
             approved=approved, confidence=confidence,
             reason=reason,
-            metadata={"close": close, "ema200": ema200, "distance_pct": distance_pct},
+            metadata=clean_ict,
         )
 
 
@@ -443,27 +609,28 @@ class VolatilityAgent:
             )
 
         band_width = max(upper - lower, 1e-10)
+        mid_val = (upper + lower) / 2.0
 
         if direction == "BUY":
-            approved    = close <= lower
-            penetration = max(0.0, (lower - close) / band_width)
-            band_label  = "السفلي"
-            band_val    = lower
-        else:
-            approved    = close >= upper
-            penetration = max(0.0, (close - upper) / band_width)
-            band_label  = "العلوي"
+            approved    = close >= mid_val
+            penetration = _clamp((close - mid_val) / (upper - mid_val), 0.0, 1.0) if approved else 0.0
+            band_label  = "الأوسط إلى العلوي"
             band_val    = upper
+        else:
+            approved    = close <= mid_val
+            penetration = _clamp((mid_val - close) / (mid_val - lower), 0.0, 1.0) if approved else 0.0
+            band_label  = "الأوسط إلى السفلي"
+            band_val    = lower
 
-        confidence = _clamp(0.5 + penetration * 2.0, 0.5, 1.0) if approved else 0.0
+        confidence = _clamp(0.5 + penetration * 0.5, 0.5, 1.0) if approved else 0.0
 
         if approved:
             reason = (
-                f"السعر {close:.5f} عند/خارج الحد {band_label} ({band_val:.5f}), "
-                f"اختراق {penetration * 100:.2f}% من عرض النطاق ({band_width:.5f})"
+                f"السعر {close:.5f} في النطاق {band_label}, "
+                f"قوة الزخم {penetration * 100:.1f}% نحو الطرف"
             )
         else:
-            reason = f"السعر {close:.5f} لم يصل للحد {band_label} ({band_val:.5f})"
+            reason = f"السعر {close:.5f} لا يدعم الاتجاه (عكس النطاق الأوسط)"
 
         return AgentVote(
             agent=self.NAME, direction=direction,
@@ -506,19 +673,17 @@ class MomentumAgent:
             )
 
         if direction == "BUY":
-            approved   = rsi_val < 30.0
-            distance   = (30.0 - rsi_val) / 30.0 if approved else 0.0
-            zone_label = "تشبع بيع (Oversold)" if rsi_val < 30 else "محايد أو تشبع شراء"
+            approved   = rsi_val >= 50.0
+            distance   = _clamp((rsi_val - 50.0) / 20.0, 0.0, 1.0) if approved else 0.0
+            zone_label = "زخم إيجابي (>50)" if approved else "زخم سلبي"
         else:
-            approved   = rsi_val > 70.0
-            distance   = (rsi_val - 70.0) / 30.0 if approved else 0.0
-            zone_label = "تشبع شراء (Overbought)" if rsi_val > 70 else "محايد أو تشبع بيع"
+            approved   = rsi_val <= 50.0
+            distance   = _clamp((50.0 - rsi_val) / 20.0, 0.0, 1.0) if approved else 0.0
+            zone_label = "زخم سلبي (<50)" if approved else "زخم إيجابي"
 
         confidence = _clamp(0.5 + distance * 0.5, 0.5, 1.0) if approved else 0.0
 
         reason = f"RSI(14) = {rsi_val:.2f} -- {zone_label}"
-        if approved:
-            reason += f" (بُعد {distance * 100:.1f}% من حد التشبع)"
 
         return AgentVote(
             agent=self.NAME, direction=direction,
@@ -548,7 +713,8 @@ class RiskAgent:
         self,
         direction: str,
         df: pd.DataFrame,
-    ) -> tuple[AgentVote, float | None, float | None, float | None]:
+        account_balance: float | None = None,
+    ) -> tuple[AgentVote, float | None, float | None, float | None, float | None, float | None, float | None, str | None]:
         if len(df) < MIN_CANDLES_ATR:
             vote = AgentVote(
                 agent=self.NAME, direction=direction,
@@ -558,7 +724,7 @@ class RiskAgent:
                     f"(متوفر: {len(df)})"
                 ),
             )
-            return vote, None, None, None
+            return vote, None, None, None, None, None, None, None
 
         _atr_len  = int(_cfg("atr_length",  ATR_LENGTH))
         _sl_mult  = float(_cfg("atr_sl_mult", ATR_SL_MULT))
@@ -574,7 +740,7 @@ class RiskAgent:
                 approved=False, confidence=0.0,
                 reason="فشل حساب ATR أو القيمة صفر",
             )
-            return vote, None, None, None
+            return vote, None, None, None, None, None, None, None
 
         sl_dist = atr_val * _sl_mult
         tp_dist = atr_val * _tp_mult
@@ -590,21 +756,37 @@ class RiskAgent:
         approved   = rr >= _min_rr
         confidence = _clamp(rr / (_min_rr * 2.0), 0.0, 1.0) if approved else 0.0
 
+        # رأس المال الفعلي لحساب المخاطرة: رصيد المنصة الحي إن توفر، وإلا قيمة افتراضية
+        effective_balance = account_balance if account_balance and account_balance > 0 else 10000.0
+        risk_percent = 0.01
+        risk_amount = effective_balance * risk_percent
+        profit_amount = risk_amount * rr
+
+        tf = df.attrs.get("timeframe", "H1")
+        if "15" in tf:
+            duration = "1 إلى 3 ساعات"
+        elif "30" in tf:
+            duration = "2 إلى 6 ساعات"
+        elif "H4" in tf or "4H" in tf:
+            duration = "16 إلى 48 ساعة"
+        elif "D1" in tf or "1D" in tf:
+            duration = "4 إلى 12 يوماً"
+        else: # Default H1
+            duration = "4 إلى 12 ساعة"
+
         rr_verdict = "موافق -- يتجاوز 1:2" if approved else "مرفوض -- دون الحد 1:2"
         reason = (
-            f"ATR(14) = {atr_val:.5f} | "
-            f"SL = {sl:.5f} | "
-            f"TP = {tp:.5f} | "
-            f"RR = {rr:.2f} ({rr_verdict})"
+            f"دخول {close:.5f} | SL {sl:.5f} | TP {tp:.5f} | "
+            f"RR {rr:.2f} | مخاطرة ${risk_amount:.2f} | ربح المتوقع ${profit_amount:.2f}"
         )
 
         vote = AgentVote(
             agent=self.NAME, direction=direction,
             approved=approved, confidence=confidence,
             reason=reason,
-            metadata={"atr": atr_val, "sl": sl, "tp": tp, "rr": rr},
+            metadata={"atr": atr_val, "entry": close, "sl": sl, "tp": tp, "rr": rr, "risk": risk_amount, "profit": profit_amount, "duration": duration},
         )
-        return vote, sl, tp, atr_val
+        return vote, close, sl, tp, atr_val, risk_amount, profit_amount, duration
 
 
 # ---------------------------------------------------------------------------
@@ -637,14 +819,20 @@ class CouncilEngine:
 
     # -- private helpers --------------------------------------------------
 
-    def _evaluate(self, direction: str, df: pd.DataFrame) -> CouncilVerdict:
+    def _evaluate(
+        self,
+        direction: str,
+        df: pd.DataFrame,
+        account_balance: float | None = None,
+        symbol_info: dict | None = None,
+    ) -> CouncilVerdict:
         """Run all four agents for one direction and apply voting rules."""
         symbol = str(df.attrs.get("symbol", "UNKNOWN"))
 
         trend_vote                       = self._trend.vote(direction, df)
         volatility_vote                  = self._volatility.vote(direction, df)
         momentum_vote                    = self._momentum.vote(direction, df)
-        risk_vote, sl, tp, atr           = self._risk.vote(direction, df)
+        risk_vote, entry, sl, tp, atr, risk_amt, profit_amt, dur = self._risk.vote(direction, df, account_balance)
 
         all_votes = [trend_vote, volatility_vote, momentum_vote, risk_vote]
 
@@ -652,8 +840,71 @@ class CouncilEngine:
         quorum_ok = volatility_vote.approved or momentum_vote.approved
         approved  = veto_ok and quorum_ok
 
-        n_approved      = sum(v.approved for v in all_votes)
-        signal_strength = n_approved / len(all_votes)
+        if not veto_ok:
+            signal_strength = 0.0
+        else:
+            aligned_agents = [v for v in all_votes if v.approved]
+            if aligned_agents:
+                signal_strength = sum(v.confidence for v in aligned_agents) / len(aligned_agents)
+            else:
+                signal_strength = 0.0
+
+        lot_size = None
+        risk_percent_used = None
+        digits = symbol_info.get("digits") if symbol_info else None
+        if approved:
+            # Dynamic Risk 1% to 3%
+            if signal_strength >= 0.85:
+                risk_multiplier = 3.0
+            elif signal_strength >= 0.65:
+                risk_multiplier = 2.0
+            else:
+                risk_multiplier = 1.0
+
+            risk_percent_used = risk_multiplier  # base risk per RiskAgent.vote = 1%
+            risk_amt = (risk_amt or 0) * risk_multiplier
+            profit_amt = (profit_amt or 0) * risk_multiplier
+
+            # Estimated Lot/Quantity
+            sl_dist = abs(entry - sl) if entry and sl else 0
+            if sl_dist > 0:
+                if symbol_info:
+                    # رمز MT5: استخدام الحجم القياسي (لوت) عبر calculate_position_size
+                    # الذي يأخذ بعين الاعتبار حجم العقد عبر trade_tick_value/trade_tick_size
+                    effective_balance = account_balance if account_balance and account_balance > 0 else 10000.0
+                    sizing = calculate_position_size(
+                        account_equity=effective_balance,
+                        risk_percent=risk_percent_used,
+                        entry_price=entry,
+                        stop_loss=sl,
+                        trade_tick_value=symbol_info.get("trade_tick_value", 0.0),
+                        trade_tick_size=symbol_info.get("trade_tick_size", 0.0),
+                        point=symbol_info.get("point", 0.0),
+                        volume_min=symbol_info.get("volume_min", 0.01),
+                        volume_max=symbol_info.get("volume_max", 1000.0),
+                        volume_step=symbol_info.get("volume_step", 0.01),
+                    )
+                    if sizing["normalized_lot"] > 0:
+                        lot_size = sizing["normalized_lot"]
+                else:
+                    # بدون بيانات رمز MT5 (مثل OKX): كمية الأصل الأساسي مباشرة (مناسبة للسبوت)
+                    lot_size = round(risk_amt / sl_dist, 4)
+
+            # Price decimals: استخدام دقة الرمز الحقيقية من MT5 (symbol_info.digits)
+            # عند توفرها، وإلا تقدير حسب حجم السعر (متوافق مع OKX وغيرها).
+            if digits is not None:
+                def fmt(val: float | None) -> float | None:
+                    return round(val, digits) if val is not None else None
+            else:
+                def fmt(val: float | None) -> float | None:
+                    if val is None: return None
+                    if val > 1000: return round(val, 2)
+                    if val > 10: return round(val, 3)
+                    return round(val, 5)
+
+            entry = fmt(entry)
+            sl = fmt(sl)
+            tp = fmt(tp)
 
         # -- Triple Firewall confluence rating --------------------------------
         # The three independent "firewalls": trend (EMA200), volatility (BB
@@ -680,17 +931,52 @@ class CouncilEngine:
             "firewalls":     firewalls,
         }
 
+        # -- Market Session Alignment ------------------------------------------
+        session_info = get_market_session()
+        active_sessions = session_info.get("active", [])
+        symbol_upper = symbol.upper()
+        
+        session_aligned = False
+        aligned_reason = ""
+        
+        if "Sydney" in active_sessions and ("AUD" in symbol_upper or "NZD" in symbol_upper):
+            session_aligned = True
+            aligned_reason = "سوق سيدني مفتوح (سيولة استرالية/نيوزيلندية)"
+        elif "Tokyo" in active_sessions and "JPY" in symbol_upper:
+            session_aligned = True
+            aligned_reason = "سوق طوكيو مفتوح (سيولة آسيوية)"
+        elif "London" in active_sessions and ("EUR" in symbol_upper or "GBP" in symbol_upper or "CHF" in symbol_upper):
+            session_aligned = True
+            aligned_reason = "سوق لندن مفتوح (سيولة أوروبية)"
+        elif "New York" in active_sessions and ("USD" in symbol_upper or "CAD" in symbol_upper):
+            session_aligned = True
+            aligned_reason = "سوق نيويورك مفتوح (السيولة الأمريكية)"
+            
+        if session_aligned and approved:
+            signal_strength = min(1.0, signal_strength + 0.1) # 10% bonus for session alignment
+            confluence["session_bonus"] = True
+            confluence["session_reason"] = aligned_reason
+
         return CouncilVerdict(
             symbol          = symbol,
             direction       = direction if approved else None,
             approved        = approved,
             signal_strength = signal_strength,
             votes           = all_votes,
+            entry           = entry if approved else None,
             sl              = sl if approved else None,
             tp              = tp if approved else None,
-            atr             = atr,
-            confluence      = confluence,
-        )
+                atr             = atr,
+                risk_amount     = risk_amt if approved else None,
+                risk_percent    = risk_percent_used if approved else None,
+                profit_amount   = profit_amt if approved else None,
+                lot_size        = lot_size if approved else None,
+                digits          = digits,
+                duration        = dur if approved else None,
+                timeframe       = df.attrs.get("timeframe", "H1"),
+                confluence      = confluence,
+                session         = session_info,
+            )
 
     def _persist(self, verdict: CouncilVerdict, db: Session) -> None:
         """Write verdict to SQLite.
@@ -712,15 +998,27 @@ class CouncilEngine:
                 db.flush()
                 signal_id = str(record.id)
 
+            technical_breakdown = {
+                v.agent: v.metadata
+                for v in verdict.votes
+            }
+
             context_payload = json.dumps({
                 "symbol":          verdict.symbol,
                 "direction":       verdict.direction,
                 "signal_strength": round(verdict.signal_strength, 4),
+                "entry":           round(verdict.entry, 5) if verdict.entry is not None else None,
                 "sl":              round(verdict.sl,  5) if verdict.sl  is not None else None,
                 "tp":              round(verdict.tp,  5) if verdict.tp  is not None else None,
                 "atr":             round(verdict.atr, 5) if verdict.atr is not None else None,
+                "risk_amount":     round(verdict.risk_amount, 2) if verdict.risk_amount is not None else None,
+                "profit_amount":   round(verdict.profit_amount, 2) if verdict.profit_amount is not None else None,
+                "lot_size":        verdict.lot_size,
+                "duration":        verdict.duration,
+                "timeframe":       verdict.timeframe,
                 "confluence":      verdict.confluence,
                 "session":         verdict.session,
+                "technical_breakdown": technical_breakdown,
             }, ensure_ascii=False)
 
             votes_payload = json.dumps({
@@ -790,27 +1088,66 @@ class CouncilEngine:
             return
 
         try:
-            # Compute entry from SL + ATR (mirrors ATR_SL_MULT in agents.py)
-            atr_sl_mult = 1.5
-            entry: float | None = None
-            if verdict.sl is not None and verdict.atr is not None:
-                if verdict.direction == "BUY":
-                    entry = verdict.sl + atr_sl_mult * verdict.atr
-                elif verdict.direction == "SELL":
-                    entry = verdict.sl - atr_sl_mult * verdict.atr
+            # تنسيق الأسعار حسب دقة الرمز الحقيقية في MT5 (digits) لتطابق
+            # ما يظهر في المنصة ويكون قابلاً للنسخ مباشرة إلى حقول SL/TP.
+            _digits = verdict.digits if verdict.digits is not None else 5
+            entry_str = f"{verdict.entry:.{_digits}f}" if verdict.entry is not None else "—"
+            sl_str    = f"{verdict.sl:.{_digits}f}" if verdict.sl is not None else "—"
+            tp_str    = f"{verdict.tp:.{_digits}f}" if verdict.tp is not None else "—"
+            
+            strength_val = verdict.signal_strength * 100
+            if strength_val >= 85:
+                strength_label = "قوية جداً ⚡️⚡️⚡️"
+            elif strength_val >= 65:
+                strength_label = "قوية ⚡️⚡️"
+            elif strength_val >= 50:
+                strength_label = "متوسطة ⚡️"
+            else:
+                strength_label = "ضعيفة ⚠️"
+                
+            dir_emoji = "🟢" if verdict.direction == "BUY" else "🔴"
+            dir_label = "شراء BUY" if verdict.direction == "BUY" else "بيع SELL"
 
-            entry_str = f"{entry:.5f}" if entry is not None else "غير محسوب"
-            sl_str    = f"{verdict.sl:.5f}" if verdict.sl is not None else "—"
-            tp_str    = f"{verdict.tp:.5f}" if verdict.tp is not None else "—"
-            strength  = round(verdict.signal_strength * 100, 1)
+            risk_pct = verdict.risk_percent if verdict.risk_percent is not None else 1.0
+            risk_str = f"{risk_pct:.1f}% (≈ ${verdict.risk_amount:.2f} من رصيد المنصة الحي)" if verdict.risk_amount else "—"
+            profit_str = f"${verdict.profit_amount:.2f}" if verdict.profit_amount else "—"
+            lot_str = f"{verdict.lot_size}" if verdict.lot_size else "—"
+            duration_str = verdict.duration or "—"
 
+            from datetime import timedelta
+            baghdad_time = verdict.timestamp + timedelta(hours=3)
+            time_str = baghdad_time.strftime("%I:%M %p").lstrip('0') + " بتوقيت بغداد"
+
+            tf_display = verdict.timeframe.lower() if verdict.timeframe else "1h"
+            
+            import time
+            alert_key = (verdict.symbol, tf_display, verdict.direction)
+            now = time.time()
+            if alert_key in _LAST_TELEGRAM_ALERTS:
+                # Require at least 95% of the candle duration to pass before resending
+                if now - _LAST_TELEGRAM_ALERTS[alert_key] < (_tf_to_seconds(tf_display) * 0.95):
+                    logger.info("Skipping duplicate Telegram alert for %s", alert_key)
+                    return
+            _LAST_TELEGRAM_ALERTS[alert_key] = now
+
+            # تنسيق <code> يجعل الرقم قابلاً للنسخ بضغطة واحدة في تطبيق تيليجرام
             text = (
-                f"<b>إشارة جديدة — مجلس وكلاء النظام</b>\n"
-                f"الرمز: <code>{verdict.symbol}</code>  |  الاتجاه: <b>{verdict.direction}</b>\n"
-                f"قوة التصويت: <b>{strength}%</b>\n"
-                f"الدخول المتوقع: <code>{entry_str}</code>\n"
-                f"وقف الخسارة (SL): <code>{sl_str}</code>  |  الهدف (TP): <code>{tp_str}</code>\n"
-                f"<i>نظام محكوم بالقواعد — تحليل معلوماتي فقط — ليس توصية مالية</i>"
+                f"━━━━━━━━━━━━━━━━━━━\n"
+                f"🪙 الزوج: {verdict.symbol}  —  {tf_display}\n"
+                f"{dir_emoji} الإشارة: {dir_label}   |   القوة: {strength_label}\n"
+                f"──────────────────\n"
+                f"📥 سعر الدخول: <code>{entry_str}</code>\n"
+                f"🛑 وقف الخسارة (SL): <code>{sl_str}</code>\n"
+                f"🏆 الهدف الذكي (TP): <code>{tp_str}</code>\n"
+                f"──────────────────\n"
+                f"💰 حجم اللوت/العقد: <code>{lot_str}</code>\n"
+                f"⚠️ المبلغ المعرض للمخاطرة: {risk_str}\n"
+                f"🎯 الربح المتوقع: {profit_str}\n"
+                f"⏳ مدة الصفقة المتوقعة: {duration_str}\n"
+                f"──────────────────\n"
+                f"⏰ وقت صدور الإشارة: {time_str}\n"
+                f"\n"
+                f"تحليل معلوماتي مؤسسي — ليس توصية مالية"
             )
 
             resp = requests.post(
@@ -834,9 +1171,13 @@ class CouncilEngine:
 
     def analyze_market(
         self,
-        symbol:     str,
-        candles_df: pd.DataFrame,
-        db:         Session | None = None,
+        symbol:          str,
+        candles_df:      pd.DataFrame,
+        db:              Session | None = None,
+        account_balance: float | None = None,
+        symbol_info:     dict | None = None,
+        send_alert:      bool = True,
+        market_closed:   bool = False,
     ) -> CouncilVerdict:
         """
         Run the full agent-council analysis for a given symbol.
@@ -853,6 +1194,19 @@ class CouncilEngine:
             Optional SQLAlchemy session for persistence.
             If provided and signal is approved, the signal is stored.
             The caller must call db.commit() afterwards.
+        account_balance : float | None
+            Live account balance/equity (USD) used to size risk_amount,
+            profit_amount and lot_size. Falls back to a $10,000 reference
+            balance when not provided (e.g. OKX without a live account).
+        symbol_info : dict | None
+            MT5 symbol properties (trade_tick_value, trade_tick_size, point,
+            volume_min, volume_max, volume_step) used to convert the risk
+            amount into a real, broker-normalized lot size via
+            calculate_position_size(). When None (e.g. OKX symbols), the
+            lot_size falls back to a base-asset quantity estimate.
+        send_alert : bool
+            When False, suppresses the Telegram alert even if the signal is
+            approved (used by broad ranking scans that should not notify).
 
         Returns
         -------
@@ -887,8 +1241,8 @@ class CouncilEngine:
         df = candles_df.copy()
         df.attrs["symbol"] = symbol
 
-        buy_verdict  = self._evaluate("BUY",  df)
-        sell_verdict = self._evaluate("SELL", df)
+        buy_verdict  = self._evaluate("BUY",  df, account_balance, symbol_info)
+        sell_verdict = self._evaluate("SELL", df, account_balance, symbol_info)
 
         # Select winner
         if buy_verdict.approved and sell_verdict.approved:
@@ -930,7 +1284,14 @@ class CouncilEngine:
                 winner.signal_strength * 100,
                 winner.votes_summary(),
             )
-            self._send_telegram_alert(winner)
+            if send_alert:
+                if not market_closed and is_market_open(symbol):
+                    self._send_telegram_alert(winner)
+                    if db is not None:
+                        from telegram_subscribers import broadcast_recommendation
+                        broadcast_recommendation(winner, db)
+                else:
+                    logger.info("Market is closed for %s -- skipping Telegram alert.", symbol)
         else:
             logger.debug(
                 "CouncilEngine: signal rejected -- symbol=%s "

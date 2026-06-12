@@ -100,8 +100,8 @@ _ws_clients: set[WebSocket] = set()
 _last_successful_mt5_call_at: datetime | None = None
 
 # How many seconds a tick timestamp can be old before we consider the market closed.
-# Forex closes ~Friday 22:00 UTC; a tick older than 4 hours during session is suspicious.
-_STALE_TICK_THRESHOLD_SECONDS: int = 4 * 3600  # 4 hours
+# Set to 10 minutes (600s) to accurately catch daily breaks (like Gold closing for 1 hour).
+_STALE_TICK_THRESHOLD_SECONDS: int = 600
 
 # Import MetaTrader5 only for documented read paths.
 # The underlying DLL exposes trading APIs; we deliberately never call them here.
@@ -529,9 +529,14 @@ def _sync_scan_cycle(
 
                 # خصائص الرمز من MT5 لحساب لوت قياسي صحيح (يأخذ حجم العقد بعين الاعتبار)
                 symbol_info: dict | None = None
+                is_stale = False
                 try:
                     info = mt5.symbol_info(symbol)
                     if info is not None:
+                        # trade_mode == 4 is SYMBOL_TRADE_MODE_FULL. If not 4, broker disabled trading (e.g. market closed)
+                        if info.trade_mode != 4:
+                            is_stale = True
+                            
                         symbol_info = {
                             "trade_tick_value": float(info.trade_tick_value),
                             "trade_tick_size": float(info.trade_tick_size),
@@ -541,12 +546,20 @@ def _sync_scan_cycle(
                             "volume_step":     float(info.volume_step),
                             "digits":          int(info.digits),
                         }
+                    
+                    if not is_stale:
+                        tick = mt5.symbol_info_tick(symbol)
+                        if tick:
+                            raw_ts = getattr(tick, "time_msc", None) or getattr(tick, "time", None)
+                            time_iso = _iso_from_mt5_time(raw_ts)
+                            is_stale = _is_tick_stale(time_iso)
                 except Exception as info_exc:
-                    logger.warning("agent_scan: failed to read symbol_info for %s -- %s", symbol, info_exc)
+                    logger.warning("agent_scan: failed to read symbol_info/tick for %s -- %s", symbol, info_exc)
 
                 db = SessionLocal()
                 try:
-                    verdict = engine.analyze_market(symbol, df, db, account_balance, symbol_info, send_alert=send_alerts)
+                    verdict = engine.analyze_market(symbol, df, db, account_balance, symbol_info, send_alert=send_alerts, market_closed=is_stale)
+                    verdict.timeframe = timeframe
                     db.commit()
                 except Exception as db_exc:
                     db.rollback()
@@ -605,6 +618,7 @@ def _sync_scan_okx_cycle(
             db = SessionLocal()
             try:
                 verdict = engine.analyze_market(inst_id, df, db, account_balance, send_alert=send_alerts)
+                verdict.timeframe = bar
                 db.commit()
             except Exception as db_exc:
                 db.rollback()
@@ -646,8 +660,30 @@ async def run_live_agent_council_scan() -> None:
         _AGENT_SCAN_TIMEFRAME, tf_sec, mt5_symbols, okx_symbols,
     )
 
+    from agents import is_market_open, get_market_session
+    from datetime import datetime, timezone
+    _market_was_open = is_market_open("EURUSD", datetime.now(timezone.utc))
+    _last_active_sessions = set(get_market_session(datetime.now(timezone.utc))["active_sessions"])
+
     import time
     while True:
+        now_utc = datetime.now(timezone.utc)
+        current_market_open = is_market_open("EURUSD", now_utc)
+        
+        if not current_market_open and _market_was_open:
+            from agents import notify_market_closed
+            notify_market_closed()
+            
+        _market_was_open = current_market_open
+
+        current_sessions = set(get_market_session(now_utc)["active_sessions"])
+        if current_market_open:
+            new_sessions = current_sessions - _last_active_sessions
+            if new_sessions:
+                from agents import notify_session_opened
+                notify_session_opened(list(new_sessions))
+        _last_active_sessions = current_sessions
+
         now = time.time()
         # Sleep until the exact next boundary of the timeframe + 2 seconds to ensure exchange candle is fully closed
         sleep_sec = tf_sec - (now % tf_sec) + 2
@@ -2957,13 +2993,24 @@ async def api_multi_timeframe_analysis(body: MultiTimeframeAnalysisRequest) -> J
     قراءة فقط -- لا تنفيذ تداول من أي نوع.
     """
     symbol = body.symbol.strip().upper()
-    allowed = set(_SCREENER_MT5_SYMBOLS) | set(_OKX_SCAN_SYMBOLS)
+    
+    mt5_symbols: list[str] = []
+    init_ok, _ = _safe_mt5_init()
+    if init_ok:
+        try:
+            mt5_symbols = _get_visible_mt5_symbols() or _symbols_from_env()
+        finally:
+            mt5.shutdown()
+    else:
+        mt5_symbols = _symbols_from_env()
+
+    allowed = {s.upper() for s in mt5_symbols} | set(_OKX_SCAN_SYMBOLS)
     if symbol not in allowed:
         return Utf8JsonResponse(
             status_code=400,
             content={
                 "ok": False,
-                "error": f"الرمز '{symbol}' غير مسموح به -- هذه الميزة تخص الذهب والكريبتو فقط",
+                "error": f"الرمز '{symbol}' غير مسموح به في MT5 أو OKX",
                 "allowed_symbols": sorted(allowed),
             },
         )
@@ -2974,18 +3021,41 @@ async def api_multi_timeframe_analysis(body: MultiTimeframeAnalysisRequest) -> J
     if "-" in symbol:
         # -- مسار OKX --
         account_balance = await asyncio.to_thread(_get_okx_account_balance)
-        for bar in _MTF_OKX_BARS:
-            verdicts = await asyncio.to_thread(
-                _sync_scan_okx_cycle, engine, [symbol], bar, _AGENT_SCAN_CANDLE_COUNT, account_balance,
+        
+        async def scan_okx_bar(bar_name: str):
+            res = await asyncio.to_thread(
+                _sync_scan_okx_cycle, engine, [symbol], bar_name, _AGENT_SCAN_CANDLE_COUNT, account_balance, False,
             )
-            results.append(_verdict_to_summary(OKX_BAR_DISPLAY.get(bar, bar), verdicts))
+            return bar_name, res
+
+        tasks = [scan_okx_bar(b) for b in _MTF_OKX_BARS]
+        results_list = await asyncio.gather(*tasks, return_exceptions=True)
+        for i, bar_name in enumerate(_MTF_OKX_BARS):
+            res = results_list[i]
+            if isinstance(res, Exception):
+                logger.error("MTF scan failed for %s on %s: %s", symbol, bar_name, res)
+                results.append(_verdict_to_summary(OKX_BAR_DISPLAY.get(bar_name, bar_name), []))
+            else:
+                _, verdicts = res
+                results.append(_verdict_to_summary(OKX_BAR_DISPLAY.get(bar_name, bar_name), verdicts))
     else:
         # -- مسار MT5 --
-        for tf in _MTF_MT5_TIMEFRAMES:
-            verdicts = await asyncio.to_thread(
-                _sync_scan_cycle, engine, [symbol], tf, _AGENT_SCAN_CANDLE_COUNT,
+        async def scan_mt5_tf(tf_name: str):
+            res = await asyncio.to_thread(
+                _sync_scan_cycle, engine, [symbol], tf_name, _AGENT_SCAN_CANDLE_COUNT, False,
             )
-            results.append(_verdict_to_summary(tf, verdicts))
+            return tf_name, res
+
+        tasks = [scan_mt5_tf(t) for t in _MTF_MT5_TIMEFRAMES]
+        results_list = await asyncio.gather(*tasks, return_exceptions=True)
+        for i, tf_name in enumerate(_MTF_MT5_TIMEFRAMES):
+            res = results_list[i]
+            if isinstance(res, Exception):
+                logger.error("MTF scan failed for %s on %s: %s", symbol, tf_name, res)
+                results.append(_verdict_to_summary(tf_name, []))
+            else:
+                _, verdicts = res
+                results.append(_verdict_to_summary(tf_name, verdicts))
 
     return Utf8JsonResponse(content={
         "ok":        True,
@@ -3121,29 +3191,53 @@ def api_lab_ranked_candidates(source: str | None = Query(default=None)) -> JSONR
     })
 
 
-_WATCHLIST_CONFIG_KEY = "lab_watchlist_symbols"
+_WATCHLIST_MT5_KEY = "lab_watchlist_symbols_mt5"
+_WATCHLIST_OKX_KEY = "lab_watchlist_symbols_okx"
 _WATCHLIST_MAX_SYMBOLS = 5
-
 
 def _get_watchlist_symbols() -> list[str]:
     db = SessionLocal()
     try:
-        row = db.query(SystemConfig).filter(SystemConfig.key == _WATCHLIST_CONFIG_KEY).first()
-        if not row or not row.value:
-            return []
-        try:
-            data = json.loads(row.value)
-        except (TypeError, ValueError):
-            return []
-        return [s for s in data if isinstance(s, str)] if isinstance(data, list) else []
+        symbols = []
+        row_mt5 = db.query(SystemConfig).filter(SystemConfig.key == _WATCHLIST_MT5_KEY).first()
+        if row_mt5 and row_mt5.value:
+            data = json.loads(row_mt5.value)
+            if isinstance(data, list): symbols.extend(data)
+            
+        row_okx = db.query(SystemConfig).filter(SystemConfig.key == _WATCHLIST_OKX_KEY).first()
+        if row_okx and row_okx.value:
+            data = json.loads(row_okx.value)
+            if isinstance(data, list): symbols.extend(data)
+            
+        if not symbols: # Legacy fallback
+            row = db.query(SystemConfig).filter(SystemConfig.key == "lab_watchlist_symbols").first()
+            if row and row.value:
+                data = json.loads(row.value)
+                if isinstance(data, list): symbols.extend(data)
+                
+        return [s for s in set(symbols) if isinstance(s, str)]
+    except Exception:
+        return []
     finally:
         db.close()
 
 
 @app.get("/api/lab/watchlist")
-def api_lab_get_watchlist() -> JSONResponse:
+def api_lab_get_watchlist(source: str = "mt5") -> JSONResponse:
     """قائمة المتابعة الحالية (حد أقصى 5 رموز) -- قراءة فقط."""
-    return Utf8JsonResponse(content={"ok": True, "symbols": _get_watchlist_symbols()})
+    db = SessionLocal()
+    try:
+        key = _WATCHLIST_OKX_KEY if source == "okx" else _WATCHLIST_MT5_KEY
+        row = db.query(SystemConfig).filter(SystemConfig.key == key).first()
+        if not row or not row.value:
+            return Utf8JsonResponse(content={"ok": True, "symbols": []})
+        try:
+            data = json.loads(row.value)
+            return Utf8JsonResponse(content={"ok": True, "symbols": [s for s in data if isinstance(s, str)] if isinstance(data, list) else []})
+        except (TypeError, ValueError):
+            return Utf8JsonResponse(content={"ok": True, "symbols": []})
+    finally:
+        db.close()
 
 
 class WatchlistRequest(BaseModel):
@@ -3151,11 +3245,10 @@ class WatchlistRequest(BaseModel):
 
 
 @app.post("/api/lab/watchlist")
-def api_lab_set_watchlist(body: WatchlistRequest) -> JSONResponse:
+def api_lab_set_watchlist(body: WatchlistRequest, source: str = "mt5") -> JSONResponse:
     """
     تحديث قائمة المتابعة (حد أقصى 5 رموز/أزواج). يجب أن يكون كل رمز ضمن
     مجموعة الترشيح الحالية (رموز MT5 المرئية + رموز OKX المسموحة).
-    لا تنفيذ تداول -- مجرد تخزين تفضيل المستخدم لتوجيه المسح الخلفي.
     """
     requested = []
     for s in body.symbols:
@@ -3169,32 +3262,36 @@ def api_lab_set_watchlist(body: WatchlistRequest) -> JSONResponse:
             content={"ok": False, "error": f"الحد الأقصى {_WATCHLIST_MAX_SYMBOLS} عملات/أزواج"},
         )
 
-    mt5_symbols: list[str] = []
-    init_ok, _ = _safe_mt5_init()
-    if init_ok:
-        try:
-            mt5_symbols = _get_visible_mt5_symbols() or _symbols_from_env()
-        finally:
-            mt5.shutdown()
+    if source == "okx":
+        allowed = set(_OKX_SCAN_SYMBOLS)
     else:
-        mt5_symbols = _symbols_from_env()
+        mt5_symbols: list[str] = []
+        init_ok, _ = _safe_mt5_init()
+        if init_ok:
+            try:
+                mt5_symbols = _get_visible_mt5_symbols() or _symbols_from_env()
+            finally:
+                mt5.shutdown()
+        else:
+            mt5_symbols = _symbols_from_env()
+        allowed = {s.upper() for s in mt5_symbols}
 
-    allowed = {s.upper() for s in mt5_symbols} | set(_OKX_SCAN_SYMBOLS)
     invalid = [s for s in requested if s not in allowed]
     if invalid:
         return Utf8JsonResponse(
             status_code=400,
-            content={"ok": False, "error": f"رموز غير مسموحة: {', '.join(invalid)}", "allowed_symbols": sorted(allowed)},
+            content={"ok": False, "error": f"رموز غير مسموحة لـ {source}: {', '.join(invalid)}", "allowed_symbols": sorted(allowed)},
         )
 
     db = SessionLocal()
     try:
-        row = db.query(SystemConfig).filter(SystemConfig.key == _WATCHLIST_CONFIG_KEY).first()
+        key = _WATCHLIST_OKX_KEY if source == "okx" else _WATCHLIST_MT5_KEY
+        row = db.query(SystemConfig).filter(SystemConfig.key == key).first()
         value = json.dumps(requested, ensure_ascii=False)
         if row:
             row.value = value
         else:
-            db.add(SystemConfig(key=_WATCHLIST_CONFIG_KEY, value=value))
+            db.add(SystemConfig(key=key, value=value))
         db.commit()
     finally:
         db.close()
@@ -3210,42 +3307,62 @@ async def run_watchlist_multi_timeframe_scan() -> None:
     إشارة معتمدة على أي فريم تُحفظ وتُرسل تيليجرام تلقائياً عبر المسار
     الحالي (analyze_market -> _send_telegram_alert).
     """
-    mt5_periods = {"M5": 300, "M15": 900, "H1": 3600, "H4": 14400, "D1": 86400}
-    okx_periods = {"5m": 300, "15m": 900, "1H": 3600, "4H": 14400, "1D": 86400}
+    mt5_periods = ["M5", "M15", "H1", "H4", "D1"]
+    okx_periods = ["5m", "15m", "1H", "4H", "1D"]
 
-    logger.info("watchlist_scan: loop started")
+    logger.info("watchlist_scan: loop started (best timeframe mode)")
 
     while True:
-        await asyncio.sleep(60)
+        # الانتظار حتى انتهاء شمعة 5 دقائق (أو فقط النوم 5 دقائق)
+        await asyncio.sleep(300)
 
         symbols = _get_watchlist_symbols()
         if not symbols:
             continue
 
-        now = time.time()
         engine = CouncilEngine()
+        account_balance = await asyncio.to_thread(_get_okx_account_balance)
+        db = SessionLocal()
 
-        mt5_symbols = [s for s in symbols if "-" not in s]
-        okx_symbols = [s for s in symbols if "-" in s]
-
-        for tf, period in mt5_periods.items():
-            if mt5_symbols and (now % period) < 60:
-                for sym in mt5_symbols:
-                    try:
-                        await asyncio.to_thread(_sync_scan_cycle, engine, [sym], tf, _AGENT_SCAN_CANDLE_COUNT)
-                    except Exception as exc:
-                        logger.warning("watchlist_scan: mt5 %s/%s failed -- %s", sym, tf, exc)
-
-        for bar, period in okx_periods.items():
-            if okx_symbols and (now % period) < 60:
-                account_balance = await asyncio.to_thread(_get_okx_account_balance)
-                for sym in okx_symbols:
-                    try:
-                        await asyncio.to_thread(
-                            _sync_scan_okx_cycle, engine, [sym], bar, _AGENT_SCAN_CANDLE_COUNT, account_balance,
+        try:
+            for sym in symbols:
+                verdicts = []
+                if "-" in sym:
+                    async def scan_okx(bar):
+                        return await asyncio.to_thread(
+                            _sync_scan_okx_cycle, engine, [sym], bar, _AGENT_SCAN_CANDLE_COUNT, account_balance, False
                         )
-                    except Exception as exc:
-                        logger.warning("watchlist_scan: okx %s/%s failed -- %s", sym, bar, exc)
+                    tasks = [scan_okx(b) for b in okx_periods]
+                    res_list = await asyncio.gather(*tasks, return_exceptions=True)
+                else:
+                    async def scan_mt5(tf):
+                        return await asyncio.to_thread(
+                            _sync_scan_cycle, engine, [sym], tf, _AGENT_SCAN_CANDLE_COUNT, False
+                        )
+                    tasks = [scan_mt5(t) for t in mt5_periods]
+                    res_list = await asyncio.gather(*tasks, return_exceptions=True)
+
+                for res in res_list:
+                    if isinstance(res, list):
+                        verdicts.extend(res)
+                    elif isinstance(res, Exception):
+                        logger.warning("watchlist_scan: error for %s -- %s", sym, res)
+
+                # Filter approved verdicts
+                approved = [v for v in verdicts if v.approved]
+                if approved:
+                    # Pick the one with the highest signal strength
+                    best_verdict = max(approved, key=lambda v: v.signal_strength)
+                    
+                    from agents import is_market_open
+                    from datetime import datetime, timezone
+                    if is_market_open(best_verdict.symbol, datetime.now(timezone.utc)):
+                        engine._send_telegram_alert(best_verdict)
+                        from telegram_subscribers import broadcast_recommendation
+                        broadcast_recommendation(best_verdict, db)
+
+        finally:
+            db.close()
 
 
 # ---------------------------------------------------------------------------

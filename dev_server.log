@@ -1,0 +1,35 @@
+
+> frontend-next@0.1.0 dev E:\PROJACT-AHMED\MT5-gold-clone
+> next dev
+
+▲ Next.js 16.2.4 (Turbopack)
+- Local:         http://localhost:3000
+- Network:       http://100.77.176.63:3000
+- Environments: .env.local
+✓ Ready in 1318ms
+
+ GET /api/mt5-readonly/connection-status 200 in 1304ms (next.js: 321ms, proxy.ts: 759ms, application-code: 224ms)
+ GET /dashboard 200 in 3.4s (next.js: 1970ms, proxy.ts: 30ms, application-code: 1388ms)
+ GET /api/mt5-readonly/connection-status 200 in 106ms (next.js: 12ms, proxy.ts: 18ms, application-code: 76ms)
+ GET /api/mt5-readonly/connection-status 200 in 108ms (next.js: 25ms, proxy.ts: 17ms, application-code: 65ms)
+ GET /dashboard 200 in 194ms (next.js: 7ms, proxy.ts: 8ms, application-code: 178ms)
+ GET /api/mt5-readonly/connection-status 200 in 47ms (next.js: 5ms, proxy.ts: 9ms, application-code: 33ms)
+ GET /dashboard 200 in 173ms (next.js: 8ms, proxy.ts: 10ms, application-code: 154ms)
+ GET /api/mt5-readonly/connection-status 200 in 49ms (next.js: 8ms, proxy.ts: 9ms, application-code: 32ms)
+ GET /api/mt5-readonly/connection-status 200 in 86ms (next.js: 11ms, proxy.ts: 30ms, application-code: 45ms)
+ GET /dashboard 200 in 116ms (next.js: 6ms, proxy.ts: 12ms, application-code: 98ms)
+ GET /api/mt5-readonly/connection-status 200 in 53ms (next.js: 9ms, proxy.ts: 11ms, application-code: 33ms)
+ GET /api/mt5-readonly/connection-status 200 in 384ms (next.js: 15ms, proxy.ts: 46ms, application-code: 323ms)
+ GET /api/mt5-readonly/connection-status 200 in 30ms (next.js: 3ms, proxy.ts: 6ms, application-code: 21ms)
+ GET /api/mt5-readonly/connection-status 200 in 40ms (next.js: 5ms, proxy.ts: 7ms, application-code: 28ms)
+ GET /api/mt5-readonly/connection-status 200 in 56ms (next.js: 7ms, proxy.ts: 7ms, application-code: 42ms)
+ GET /dashboard 200 in 140ms (next.js: 4ms, proxy.ts: 8ms, application-code: 129ms)
+ GET /api/mt5-readonly/connection-status 200 in 49ms (next.js: 7ms, proxy.ts: 13ms, application-code: 29ms)
+ GET /api/mt5-readonly/connection-status 200 in 67ms (next.js: 15ms, proxy.ts: 13ms, application-code: 39ms)
+ GET / 307 in 222ms (next.js: 59ms, proxy.ts: 11ms, application-code: 152ms)
+ GET /dashboard 200 in 204ms (next.js: 11ms, proxy.ts: 8ms, application-code: 185ms)
+ GET /api/mt5-readonly/connection-status 200 in 72ms (next.js: 9ms, proxy.ts: 14ms, application-code: 48ms)
+ GET /api/mt5-readonly/connection-status 200 in 80ms (next.js: 19ms, proxy.ts: 15ms, application-code: 46ms)
+ GET /api/mt5-readonly/connection-status 200 in 37ms (next.js: 6ms, proxy.ts: 8ms, application-code: 22ms)
+[?25h
+ ELIFECYCLE  Command failed with exit code 1.

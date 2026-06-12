@@ -109,7 +109,7 @@ function LocalSystemBanner() {
     <div className="flex items-start gap-2.5 rounded-xl border border-amber-500/25 bg-amber-500/8 px-4 py-3">
       <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-400" />
       <p className="text-[11px] leading-relaxed text-amber-300/85">
-        <span className="font-bold text-amber-300">[نظام محلي - تجريبي] </span>
+        <span className="font-bold text-amber-300">[نظام محلي] </span>
         واجهة مراقبة وقراءة محلية فقط — لا تنفيذ صفقات — READ_ONLY_MODE محفوظ.
         مصدر البيانات: MT5 محلي على المنفذ 8010.
       </p>

@@ -24,6 +24,7 @@ import { HistorySection } from "./HistorySection";
 import { ConvexSafeWrapper } from "./ConvexSafeWrapper";
 import { ManualTradeAlert } from "./ManualTradeAlert";
 import { OpenPositionsPanel } from "./OpenPositionsPanel";
+import { ScreenerWatchlistPanel } from "./ScreenerWatchlistPanel";
 
 export function GoldProLab() {
   const [analysis, setAnalysis] = useState<GoldProAnalysis | null>(null);
@@ -208,6 +209,8 @@ export function GoldProLab() {
           ⚠️ {error}
         </div>
       )}
+
+      <ScreenerWatchlistPanel />
 
       {!analysis && !loading && (
         <div className="rounded-xl border border-slate-700 bg-slate-900 p-12 text-center text-slate-400">

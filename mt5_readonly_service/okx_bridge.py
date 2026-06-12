@@ -38,7 +38,20 @@ OKX_BAR_DISPLAY: dict[str, str] = {
 }
 
 # Default crypto instruments fed into the agent council scan.
-DEFAULT_OKX_SYMBOLS: list[str] = ["BTC-USDT", "ETH-USDT"]
+DEFAULT_OKX_SYMBOLS: list[str] = [
+    "BTC-USDT",
+    "ETH-USDT",
+    "SOL-USDT",
+    "DOGE-USDT",
+    "XRP-USDT",
+    "BCH-USDT",
+    "ADA-USDT",
+    "AVAX-USDT",
+    "LINK-USDT",
+    "DOT-USDT",
+    "LTC-USDT",
+    "MATIC-USDT"
+]
 
 
 # ---------------------------------------------------------------------------
@@ -220,3 +233,33 @@ def okx_candles_to_dataframe(candles: list[dict[str, Any]]) -> pd.DataFrame:
         )
 
     return df.dropna(subset=list(required)).reset_index(drop=True)
+
+
+# ---------------------------------------------------------------------------
+# Instrument scanning
+# ---------------------------------------------------------------------------
+
+def fetch_okx_spot_instruments() -> list[dict[str, Any]]:
+    """
+    Fetch all active SPOT instruments from OKX.
+    Uses the public /api/v5/public/instruments endpoint.
+    """
+    url = f"{OKX_BASE_URL}/api/v5/public/instruments"
+    params = {"instType": "SPOT"}
+    
+    try:
+        resp = requests.get(url, params=params, timeout=OKX_TIMEOUT)
+        resp.raise_for_status()
+        body: dict[str, Any] = resp.json()
+    except Exception as exc:
+        logger.error("fetch_okx_spot_instruments: request failed -- %s", exc)
+        return []
+
+    if str(body.get("code", "")) != "0":
+        logger.warning(
+            "fetch_okx_spot_instruments: OKX API error code=%s msg=%s",
+            body.get("code"), body.get("msg")
+        )
+        return []
+
+    return body.get("data", [])

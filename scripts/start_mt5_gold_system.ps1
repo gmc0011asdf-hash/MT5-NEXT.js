@@ -67,7 +67,7 @@ Write-Host "  READ_ONLY_MODE = True  |  Stage 14 مقفل  |  لا تنفيذ ت
 # خطوة 1: التحقق من المسارات
 # ---------------------------------------------------------------------------
 
-Write-Step "[1/5]" "التحقق من مسارات المشروع..." "Cyan"
+Write-Step "[1/6]" "التحقق من مسارات المشروع..." "Cyan"
 
 if (-not (Test-Path $PROJECT_ROOT)) {
     Write-Host ""
@@ -91,7 +91,7 @@ Write-Detail "مجلد الخلفية: $BACKEND_DIR"  "Green"
 # خطوة 2: التحقق من الأدوات
 # ---------------------------------------------------------------------------
 
-Write-Step "[2/5]" "التحقق من توافر الأدوات..." "Cyan"
+Write-Step "[2/6]" "التحقق من توافر الأدوات..." "Cyan"
 
 # فحص Python -- يجب أن يحتوي على pandas + MetaTrader5 (محرك التحليل + جسر MT5)
 $pythonCandidates = @(
@@ -162,7 +162,7 @@ try {
 # خطوة 3: تشغيل الخلفية (FastAPI / uvicorn)
 # ---------------------------------------------------------------------------
 
-Write-Step "[3/5]" "تشغيل الخلفية FastAPI على المنفذ $BACKEND_PORT ..." "Cyan"
+Write-Step "[3/6]" "تشغيل الخلفية FastAPI على المنفذ $BACKEND_PORT ..." "Cyan"
 
 # بناء أوامر الخلفية في سطر واحد (بدون here-string)
 # يُستخدم مفسّر Python المكتشف في الخطوة [2/5] (يحتوي pandas + MetaTrader5)
@@ -192,7 +192,7 @@ Write-Detail "نافذة FastAPI فُتحت بنجاح  |  $BACKEND_URL" "Green"
 # خطوة 4: انتظار تهيئة الخلفية (3 ثوانٍ)
 # ---------------------------------------------------------------------------
 
-Write-Step "[4/5]" "انتظار تهيئة الخلفية (3 ثوانٍ)..." "Cyan"
+Write-Step "[4/6]" "انتظار تهيئة الخلفية (3 ثوانٍ)..." "Cyan"
 
 for ($i = 3; $i -ge 1; $i--) {
     Write-Host ("       " + $i + "...") -ForegroundColor DarkGray
@@ -218,7 +218,7 @@ try {
 # خطوة 5: تشغيل الواجهة الأمامية (Next.js / pnpm dev)
 # ---------------------------------------------------------------------------
 
-Write-Step "[5/5]" "تشغيل الواجهة الأمامية Next.js على المنفذ $FRONTEND_PORT ..." "Cyan"
+Write-Step "[5/6]" "تشغيل الواجهة الأمامية Next.js على المنفذ $FRONTEND_PORT ..." "Cyan"
 
 $frontendLines = @(
     '$host.UI.RawUI.WindowTitle = "King Trading - Next.js Frontend :3000"',
@@ -238,7 +238,19 @@ $frontendCmd = $frontendLines -join "; "
 
 Start-Process powershell -ArgumentList "-NoExit", "-Command", $frontendCmd
 
-Write-Detail "نافذة Next.js فُتحت بنجاح  |  $FRONTEND_URL" "Green"
+# ---------------------------------------------------------------------------
+# خطوة 6: فتح المتصفح
+# ---------------------------------------------------------------------------
+
+Write-Step "[6/6]" "فتح النظام في المتصفح (انتظار 5 ثوانٍ)..." "Cyan"
+
+for ($i = 5; $i -ge 1; $i--) {
+    Write-Host ("       " + $i + "...") -ForegroundColor DarkGray
+    Start-Sleep -Seconds 1
+}
+
+Start-Process $FRONTEND_URL
+Write-Detail "تم فتح المتصفح على $FRONTEND_URL" "Green"
 
 # ---------------------------------------------------------------------------
 # ملخص الروابط والحالة

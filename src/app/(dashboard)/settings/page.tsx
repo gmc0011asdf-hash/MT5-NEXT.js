@@ -825,6 +825,187 @@ function DemoSettingsCard() {
 }
 
 // ---------------------------------------------------------------------------
+// OKX Settings Card
+// ---------------------------------------------------------------------------
+
+function OkxSettingsCard({
+  config,
+  onSaved,
+}: {
+  config:  ConfigMap | undefined;
+  onSaved: () => void;
+}) {
+  const [apiKey, setApiKey] = useState("");
+  const [secretKey, setSecretKey] = useState("");
+  const [apiName, setApiName] = useState("");
+  const [showKeys, setShowKeys] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState<"ok" | "fail" | null>(null);
+  const [testDetail, setTestDetail] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (config) {
+      setApiKey(config.okx_api_key ?? "");
+      setSecretKey(config.okx_secret_key ?? "");
+      setApiName(config.okx_api_name ?? "");
+    }
+  }, [config]);
+
+  async function handleSave() {
+    const entries = [];
+    if (apiKey.trim()) entries.push({ key: "okx_api_key", value: apiKey.trim() });
+    if (secretKey.trim()) entries.push({ key: "okx_secret_key", value: secretKey.trim() });
+    if (apiName.trim()) entries.push({ key: "okx_api_name", value: apiName.trim() });
+    
+    // Even if empty, we might want to clear them, but saveConfigBatch doesn't delete.
+    if (entries.length === 0) return;
+
+    try {
+      await saveConfigBatch(entries);
+      setSaved(true);
+      onSaved();
+      setTimeout(() => setSaved(false), 2500);
+    } catch {
+      /* ignore */
+    }
+  }
+
+  async function handleTest() {
+    setTesting(true);
+    setTestResult(null);
+    setTestDetail(null);
+    try {
+      const res = await fetch(`${FASTAPI_BASE}/api/telegram/test-connections`, { method: "POST" });
+      const json = await res.json().catch(() => null);
+      if (res.ok) {
+        setTestResult("ok");
+      } else {
+        setTestResult("fail");
+        setTestDetail(typeof json?.detail === "string" ? json.detail : null);
+      }
+    } catch (e) {
+      setTestResult("fail");
+      setTestDetail("تعذّر الاتصال بالخادم المحلي.");
+    } finally {
+      setTesting(false);
+    }
+  }
+
+  return (
+    <div className="rounded-xl border border-border bg-card p-5">
+      <SectionHeader
+        icon={Globe}
+        title="إعدادات اتصال OKX"
+        sub="بيانات الـ API الخاصة بمنصة OKX لتأكيد الاتصال والمتابعة"
+        color="text-cyan-400"
+      />
+
+      <div className="space-y-4">
+        {/* API Key */}
+        <div>
+          <label className="block text-sm font-medium text-foreground mb-1.5">
+            API Key (apikey)
+          </label>
+          <div className="relative">
+            <input
+              type={showKeys ? "text" : "password"}
+              value={apiKey}
+              onChange={(e) => setApiKey(e.target.value)}
+              placeholder="eb2b200f-..."
+              className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground font-mono placeholder:text-muted-foreground focus:outline-none focus:border-cyan-500/50 pr-10"
+              dir="ltr"
+            />
+          </div>
+        </div>
+
+        {/* API Name */}
+        <div>
+          <label className="block text-sm font-medium text-foreground mb-1.5">
+            اسم مفتاح API (اختياري)
+          </label>
+          <div className="relative">
+            <input
+              type="text"
+              value={apiName}
+              onChange={(e) => setApiName(e.target.value)}
+              placeholder="okx-readonly-test"
+              className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground font-mono placeholder:text-muted-foreground focus:outline-none focus:border-cyan-500/50"
+              dir="ltr"
+            />
+          </div>
+        </div>
+
+        {/* Secret Key */}
+        <div>
+          <label className="block text-sm font-medium text-foreground mb-1.5">
+            Secret Key (secretkey)
+          </label>
+          <div className="relative">
+            <input
+              type={showKeys ? "text" : "password"}
+              value={secretKey}
+              onChange={(e) => setSecretKey(e.target.value)}
+              placeholder="F561D1CC..."
+              className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground font-mono placeholder:text-muted-foreground focus:outline-none focus:border-cyan-500/50 pr-10"
+              dir="ltr"
+            />
+            <button
+              type="button"
+              onClick={() => setShowKeys((p) => !p)}
+              className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+            >
+              {showKeys ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+            </button>
+          </div>
+        </div>
+
+        {/* Actions */}
+        <div className="flex flex-wrap items-center gap-3">
+          <button
+            type="button"
+            onClick={handleSave}
+            className="flex items-center gap-1.5 rounded-lg bg-cyan-500/15 border border-cyan-500/30 px-4 py-2 text-sm font-medium text-cyan-300 hover:bg-cyan-500/20 transition-colors"
+          >
+            <Save className="h-4 w-4" />
+            حفظ الإعدادات
+          </button>
+
+          <button
+            type="button"
+            onClick={handleTest}
+            disabled={testing}
+            className="flex items-center gap-1.5 rounded-lg border border-border px-3 py-2 text-sm text-muted-foreground hover:text-foreground transition-colors disabled:opacity-50"
+          >
+            {testing ? (
+              <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <Bell className="h-3.5 w-3.5" />
+            )}
+            اختبار الاتصال بـ MT5 و OKX
+          </button>
+
+          <SaveToast visible={saved} />
+
+          {testResult === "ok" && (
+            <span className="flex items-center gap-1 text-xs text-emerald-400">
+              <CheckCircle2 className="h-3.5 w-3.5" />
+              تم إرسال رسالة نجاح الاتصال إلى تليجرام
+            </span>
+          )}
+          {testResult === "fail" && (
+            <span className="flex items-center gap-1 text-xs text-rose-400">
+              <XCircle className="h-3.5 w-3.5" />
+              فشل الاختبار: {testDetail}
+            </span>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Main Page
 // ---------------------------------------------------------------------------
 
@@ -875,6 +1056,7 @@ export default function SettingsPage() {
         <Mt5ConnectionCard />
         <AgentScanCard />
         <TelegramCard    config={config} onSaved={invalidateConfig} />
+        <OkxSettingsCard config={config} onSaved={invalidateConfig} />
         <EngineSettingsCard config={config} onSaved={invalidateConfig} />
         <DemoSettingsCard />
 

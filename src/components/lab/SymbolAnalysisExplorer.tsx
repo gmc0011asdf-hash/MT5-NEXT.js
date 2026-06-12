@@ -35,7 +35,7 @@ interface SymbolMeta {
 }
 
 const CANDLE_COUNT = 250;
-const TIMEFRAME    = "H1";
+const TIMEFRAMES   = ["M1", "M5", "M15", "M30", "H1", "H4", "D1"];
 const REFRESH_MS   = 30_000;
 
 // ---------------------------------------------------------------------------
@@ -78,13 +78,19 @@ function IndicatorRow({
 // Main component
 // ---------------------------------------------------------------------------
 
-export function SymbolAnalysisExplorer() {
+export function SymbolAnalysisExplorer({ onSelectApprovedSymbol }: { onSelectApprovedSymbol?: (symbol: string) => void } = {}) {
   const [symbols, setSymbols]               = useState<SymbolMeta[]>([]);
   const [search, setSearch]                 = useState("");
   const [symbolsLoading, setSymbolsLoading] = useState(true);
   const [symbolsError, setSymbolsError]     = useState<string | null>(null);
 
+  // Scanner state
+  const [scannerLoading, setScannerLoading] = useState(false);
+  const [scannerStats, setScannerStats] = useState<any>(null);
+  const [scannerFilter, setScannerFilter] = useState<"all" | "approved" | "rejected">("all");
+
   const [selected, setSelected]             = useState<string | null>(null);
+  const [timeframe, setTimeframe]           = useState<string>("H1");
   const [candles, setCandles]               = useState<RawCandle[]>([]);
   const [analysisLoading, setAnalysisLoading] = useState(false);
   const [analysisError, setAnalysisError]     = useState<string | null>(null);
@@ -130,7 +136,7 @@ export function SymbolAnalysisExplorer() {
 
     const params = new URLSearchParams({
       symbols: symbol,
-      timeframes: TIMEFRAME,
+      timeframes: timeframe,
       count: String(CANDLE_COUNT),
     });
 
@@ -150,14 +156,29 @@ export function SymbolAnalysisExplorer() {
         setCandles([]);
       })
       .finally(() => setAnalysisLoading(false));
-  }, []);
+  }, [timeframe]);
 
   useEffect(() => {
     if (!selected) return;
     fetchCandles(selected);
     const id = setInterval(() => fetchCandles(selected), REFRESH_MS);
     return () => clearInterval(id);
-  }, [selected, fetchCandles]);
+  }, [selected, timeframe, fetchCandles]);
+
+  const handleScan = async () => {
+    setScannerLoading(true);
+    try {
+      const res = await fetch(`/api/mt5-readonly/scan`);
+      if (res.ok) {
+        const data = await res.json();
+        setScannerStats(data);
+      }
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setScannerLoading(false);
+    }
+  };
 
   const filteredSymbols = search.trim()
     ? symbols.filter((s) => {
@@ -186,9 +207,96 @@ export function SymbolAnalysisExplorer() {
       : { label: "محايد",   cls: "border-border/40 bg-muted/20 text-muted-foreground" };
 
   return (
-    <div className="grid grid-cols-1 gap-4 lg:grid-cols-[260px_1fr]">
-      {/* قائمة الرموز */}
-      <div className="rounded-xl border border-border/20 bg-card/40 p-3">
+    <div className="flex flex-col gap-4">
+      {/* MT5 Scanner Section */}
+      <div className="rounded-2xl border border-amber-500/20 bg-card p-6 shadow-sm">
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <h3 className="text-sm font-bold text-foreground">الماسح الآلي للسوق (MT5 Scanner)</h3>
+            <p className="mt-1 text-xs text-muted-foreground">
+              سحب وفرز جميع الرموز المتاحة في Market Watch واعتماد الأزواج الرئيسية فقط للتداول.
+            </p>
+          </div>
+          <button
+            onClick={handleScan}
+            disabled={scannerLoading}
+            className="flex items-center gap-2 rounded-lg bg-amber-500/10 px-4 py-2.5 text-sm font-bold text-amber-400 transition-colors hover:bg-amber-500/20 disabled:opacity-50"
+          >
+            <RefreshCw className={cn("h-4 w-4", scannerLoading && "animate-spin")} />
+            {scannerLoading ? "جاري الفرز..." : "بدء مسح السوق"}
+          </button>
+        </div>
+
+        {scannerStats && (
+          <div className="mt-6">
+            <div className="grid grid-cols-3 gap-3">
+              <div 
+                onClick={() => setScannerFilter("all")}
+                className={cn("cursor-pointer rounded-xl border p-4 text-center transition-colors", scannerFilter === "all" ? "border-amber-500/50 bg-amber-500/10" : "border-border/30 bg-muted/20 hover:bg-muted/30")}
+              >
+                <p className="text-xs text-muted-foreground">العدد الكلي</p>
+                <p className="mt-1 text-2xl font-black text-foreground">{scannerStats.total}</p>
+              </div>
+              <div 
+                onClick={() => setScannerFilter("approved")}
+                className={cn("cursor-pointer rounded-xl border p-4 text-center transition-colors", scannerFilter === "approved" ? "border-emerald-500/60 bg-emerald-500/20" : "border-emerald-500/30 bg-emerald-500/10 hover:bg-emerald-500/15")}
+              >
+                <p className="text-xs text-emerald-400/80">المقبولة</p>
+                <p className="mt-1 text-2xl font-black text-emerald-400">{scannerStats.approved_count}</p>
+              </div>
+              <div 
+                onClick={() => setScannerFilter("rejected")}
+                className={cn("cursor-pointer rounded-xl border p-4 text-center transition-colors", scannerFilter === "rejected" ? "border-rose-500/60 bg-rose-500/20" : "border-rose-500/30 bg-rose-500/10 hover:bg-rose-500/15")}
+              >
+                <p className="text-xs text-rose-400/80">المرفوضة</p>
+                <p className="mt-1 text-2xl font-black text-rose-400">{scannerStats.rejected_count}</p>
+              </div>
+            </div>
+
+            <div className="mt-4 max-h-[300px] overflow-y-auto rounded-xl border border-border/20 bg-background/50">
+              <table className="w-full text-right text-[11px]">
+                <thead className="sticky top-0 border-b border-border/20 bg-card/90 backdrop-blur">
+                  <tr>
+                    <th className="px-4 py-2 font-semibold text-muted-foreground">الرمز</th>
+                    <th className="px-4 py-2 font-semibold text-muted-foreground">الحالة</th>
+                    <th className="px-4 py-2 font-semibold text-muted-foreground">السبب</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-border/10">
+                  {scannerStats.coins
+                    .filter((c: any) => scannerFilter === "all" || c.status === scannerFilter)
+                    .map((c: any) => (
+                    <tr 
+                      key={c.symbol} 
+                      onClick={() => {
+                        if (c.status === "approved") {
+                          setSelected(c.symbol);
+                          if (onSelectApprovedSymbol) {
+                            onSelectApprovedSymbol(c.symbol);
+                          }
+                        }
+                      }}
+                      className={cn("transition-colors", c.status === "approved" ? "cursor-pointer hover:bg-emerald-500/5" : "opacity-60")}
+                    >
+                      <td className="px-4 py-2.5 font-bold tracking-wider">{c.symbol}</td>
+                      <td className="px-4 py-2.5">
+                        <span className={cn("rounded-md px-1.5 py-0.5 font-medium", c.status === "approved" ? "bg-emerald-500/10 text-emerald-400" : "bg-rose-500/10 text-rose-400")}>
+                          {c.status === "approved" ? "مقبول" : "مرفوض"}
+                        </span>
+                      </td>
+                      <td className="px-4 py-2.5 text-muted-foreground/70">{c.reason}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+      </div>
+
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-[260px_1fr]">
+        {/* قائمة الرموز */}
+        <div className="rounded-xl border border-border/20 bg-card/40 p-3">
         <div className="relative mb-2">
           <Search className="pointer-events-none absolute right-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground/50" />
           <input
@@ -213,7 +321,12 @@ export function SymbolAnalysisExplorer() {
           {filteredSymbols.map((s) => (
             <button
               key={s.name}
-              onClick={() => setSelected(s.name)}
+              onClick={() => {
+                setSelected(s.name);
+                if (onSelectApprovedSymbol) {
+                  onSelectApprovedSymbol(s.name);
+                }
+              }}
               className={cn(
                 "flex w-full flex-col rounded-lg px-2.5 py-1.5 text-right transition-colors",
                 s.name === selected
@@ -276,9 +389,28 @@ export function SymbolAnalysisExplorer() {
 
             {/* الشارت الحي */}
             <div className="rounded-xl border border-border/20 bg-card/40 p-3">
-              <p className="mb-2 px-1 text-[10px] uppercase tracking-wider text-muted-foreground/60">
-                الشارت ({TIMEFRAME}) — آخر {candles.length} شمعة
-              </p>
+              <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                <p className="px-1 text-[10px] uppercase tracking-wider text-muted-foreground/60">
+                  الشارت — آخر {candles.length} شمعة
+                </p>
+                <div className="flex flex-wrap gap-1">
+                  {TIMEFRAMES.map((tf) => (
+                    <button
+                      key={tf}
+                      onClick={() => setTimeframe(tf)}
+                      className={cn(
+                        "rounded px-2.5 py-1 text-[10px] font-bold transition-colors",
+                        tf === timeframe
+                          ? "bg-amber-500/20 text-amber-300"
+                          : "bg-muted/30 text-muted-foreground hover:bg-muted/50"
+                      )}
+                    >
+                      {tf}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              
               {chartData.length >= 2 ? (
                 <div className="h-56 w-full">
                   <ResponsiveContainer width="100%" height="100%">
@@ -377,6 +509,36 @@ export function SymbolAnalysisExplorer() {
                     ))}
                   </div>
                 </div>
+
+                {/* ICT Patterns Section */}
+                {analysis.ictPatterns && analysis.ictPatterns.length > 0 && (
+                  <div className="col-span-1 sm:col-span-2 rounded-xl border border-amber-500/30 bg-amber-500/5 p-4">
+                    <p className="mb-2 text-[10px] uppercase tracking-wider text-amber-500/80">
+                      ⚡ نماذج الشموع الانعكاسية (ICT / Smart Money Concepts)
+                    </p>
+                    <div className="flex flex-wrap gap-2">
+                      {analysis.ictPatterns.map((pattern, idx) => {
+                        const isBullish = pattern.toLowerCase().includes("bullish");
+                        const isBearish = pattern.toLowerCase().includes("bearish");
+                        return (
+                          <span
+                            key={idx}
+                            className={cn(
+                              "rounded-lg border px-2.5 py-1 text-[11px] font-bold",
+                              isBullish
+                                ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-400"
+                                : isBearish
+                                ? "border-rose-500/40 bg-rose-500/10 text-rose-400"
+                                : "border-amber-500/40 bg-amber-500/10 text-amber-400"
+                            )}
+                          >
+                            {pattern}
+                          </span>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
               </div>
             )}
 
@@ -389,9 +551,10 @@ export function SymbolAnalysisExplorer() {
         )}
 
         <p className="text-center text-[10px] text-muted-foreground/40">
-          الإطار الزمني {TIMEFRAME} — تحديث كل {REFRESH_MS / 1000} ثانية — للأغراض التحليلية المعلوماتية فقط — ليس توصية مالية
+          تحديث كل {REFRESH_MS / 1000} ثانية — للأغراض التحليلية المعلوماتية فقط — ليس توصية مالية
         </p>
       </div>
+    </div>
     </div>
   );
 }

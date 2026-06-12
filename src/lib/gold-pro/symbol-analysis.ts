@@ -22,9 +22,65 @@ export interface SymbolAnalysisResult {
   components: ConfluenceComponent[];
   score: number; // 0-100
   signal: GoldSignal;
+  ictPatterns: string[];
 }
 
 const MIN_CANDLES_FOR_ANALYSIS = 30;
+
+function detectICTPatterns(candles: RawCandle[]): string[] {
+  if (candles.length < 5) return [];
+  const patterns: string[] = [];
+  
+  // Recent 3 candles
+  const c1 = candles[candles.length - 3]; // oldest of the 3
+  const c2 = candles[candles.length - 2];
+  const c3 = candles[candles.length - 1]; // latest
+  
+  // 1. Bullish FVG (Fair Value Gap)
+  if (c3.low > c1.high && c2.close > c2.open) {
+    patterns.push("Bullish: فجوة سعرية عادلة صاعدة (Bullish FVG) - تدل على قوة شرائية ومغناطيس للسعر");
+  }
+  
+  // 2. Bearish FVG
+  if (c1.low > c3.high && c2.close < c2.open) {
+    patterns.push("Bearish: فجوة سعرية عادلة هابطة (Bearish FVG) - تدل على قوة بيعية ومغناطيس للسعر");
+  }
+  
+  // 3. Bullish Order Block (OB) - Last down candle before strong up move
+  if (c2.close < c2.open && c3.close > c3.open && c3.close > c2.high) {
+    patterns.push("Bullish: بلوك أوامر شرائي (Order Block) - منطقة طلب محتملة لصناع السوق");
+  }
+  
+  // 4. Bearish Order Block (OB) - Last up candle before strong down move
+  if (c2.close > c2.open && c3.close < c3.open && c3.close < c2.low) {
+    patterns.push("Bearish: بلوك أوامر بيعي (Order Block) - منطقة عرض محتملة لصناع السوق");
+  }
+  
+  // 5. Bullish Pin Bar / Hammer (Rejection)
+  const body3 = Math.abs(c3.close - c3.open);
+  const total3 = c3.high - c3.low;
+  const lowerWick3 = Math.min(c3.open, c3.close) - c3.low;
+  if (total3 > 0 && lowerWick3 > total3 * 0.6 && body3 < total3 * 0.3) {
+    patterns.push("Bullish: شمعة رفض شرائية (Pin Bar / Hammer) - تدل على رفض الهبوط وقوة المشترين");
+  }
+  
+  // 6. Bearish Pin Bar / Shooting Star (Rejection)
+  const upperWick3 = c3.high - Math.max(c3.open, c3.close);
+  if (total3 > 0 && upperWick3 > total3 * 0.6 && body3 < total3 * 0.3) {
+    patterns.push("Bearish: شمعة رفض بيعية (Shooting Star) - تدل على رفض الصعود وقوة البائعين");
+  }
+  
+  // 7. Engulfing
+  const body2 = Math.abs(c2.close - c2.open);
+  if (c2.close < c2.open && c3.close > c3.open && body3 > body2 && c3.close > c2.open && c3.open < c2.close) {
+    patterns.push("Bullish: شمعة ابتلاعية شرائية (Bullish Engulfing) - انعكاس قوي للاتجاه الهابط");
+  }
+  if (c2.close > c2.open && c3.close < c3.open && body3 > body2 && c3.close < c2.open && c3.open > c2.close) {
+    patterns.push("Bearish: شمعة ابتلاعية بيعية (Bearish Engulfing) - انعكاس قوي للاتجاه الصاعد");
+  }
+
+  return patterns;
+}
 
 /** يحسب مجموعة المؤشرات وتوافقها لأي رمز اعتماداً على شموع H1 (أو أي إطار آخر). */
 export function analyzeSymbolCandles(candles: RawCandle[]): SymbolAnalysisResult | null {
@@ -47,6 +103,7 @@ export function analyzeSymbolCandles(candles: RawCandle[]): SymbolAnalysisResult
     supportResistance: calculateSupportResistance(candles, price),
   };
 
+  const ictPatterns = detectICTPatterns(candles);
   const components: ConfluenceComponent[] = [];
 
   const ema21AboveEma50 = indicators.ema21 > indicators.ema50;
@@ -117,5 +174,5 @@ export function analyzeSymbolCandles(candles: RawCandle[]): SymbolAnalysisResult
 
   const signal: GoldSignal = score >= 70 ? "BUY" : score <= 30 ? "SELL" : "WAIT";
 
-  return { price, indicators, components, score, signal };
+  return { price, indicators, components, score, signal, ictPatterns };
 }
