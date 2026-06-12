@@ -34,14 +34,14 @@ import json
 import logging
 import os
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import numpy as np
 import pandas as pd
 import requests
 from sqlalchemy.orm import Session
 
-from database import DecisionJournal, StrategySignal, TripleFirewallSignal
+from database import DecisionJournal, SimulatedPosition, StrategySignal, TripleFirewallSignal
 
 # ---------------------------------------------------------------------------
 # Telegram configuration (read from environment — never hardcode tokens)
@@ -190,6 +190,28 @@ def _bool_to_int(value: bool | None) -> int | None:
     return None if value is None else (1 if value else 0)
 
 
+def _expected_duration_minutes(timeframe: str | None) -> int:
+    """Upper bound (in minutes) of RiskAgent's Arabic duration estimate for a timeframe.
+
+    Mirrors the ranges in RiskAgent.vote() so shadow trades auto-close on
+    timeout using the same horizon the system communicated to the user.
+    """
+    tf = str(timeframe or "H1").lower()
+    if tf in ("1m", "m1"):
+        return 20
+    if tf in ("5m", "m5"):
+        return 60
+    if "15" in tf:
+        return 180
+    if "30" in tf:
+        return 360
+    if "h4" in tf or "4h" in tf:
+        return 48 * 60
+    if "d1" in tf or "1d" in tf:
+        return 12 * 24 * 60
+    return 12 * 60  # Default H1: up to 12 hours
+
+
 # ---------------------------------------------------------------------------
 # Market session clock (Baghdad / UTC+3 — no daylight saving)
 #
@@ -259,6 +281,13 @@ def is_market_open(symbol: str, now_utc: datetime | None = None) -> bool:
     and also closed when no major session is active.
     """
     sym = symbol.upper()
+    # OKX instrument IDs always use the "BASE-QUOTE" format (e.g. AVAX-USDT),
+    # unlike MT5 symbols (e.g. XAUUSD) -- same convention used to pick the
+    # Telegram header ("OKX" vs "GOLD") in _send_telegram_alert. Checking
+    # this first means any OKX coin is treated as 24/7 crypto, not just the
+    # ones in the hardcoded keyword list below.
+    if "-" in sym:
+        return True
     crypto_keywords = ["BTC", "ETH", "SOL", "BNB", "XRP", "DOGE", "LTC", "ADA", "DOT", "MATIC"]
     if any(k in sym for k in crypto_keywords) or "CRYPTO" in sym:
         return True
@@ -475,6 +504,7 @@ class CouncilVerdict:
     timestamp:       datetime = field(
         default_factory=lambda: datetime.now(timezone.utc)
     )
+    tf_signal_id:    int | None = None        # TripleFirewallSignal.id (set by _persist)
 
     def votes_summary(self) -> dict[str, bool]:
         return {v.agent: v.approved for v in self.votes}
@@ -1285,6 +1315,7 @@ class CouncilEngine:
             )
             db.add(tf_record)
             db.flush()
+            verdict.tf_signal_id = tf_record.id
 
             logger.info(
                 "CouncilEngine: persisted -- symbol=%s direction=%s "
@@ -1294,6 +1325,132 @@ class CouncilEngine:
             )
         except Exception as exc:
             logger.error("CouncilEngine: DB write failed: %s", exc)
+            db.rollback()
+
+    def create_shadow_trade(self, verdict: CouncilVerdict, db: Session) -> None:
+        """Open an auto-tracked "shadow trade" for an approved watchlist signal.
+
+        Mirrors a real platform position (entry/SL/TP/lot/risk/profit) so the
+        Decision Journal can later compare what the system recommended against
+        what actually happened. Skips creation if an identical shadow trade
+        for this symbol+direction is already being tracked (the watchlist scan
+        re-fires every 5 minutes while a signal stays approved).
+        """
+        if not verdict.approved or verdict.direction is None:
+            return
+        try:
+            existing = (
+                db.query(SimulatedPosition)
+                .filter(
+                    SimulatedPosition.symbol == verdict.symbol,
+                    SimulatedPosition.direction == verdict.direction,
+                    SimulatedPosition.auto_generated == 1,
+                    SimulatedPosition.status == "ACTIVE",
+                )
+                .first()
+            )
+            if existing is not None:
+                return
+
+            opened_at = verdict.timestamp
+            expected_close_at = opened_at + timedelta(minutes=_expected_duration_minutes(verdict.timeframe))
+
+            row = SimulatedPosition(
+                symbol          = verdict.symbol,
+                source          = "okx" if "-" in verdict.symbol else "mt5",
+                direction       = verdict.direction,
+                entry_price     = verdict.entry,
+                stop_loss       = verdict.sl,
+                take_profit     = verdict.tp,
+                lot_size        = verdict.lot_size,
+                risk_amount     = verdict.risk_amount,
+                profit_amount   = verdict.profit_amount,
+                signal_strength = round(verdict.signal_strength, 4),
+                status          = "ACTIVE",
+                opened_at       = opened_at,
+                notes           = "صفقة محاكاة آلية من النظام -- إشارة قائمة المتابعة",
+                timestamp       = opened_at,
+                auto_generated  = 1,
+                source_signal_id  = verdict.tf_signal_id,
+                expected_close_at = expected_close_at,
+            )
+            db.add(row)
+            db.flush()
+            logger.info(
+                "CouncilEngine: shadow trade opened -- symbol=%s direction=%s id=%s expected_close=%s",
+                verdict.symbol, verdict.direction, row.id, expected_close_at.isoformat(),
+            )
+        except Exception as exc:
+            logger.error("CouncilEngine: shadow trade creation failed: %s", exc)
+            db.rollback()
+
+    def update_shadow_trades(self, symbol: str, current_price: float, db: Session) -> None:
+        """Check ACTIVE auto-generated shadow trades for `symbol` against the
+        current price -- closes on TP hit, SL hit, or expected-duration timeout.
+
+        Realized P&L is derived from the same risk sizing used to open the
+        trade: usd_per_unit = risk_amount / |entry - stop_loss|.
+        """
+        try:
+            now = datetime.now(timezone.utc)
+            rows = (
+                db.query(SimulatedPosition)
+                .filter(
+                    SimulatedPosition.symbol == symbol,
+                    SimulatedPosition.auto_generated == 1,
+                    SimulatedPosition.status == "ACTIVE",
+                )
+                .all()
+            )
+            for row in rows:
+                hit_tp = False
+                hit_sl = False
+                if row.direction == "BUY":
+                    hit_tp = row.take_profit is not None and current_price >= row.take_profit
+                    hit_sl = row.stop_loss is not None and current_price <= row.stop_loss
+                else:
+                    hit_tp = row.take_profit is not None and current_price <= row.take_profit
+                    hit_sl = row.stop_loss is not None and current_price >= row.stop_loss
+
+                timed_out = (
+                    not hit_tp and not hit_sl
+                    and row.expected_close_at is not None
+                    and now >= row.expected_close_at
+                )
+                if not (hit_tp or hit_sl or timed_out):
+                    continue
+
+                if hit_tp:
+                    row.status, row.close_reason = "HIT_TP", "HIT_TP"
+                elif hit_sl:
+                    row.status, row.close_reason = "HIT_SL", "HIT_SL"
+                else:
+                    row.status, row.close_reason = "CLOSED_MANUAL", "TIMEOUT"
+                    row.notes = (
+                        "أُغلقت تلقائياً لتجاوز المدة المتوقعة للصفقة"
+                        if not row.notes else
+                        row.notes + " | أُغلقت تلقائياً لتجاوز المدة المتوقعة للصفقة"
+                    )
+
+                if row.entry_price is not None and row.stop_loss is not None and row.risk_amount:
+                    sl_distance = abs(row.entry_price - row.stop_loss)
+                    usd_per_unit = (row.risk_amount / sl_distance) if sl_distance else 0.0
+                    signed_distance = (
+                        (current_price - row.entry_price) if row.direction == "BUY"
+                        else (row.entry_price - current_price)
+                    )
+                    row.profit_amount = round(signed_distance * usd_per_unit, 2)
+
+                row.closed_at = now
+                logger.info(
+                    "CouncilEngine: shadow trade closed -- symbol=%s id=%s reason=%s pnl=%s",
+                    symbol, row.id, row.close_reason, row.profit_amount,
+                )
+
+            if rows:
+                db.flush()
+        except Exception as exc:
+            logger.error("CouncilEngine: shadow trade update failed: %s", exc)
             db.rollback()
 
     def _send_telegram_alert(self, verdict: CouncilVerdict, db: Session | None = None) -> None:
@@ -1350,7 +1507,8 @@ class CouncilEngine:
             is_okx = "-" in verdict.symbol
             if is_okx:
                 header = "🔥 OKX\nتوصية كريبتو جديدة"
-                leverage_advice = (verdict.metadata or {}).get("leverage_advice")
+                risk_vote = next((v for v in verdict.votes if v.agent == RiskAgent.NAME), None)
+                leverage_advice = (risk_vote.metadata or {}).get("leverage_advice") if risk_vote else None
                 leverage_line = f"⚙️ الرافعة المقترحة: {leverage_advice}\n" if leverage_advice else ""
             else:
                 header = "🥇 GOLD\nتوصية ذهب/فوركس جديدة"

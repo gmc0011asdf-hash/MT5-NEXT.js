@@ -1875,39 +1875,77 @@ def api_get_signals(
 
 @app.get("/api/journal")
 def api_get_journal(
-    limit:  int        = Query(default=50,   ge=1, le=500),
-    result: str | None = Query(default=None, max_length=20),
-    symbol: str | None = Query(default=None, max_length=20),
-    db:     Session    = Depends(get_db),
+    limit:     int        = Query(default=50,   ge=1, le=500),
+    page:      int        = Query(default=1,    ge=1),
+    result:    str | None = Query(default=None, max_length=20),
+    symbol:    str | None = Query(default=None, max_length=20),
+    direction: str | None = Query(default=None, max_length=20),
+    source:    str | None = Query(default=None, max_length=10),
+    db:        Session    = Depends(get_db),
 ) -> JSONResponse:
     """
     Returns agent-council DecisionJournal entries (approved + rejected history).
 
     Query parameters:
-        limit  - max rows returned (default 50, max 500)
-        result - filter by APPROVED | REJECTED (optional)
-        symbol - filter by symbol via context JSON field (optional, best-effort)
+        limit     - max rows returned
+        page      - pagination offset multiplier
+        result    - filter by APPROVED | REJECTED (case-insensitive)
+        symbol    - filter by symbol via context JSON field (case-insensitive)
+        direction - filter by direction via context JSON field (case-insensitive)
+        source    - "mt5" or "okx" -- filter by platform via context.symbol
 
     Read-only: no writes performed here.
     """
-    q = db.query(DecisionJournal)
+    # Base query: symbol/direction/source filters only -- shared by the
+    # paginated result set AND the result-breakdown stats below, so the
+    # stats bar reflects the true totals for the selected platform/symbol
+    # regardless of which `result` tab is currently active.
+    base = db.query(DecisionJournal)
 
-    if result and result.strip():
-        q = q.filter(DecisionJournal.result == result.strip().upper())
+    if symbol and symbol.strip():
+        # Case-insensitive match within the JSON context text
+        sym = symbol.strip()
+        base = base.filter(DecisionJournal.context.ilike(f'%"{sym}"%'))
 
-    rows = q.order_by(DecisionJournal.timestamp.desc()).limit(limit).all()
+    if direction and direction.strip():
+        d = direction.strip()
+        base = base.filter(DecisionJournal.context.ilike(f'%"{d}"%'))
+
+    if source and source.strip():
+        s = source.strip().lower()
+        if s == "okx":
+            base = base.filter(
+                (DecisionJournal.context.like("%BTC%")) |
+                (DecisionJournal.context.like("%ETH%")) |
+                (DecisionJournal.context.like("%USDT%"))
+            )
+        elif s == "mt5":
+            base = base.filter(
+                (~DecisionJournal.context.like("%BTC%")) &
+                (~DecisionJournal.context.like("%ETH%")) &
+                (~DecisionJournal.context.like("%USDT%"))
+            )
+
+    stats = {
+        "total":    base.count(),
+        "approved": base.filter(DecisionJournal.result.ilike("APPROVED")).count(),
+        "rejected": base.filter(DecisionJournal.result.ilike("REJECTED")).count(),
+        "wait":     base.filter(DecisionJournal.result.ilike("WAIT")).count(),
+    }
+
+    q = base
+    if result and result.strip() and result.strip().upper() != "ALL":
+        q = q.filter(DecisionJournal.result.ilike(result.strip()))
+
+    # Calculate total count after all filters (including result), before pagination
+    total_count = q.count()
+
+    offset = (page - 1) * limit
+    rows = q.order_by(DecisionJournal.timestamp.desc()).offset(offset).limit(limit).all()
 
     entries: list[dict] = []
     for r in rows:
         row_dict = r.to_dict()
-        # Parse context JSON for symbol filtering
-        if symbol and symbol.strip():
-            try:
-                ctx = json.loads(row_dict.get("context", "{}"))
-                if ctx.get("symbol", "").upper() != symbol.strip().upper():
-                    continue
-            except Exception:
-                pass
         # Parse context and agents_votes into proper objects for easy frontend use
         try:
             row_dict["context"]      = json.loads(row_dict.get("context", "{}"))
@@ -1919,9 +1957,12 @@ def api_get_journal(
 
     return Utf8JsonResponse(
         content={
-            "ok":      True,
-            "count":   len(entries),
-            "entries": entries,
+            "ok":          True,
+            "total_count": total_count,
+            "stats":       stats,
+            "data":        entries,
+            "count":       len(entries),
+            "entries":     entries,
         }
     )
 
@@ -2509,8 +2550,14 @@ def api_trade_history_sync_now(db: Session = Depends(get_db)) -> JSONResponse:
     الحلقة الخلفية كل 60 ثانية. لا ينفذ أي صفقة، فقط سحب + تخزين + مطابقة.
     قراءة/تحليل فقط.
     """
-    counters = sync_mt5_trades_once(db)
-    return Utf8JsonResponse(content={"ok": True, **counters})
+    result = sync_mt5_trades_once(db)
+    if not result.get("ok", False):
+        return Utf8JsonResponse(content={
+            "ok": False,
+            "error": result.get("error") or "تعذّر الاتصال بمنصة MT5 -- تأكد من تشغيل وفتح تسجيل الدخول في MetaTrader 5",
+            **{k: v for k, v in result.items() if k not in ("ok", "error")},
+        })
+    return Utf8JsonResponse(content={"ok": True, **{k: v for k, v in result.items() if k != "ok"}})
 
 
 def _signal_summary(db: Session, signal_id: int | None, time_delta_seconds: int | None) -> dict | None:
@@ -2549,6 +2596,7 @@ def _open_position_with_signal(db: Session, row: MT5OpenPosition) -> dict:
 def api_trade_history_closed(
     days: int = Query(default=30, ge=1, le=365),
     symbol: str | None = Query(default=None),
+    source: str | None = Query(default=None),
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
     db: Session = Depends(get_db),
@@ -2562,6 +2610,21 @@ def api_trade_history_closed(
     if symbol and symbol.strip():
         query = query.filter(MT5TradeHistory.symbol == symbol.strip())
 
+    if source and source.strip():
+        s = source.strip().lower()
+        if s == "okx":
+            query = query.filter(
+                (MT5TradeHistory.symbol.like("%BTC%")) |
+                (MT5TradeHistory.symbol.like("%ETH%")) |
+                (MT5TradeHistory.symbol.like("%USDT%"))
+            )
+        elif s == "mt5":
+            query = query.filter(
+                (~MT5TradeHistory.symbol.like("%BTC%")) &
+                (~MT5TradeHistory.symbol.like("%ETH%")) &
+                (~MT5TradeHistory.symbol.like("%USDT%"))
+            )
+
     total = query.count()
     rows = (
         query.order_by(MT5TradeHistory.close_time.desc())
@@ -2574,12 +2637,30 @@ def api_trade_history_closed(
 
 
 @app.get("/api/trade-history/open")
-def api_trade_history_open(db: Session = Depends(get_db)) -> JSONResponse:
+def api_trade_history_open(
+    source: str | None = Query(default=None),
+    db: Session = Depends(get_db)
+) -> JSONResponse:
     """
     لقطة الصفقات المفتوحة حالياً مع بيانات إشارة النظام المطابقة (إن وُجدت).
     قراءة فقط -- ليست توصية مالية.
     """
-    rows = db.query(MT5OpenPosition).order_by(MT5OpenPosition.open_time.desc()).all()
+    query = db.query(MT5OpenPosition)
+    if source and source.strip():
+        s = source.strip().lower()
+        if s == "okx":
+            query = query.filter(
+                (MT5OpenPosition.symbol.like("%BTC%")) |
+                (MT5OpenPosition.symbol.like("%ETH%")) |
+                (MT5OpenPosition.symbol.like("%USDT%"))
+            )
+        elif s == "mt5":
+            query = query.filter(
+                (~MT5OpenPosition.symbol.like("%BTC%")) &
+                (~MT5OpenPosition.symbol.like("%ETH%")) &
+                (~MT5OpenPosition.symbol.like("%USDT%"))
+            )
+    rows = query.order_by(MT5OpenPosition.open_time.desc()).all()
     positions = [_open_position_with_signal(db, row) for row in rows]
     return Utf8JsonResponse(content={"ok": True, "total": len(positions), "positions": positions})
 
@@ -2587,6 +2668,7 @@ def api_trade_history_open(db: Session = Depends(get_db)) -> JSONResponse:
 @app.get("/api/trade-history/summary")
 def api_trade_history_summary(
     days: int = Query(default=30, ge=1, le=365),
+    source: str | None = Query(default=None),
     db: Session = Depends(get_db),
 ) -> JSONResponse:
     """
@@ -2594,7 +2676,22 @@ def api_trade_history_summary(
     قراءة فقط -- ليست توصية مالية، ولا تُستخدم لتعديل الاستراتيجية تلقائياً.
     """
     cutoff = datetime.now(timezone.utc) - timedelta(days=days)
-    rows = db.query(MT5TradeHistory).filter(MT5TradeHistory.open_time >= cutoff).all()
+    query = db.query(MT5TradeHistory).filter(MT5TradeHistory.open_time >= cutoff)
+    if source and source.strip():
+        s = source.strip().lower()
+        if s == "okx":
+            query = query.filter(
+                (MT5TradeHistory.symbol.like("%BTC%")) |
+                (MT5TradeHistory.symbol.like("%ETH%")) |
+                (MT5TradeHistory.symbol.like("%USDT%"))
+            )
+        elif s == "mt5":
+            query = query.filter(
+                (~MT5TradeHistory.symbol.like("%BTC%")) &
+                (~MT5TradeHistory.symbol.like("%ETH%")) &
+                (~MT5TradeHistory.symbol.like("%USDT%"))
+            )
+    rows = query.all()
 
     matched = [r for r in rows if r.matched_signal_id is not None]
     unmatched = [r for r in rows if r.matched_signal_id is None]
@@ -3238,10 +3335,21 @@ def _verdict_to_summary(timeframe: str, verdicts: list[CouncilVerdict]) -> dict[
     """يحوّل CouncilVerdict إلى ملخص JSON لاستخدامه في تحليل متعدد الفريمات."""
     if not verdicts:
         return {
-            "timeframe": timeframe,
-            "approved": False,
-            "direction": None,
-            "reason": "تعذّر جلب الشموع لهذا الفريم",
+            "timeframe":       timeframe,
+            "approved":        False,
+            "direction":       None,
+            "reason":          "تعذّر جلب الشموع لهذا الفريم",
+            "signal_strength": None,
+            "entry":           None,
+            "sl":              None,
+            "tp":              None,
+            "lot_size":        None,
+            "risk_amount":     None,
+            "risk_percent":    None,
+            "profit_amount":   None,
+            "duration":        None,
+            "digits":          None,
+            "confluence":      None,
         }
 
     v = verdicts[0]
@@ -3467,6 +3575,39 @@ def api_lab_set_watchlist(body: WatchlistRequest, source: str = "mt5") -> JSONRe
     return Utf8JsonResponse(content={"ok": True, "symbols": requested})
 
 
+def _fetch_current_price(symbol: str) -> float | None:
+    """Latest tradable price for `symbol` -- used to monitor shadow trades.
+
+    MT5 symbols: current bid tick. OKX symbols (contain "-"): close of the
+    most recent 1-minute candle. Returns None if the price is unavailable.
+    """
+    if "-" in symbol:
+        try:
+            raw = fetch_okx_candles(symbol, "1m", 1)
+            if not raw:
+                return None
+            return float(raw[-1]["close"])
+        except Exception as exc:
+            logger.warning("watchlist_scan: failed to fetch OKX price for %s -- %s", symbol, exc)
+            return None
+
+    ok, err = _safe_mt5_init()
+    if not ok:
+        logger.warning("watchlist_scan: MT5 unavailable for price fetch -- %s", err)
+        return None
+    try:
+        tick = mt5.symbol_info_tick(symbol)
+        return float(tick.bid) if tick else None
+    except Exception as exc:
+        logger.warning("watchlist_scan: failed to fetch MT5 price for %s -- %s", symbol, exc)
+        return None
+    finally:
+        try:
+            mt5.shutdown()
+        except Exception:
+            pass
+
+
 async def run_watchlist_multi_timeframe_scan() -> None:
     """
     حلقة خلفية إضافية: تحلل رموز قائمة المتابعة (حد أقصى 5) عبر عدة فريمات
@@ -3494,6 +3635,14 @@ async def run_watchlist_multi_timeframe_scan() -> None:
 
         try:
             for sym in symbols:
+                # Shadow-trading engine: check open auto-generated trades for
+                # this symbol against the current price (TP/SL/timeout) before
+                # scanning for a new signal.
+                current_price = await asyncio.to_thread(_fetch_current_price, sym)
+                if current_price is not None:
+                    engine.update_shadow_trades(sym, current_price, db)
+                    db.commit()
+
                 verdicts = []
                 if "-" in sym:
                     async def scan_okx(bar):
@@ -3526,6 +3675,8 @@ async def run_watchlist_multi_timeframe_scan() -> None:
                     from datetime import datetime, timezone
                     if is_market_open(best_verdict.symbol, datetime.now(timezone.utc)):
                         engine._send_telegram_alert(best_verdict, db=db)
+                        engine.create_shadow_trade(best_verdict, db=db)
+                        db.commit()
 
         finally:
             db.close()
