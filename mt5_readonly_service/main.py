@@ -559,7 +559,7 @@ def _sync_scan_cycle(
 
                 db = SessionLocal()
                 try:
-                    verdict = engine.analyze_market(symbol, df, db, account_balance, symbol_info, send_alert=send_alerts, market_closed=is_stale)
+                    verdict = engine.analyze_market(symbol, df, db, account_balance, symbol_info, send_alert=send_alerts, market_closed=is_stale, timeframe=timeframe)
                     verdict.timeframe = timeframe
                     db.commit()
                 except Exception as db_exc:
@@ -618,7 +618,7 @@ def _sync_scan_okx_cycle(
 
             db = SessionLocal()
             try:
-                verdict = engine.analyze_market(inst_id, df, db, account_balance, send_alert=send_alerts)
+                verdict = engine.analyze_market(inst_id, df, db, account_balance, send_alert=send_alerts, timeframe=bar)
                 verdict.timeframe = bar
                 db.commit()
             except Exception as db_exc:

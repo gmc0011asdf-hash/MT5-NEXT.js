@@ -1391,6 +1391,7 @@ class CouncilEngine:
         symbol_info:     dict | None = None,
         send_alert:      bool = True,
         market_closed:   bool = False,
+        timeframe:       str | None = None,
     ) -> CouncilVerdict:
         """
         Run the full agent-council analysis for a given symbol.
@@ -1420,6 +1421,11 @@ class CouncilEngine:
         send_alert : bool
             When False, suppresses the Telegram alert even if the signal is
             approved (used by broad ranking scans that should not notify).
+        timeframe : str | None
+            Candle timeframe label (e.g. "M15", "H1", "H4", "1H", "15m").
+            Forwarded to RiskAgent via df.attrs["timeframe"] so the trade
+            duration estimate matches the timeframe actually analyzed.
+            Falls back to "H1" inside RiskAgent.vote() when not provided.
 
         Returns
         -------
@@ -1453,6 +1459,8 @@ class CouncilEngine:
 
         df = candles_df.copy()
         df.attrs["symbol"] = symbol
+        if timeframe:
+            df.attrs["timeframe"] = timeframe
 
         buy_verdict  = self._evaluate("BUY",  df, account_balance, symbol_info)
         sell_verdict = self._evaluate("SELL", df, account_balance, symbol_info)
