@@ -43,9 +43,18 @@ import MetaTrader5 as mt5
 # Configuration
 # ---------------------------------------------------------------------------
 
-_HISTORY_DAYS: int = int(os.environ.get("MT5_TRADE_SYNC_HISTORY_DAYS", "30"))
+_HISTORY_DAYS: int = int(os.environ.get("MT5_TRADE_SYNC_HISTORY_DAYS", "365"))
 _SYNC_INTERVAL_SECONDS: int = int(os.environ.get("MT5_TRADE_SYNC_INTERVAL_SECONDS", "60"))
 _MATCH_WINDOW: timedelta = timedelta(hours=24)
+
+# mt5.history_deals_get(date_from, date_to) interprets date_from/date_to in
+# the broker's server timezone (same convention as copy_rates_from_pos --
+# see main.py's _BROKER_TIME_OFFSET_HOURS). Without a buffer, a trade closed
+# moments ago (broker server time) can fall just after `now_utc` (true UTC)
+# and be silently excluded from the pulled range -- the most recently closed
+# trade then never appears in mt5_trade_history. Extend date_to by the same
+# offset so the freshest deals are always included.
+_BROKER_TIME_OFFSET_HOURS: int = int(os.environ.get("MT5_BROKER_TIME_OFFSET_HOURS", "3"))
 
 # MT5 deal/position type constants -- read from the mt5 module with safe
 # fallbacks to their documented numeric values, in case a stub/older
@@ -312,7 +321,8 @@ def _sync_closed_trades(db: Session) -> tuple[int, int]:
     """Returns (inserted_count, upserted_count)."""
     now_utc = datetime.now(timezone.utc)
     from_date = now_utc - timedelta(days=_HISTORY_DAYS)
-    deals_raw = mt5.history_deals_get(from_date, now_utc)
+    to_date = now_utc + timedelta(hours=_BROKER_TIME_OFFSET_HOURS)
+    deals_raw = mt5.history_deals_get(from_date, to_date)
     deals = list(deals_raw) if deals_raw is not None else []
 
     inserted = 0
@@ -356,7 +366,7 @@ def _sync_open_positions(db: Session) -> tuple[int, int]:
     return upserted, removed
 
 
-def sync_mt5_trades_once(db: Session) -> dict[str, int]:
+def sync_mt5_trades_once(db: Session) -> dict[str, Any]:
     """One full synchronization pass: pulls closed deals + open positions
     from MT5, upserts mt5_trade_history / mt5_open_positions, and runs
     signal matching for newly-inserted rows.
@@ -368,11 +378,16 @@ def sync_mt5_trades_once(db: Session) -> dict[str, int]:
     ok, err = _safe_mt5_init()
     if not ok:
         logger.warning("mt5_trade_sync: MT5 init failed -- %s", err)
-        return {"closedInserted": 0, "closedUpserted": 0, "openUpserted": 0, "openRemoved": 0}
+        return {
+            "ok": False,
+            "error": err,
+            "closedInserted": 0, "closedUpserted": 0, "openUpserted": 0, "openRemoved": 0,
+        }
     try:
         closed_inserted, closed_upserted = _sync_closed_trades(db)
         open_upserted, open_removed = _sync_open_positions(db)
         return {
+            "ok": True,
             "closedInserted": closed_inserted,
             "closedUpserted": closed_upserted,
             "openUpserted": open_upserted,

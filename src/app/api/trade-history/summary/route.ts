@@ -18,8 +18,10 @@ export async function GET(request: NextRequest) {
 
   const sp = request.nextUrl.searchParams;
   const u = new URL(`${MT5_SERVICE_BASE}/api/trade-history/summary`);
-  const days = sp.get("days");
-  if (days !== null && days !== "") u.searchParams.set("days", days);
+  for (const key of ["days", "source"] as const) {
+    const v = sp.get(key);
+    if (v !== null && v !== "") u.searchParams.set(key, v);
+  }
 
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);

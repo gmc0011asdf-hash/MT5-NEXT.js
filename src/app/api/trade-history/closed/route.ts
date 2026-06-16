@@ -17,7 +17,7 @@ export async function GET(request: NextRequest) {
 
   const sp = request.nextUrl.searchParams;
   const u = new URL(`${MT5_SERVICE_BASE}/api/trade-history/closed`);
-  for (const key of ["days", "symbol", "limit", "offset"] as const) {
+  for (const key of ["days", "symbol", "source", "limit", "offset"] as const) {
     const v = sp.get(key);
     if (v !== null && v !== "") u.searchParams.set(key, v);
   }

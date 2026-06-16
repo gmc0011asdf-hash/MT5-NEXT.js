@@ -108,6 +108,16 @@ function formatMetadataValue(val: unknown): string {
   return String(val);
 }
 
+function _r5(val: unknown): number | null {
+  const n = Number(val);
+  return Number.isNaN(n) ? null : Number(n.toFixed(5));
+}
+
+function _r2(val: unknown): number | null {
+  const n = Number(val);
+  return Number.isNaN(n) ? null : Number(n.toFixed(2));
+}
+
 // ---------------------------------------------------------------------------
 // Tiny sub-components
 // ---------------------------------------------------------------------------
@@ -159,11 +169,21 @@ function SimulateEntryModal({
   symbol: string;
   onClose: () => void;
 }) {
+  const riskVote = signal?.votes?.find((v) => v.agent === "RiskAgent");
+  const meta = riskVote?.metadata as Record<string, any> | undefined;
+
+  const defaultEntry = _r5(signal?.entry ?? meta?.entry);
+  const defaultSl = _r5(signal?.sl ?? meta?.sl ?? signal?.theoretical_sl);
+  const defaultTp = _r5(signal?.tp ?? meta?.tp ?? signal?.theoretical_tp);
+  const defaultLot = _r2(signal?.lot_size ?? meta?.lot_size ?? meta?.lotSize);
+  const defaultRisk = _r2(signal?.risk_amount ?? meta?.risk ?? meta?.risk_amount);
+  const defaultProfit = _r2(signal?.profit_amount ?? meta?.profit ?? meta?.profit_amount);
+
   const [direction, setDirection]   = useState<"BUY" | "SELL">(signal?.direction === "SELL" ? "SELL" : "BUY");
-  const [entryPrice, setEntryPrice] = useState(signal?.entry != null ? String(signal.entry) : "");
-  const [stopLoss, setStopLoss]     = useState(signal?.sl != null ? String(signal.sl) : "");
-  const [takeProfit, setTakeProfit] = useState(signal?.tp != null ? String(signal.tp) : "");
-  const [lotSize, setLotSize]       = useState(signal?.lot_size != null ? String(signal.lot_size) : "");
+  const [entryPrice, setEntryPrice] = useState(defaultEntry != null ? String(defaultEntry) : "");
+  const [stopLoss, setStopLoss]     = useState(defaultSl != null ? String(defaultSl) : "");
+  const [takeProfit, setTakeProfit] = useState(defaultTp != null ? String(defaultTp) : "");
+  const [lotSize, setLotSize]       = useState(defaultLot != null ? String(defaultLot) : "");
   const initialNotes = signal?.votes
     ? signal.votes
         .filter((v) => v.approved && v.reason)
@@ -196,8 +216,8 @@ function SimulateEntryModal({
           stopLoss:       stopLoss    ? Number(stopLoss)    : null,
           takeProfit:     takeProfit  ? Number(takeProfit)  : null,
           lotSize:        lotSize     ? Number(lotSize)     : null,
-          riskAmount:     signal?.risk_amount,
-          profitAmount:   signal?.profit_amount,
+          riskAmount:     defaultRisk != null ? Number(defaultRisk) : null,
+          profitAmount:   defaultProfit != null ? Number(defaultProfit) : null,
           signalStrength: signal?.signal_strength,
           openedAt,
           notes: notes.trim() || null,
@@ -417,6 +437,17 @@ function TerminalCard({ signal, symbol }: { signal: AgentSignal | null; symbol: 
     return Math.round(avgConfidence * 100);
   })();
 
+  const riskVote = signal?.votes?.find((v) => v.agent === "RiskAgent");
+  const meta = riskVote?.metadata as Record<string, any> | undefined;
+
+  const resolvedSl = _r5(signal?.sl ?? meta?.sl);
+  const resolvedTp = _r5(signal?.tp ?? meta?.tp);
+  const resolvedAtr = _r5(signal?.atr ?? meta?.atr);
+  const resolvedLot = _r2(signal?.lot_size ?? meta?.lot_size ?? meta?.lotSize);
+  const resolvedRisk = _r2(signal?.risk_amount ?? meta?.risk ?? meta?.risk_amount);
+  const resolvedProfit = _r2(signal?.profit_amount ?? meta?.profit ?? meta?.profit_amount);
+  const resolvedDuration = signal?.duration ?? meta?.duration;
+
   return (
     <div
       className={cn(
@@ -459,12 +490,12 @@ function TerminalCard({ signal, symbol }: { signal: AgentSignal | null; symbol: 
       </div>
 
       {/* Risk levels */}
-      {signal && (signal.sl != null || signal.tp != null) ? (
+      {signal && (resolvedSl != null || resolvedTp != null) ? (
         <div className="grid grid-cols-3 gap-3">
           {[
-            { key: "sl",  label: "وقف الخسارة SL", val: signal.sl,  color: "text-rose-400"    },
-            { key: "tp",  label: "الهدف TP",         val: signal.tp,  color: "text-emerald-400" },
-            { key: "atr", label: "ATR (تقلب)",        val: signal.atr, color: "text-amber-400"   },
+            { key: "sl",  label: "وقف الخسارة SL", val: resolvedSl,  color: "text-rose-400"    },
+            { key: "tp",  label: "الهدف TP",         val: resolvedTp,  color: "text-emerald-400" },
+            { key: "atr", label: "ATR (تقلب)",        val: resolvedAtr, color: "text-amber-400"   },
           ].map(({ key, label, val, color }) => (
             <div
               key={key}
@@ -514,30 +545,30 @@ function TerminalCard({ signal, symbol }: { signal: AgentSignal | null; symbol: 
       )}
 
       {/* Trade Management & Duration */}
-      {signal && signal.risk_amount != null && (
+      {signal && resolvedRisk != null && (
         <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-4">
           <div className="rounded-xl border border-border/25 bg-card/40 px-3 py-3 text-center">
             <p className="text-[9px] text-muted-foreground/60">حجم اللوت</p>
             <p className="mt-1 font-mono text-xs font-bold text-indigo-400">
-              {signal.lot_size}
+              {resolvedLot}
             </p>
           </div>
           <div className="rounded-xl border border-border/25 bg-card/40 px-3 py-3 text-center">
             <p className="text-[9px] text-muted-foreground/60">المخاطرة</p>
             <p className="mt-1 font-mono text-xs font-bold text-rose-400">
-              ${signal.risk_amount.toFixed(2)}
+              ${resolvedRisk.toFixed(2)}
             </p>
           </div>
           <div className="rounded-xl border border-border/25 bg-card/40 px-3 py-3 text-center">
             <p className="text-[9px] text-muted-foreground/60">الربح المتوقع</p>
             <p className="mt-1 font-mono text-xs font-bold text-emerald-400">
-              ${signal.profit_amount?.toFixed(2)}
+              ${resolvedProfit?.toFixed(2)}
             </p>
           </div>
           <div className="rounded-xl border border-border/25 bg-card/40 px-3 py-3 text-center">
             <p className="text-[9px] text-muted-foreground/60">مدة الصفقة</p>
             <p className="mt-1 text-xs font-bold text-amber-200/80">
-              {signal.duration}
+              {resolvedDuration}
             </p>
           </div>
         </div>
